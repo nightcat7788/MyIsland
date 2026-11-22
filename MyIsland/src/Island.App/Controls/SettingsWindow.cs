@@ -94,9 +94,10 @@ public sealed class SettingsWindow : Window
         root.Children.Add(Row("信息胶囊显示项", Link("自定义…", () => _host.ShowComboSettings())));
         root.Children.Add(Row("监控页显示项", Link("自定义…", () => _host.ShowMonitorSettings())));
 
+        root.Children.Add(Title2("系统"));
+        root.Children.Add(AutostartCheck());
         if (!_host.IsElevated)
         {
-            root.Children.Add(Title2("系统"));
             var hint = new TextBlock
             {
                 Text = "温度读数（CPU/GPU）需要管理员权限与 PawnIO 驱动。",
@@ -187,6 +188,45 @@ public sealed class SettingsWindow : Window
         itemStyle.Triggers.Add(hoverTrigger);
         cb.ItemContainerStyle = itemStyle;
         return cb;
+    }
+
+    /// <summary>开机自启开关：普通权限走 Run 键；管理员权限走计划任务（保住温度链路）。</summary>
+    private FrameworkElement AutostartCheck()
+    {
+        var panel = new StackPanel();
+        var cb = new CheckBox
+        {
+            Content = _host.IsElevated ? "开机自启（计划任务 · 管理员权限）" : "开机自启",
+            IsChecked = StartupService.IsEnabled(_host.IsElevated),
+            Foreground = new SolidColorBrush(_palette.Text),
+            Margin = new Thickness(0, 4, 0, 2),
+        };
+        var status = new TextBlock
+        {
+            Foreground = new SolidColorBrush(_palette.TextDim),
+            FontSize = 11,
+            Margin = new Thickness(22, 0, 0, 4),
+            TextWrapping = TextWrapping.Wrap,
+        };
+        cb.Checked += (_, _) => ApplyAutostart(true, cb, status);
+        cb.Unchecked += (_, _) => ApplyAutostart(false, cb, status);
+        panel.Children.Add(cb);
+        panel.Children.Add(status);
+        return panel;
+    }
+
+    private void ApplyAutostart(bool enable, CheckBox cb, TextBlock status)
+    {
+        string? error = StartupService.SetEnabled(enable, _host.IsElevated);
+        if (error is null)
+        {
+            status.Text = "";
+        }
+        else
+        {
+            status.Text = $"设置失败：{error}";
+            cb.IsChecked = !enable; // 回滚勾选态
+        }
     }
 
     private CheckBox Check(string label, bool current, Action<bool> apply)
