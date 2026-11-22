@@ -131,113 +131,8 @@ public partial class App : Application
         var menu = new System.Windows.Controls.ContextMenu();
 
         menu.Items.Add(MenuItem("展开 / 收起", (_, _) => _island?.ToggleExpand()));
+        menu.Items.Add(MenuItem("设置中心…", (_, _) => ShowSettingsWindow()));
         menu.Items.Add(new System.Windows.Controls.Separator());
-
-        var theme = new System.Windows.Controls.MenuItem { Header = "面板主题" };
-        var themes = new[] { ("Dark", "深色"), ("Light", "浅色"), ("OneDark", "One Dark Pro"),
-                 ("GitHubDark", "GitHub Dark"), ("Dracula", "Dracula"), ("NightOwl", "Night Owl"),
-                 ("Island", "海岛假日"), ("Cyberpunk", "赛博朋克"), ("Pixel", "像素方块"), ("Auto", "跟随系统+壁纸") };
-        for (int i = 0; i < themes.Length; i++)
-        {
-            int idx = i;
-            var item = MenuItem(themes[i].Item2, (_, _) => { SetTheme(themes[idx].Item1); CheckSiblings(theme, idx); });
-            item.IsChecked = _settings.Theme == themes[idx].Item1;
-            theme.Items.Add(item);
-        }
-        menu.Items.Add(theme);
-
-        var edge = new System.Windows.Controls.MenuItem { Header = "停靠边缘" };
-        var edges = new[] { ("top", "顶部"), ("bottom", "底部"), ("left", "左侧"), ("right", "右侧") };
-        for (int i = 0; i < edges.Length; i++)
-        {
-            int idx = i;
-            var item = MenuItem(edges[i].Item2, (_, _) => { SetEdge(edges[idx].Item1); CheckSiblings(edge, idx); });
-            item.IsChecked = _settings.Edge == edges[idx].Item1;
-            edge.Items.Add(item);
-        }
-        menu.Items.Add(edge);
-
-        var expand = new System.Windows.Controls.MenuItem { Header = "展开方式" };
-        var modes = new[] { ("hover", "悬停展开"), ("always", "常驻展开"), ("never", "长关") };
-        for (int i = 0; i < modes.Length; i++)
-        {
-            int idx = i;
-            var item = MenuItem(modes[i].Item2, (_, _) => { _island?.SetExpandMode(modes[idx].Item1); CheckSiblings(expand, idx); });
-            item.IsChecked = _settings.ExpandMode == modes[idx].Item1;
-            expand.Items.Add(item);
-        }
-        menu.Items.Add(expand);
-
-        var view = new System.Windows.Controls.MenuItem { Header = "收起视图" };
-        var views = new[] { ("dash", "仪表盘"), ("clock", "时间+天气"), ("combo", "信息胶囊"), ("monitor", "系统读数"),
-                 ("devices", "设备电量"), ("clipboard", "剪贴板"), ("pet", "小形象") };
-        for (int i = 0; i < views.Length; i++)
-        {
-            int idx = i;
-            var item = MenuItem(views[i].Item2, (_, _) => { _island?.SetCompactView(views[idx].Item1); CheckSiblings(view, idx); });
-            item.IsChecked = _settings.CompactView == views[idx].Item1;
-            view.Items.Add(item);
-        }
-        menu.Items.Add(view);
-
-        // 小形象款式（小形象视图 10s → 信息胶囊 30s 自动轮换，款式即时生效）
-        var petStyle = new System.Windows.Controls.MenuItem { Header = "小形象款式" };
-        var styles = new[] { ("classic", "经典双眼"), ("mono", "独眼"), ("cat", "猫咪"), ("robot", "机器人"), ("pixel", "像素") };
-        for (int i = 0; i < styles.Length; i++)
-        {
-            int idx = i;
-            var item = MenuItem(styles[i].Item2, (_, _) => { _island?.SetPetStyle(styles[idx].Item1); CheckSiblings(petStyle, idx); });
-            item.IsChecked = _settings.PetStyle == styles[idx].Item1;
-            petStyle.Items.Add(item);
-        }
-        menu.Items.Add(petStyle);
-
-        // 最大化时缩成指示条（可勾选）
-        var indItem = new System.Windows.Controls.MenuItem
-        {
-            Header = "最大化时缩成指示条",
-            IsCheckable = true,
-            IsChecked = _settings.IndicatorOnMaximize,
-        };
-        indItem.Click += (_, _) =>
-        {
-            _settings.IndicatorOnMaximize = indItem.IsChecked;
-            _settings.Save();
-        };
-        menu.Items.Add(indItem);
-
-        // 设置：天气城市（自动定位/常用城市/自定义）
-        var settings = new System.Windows.Controls.MenuItem { Header = "设置" };
-        var city = new System.Windows.Controls.MenuItem { Header = "天气城市" };
-        var cities = new[] { "北京", "上海", "广州", "深圳", "杭州", "成都", "重庆", "西安", "武汉", "南京", "苏州", "厦门", "长沙", "青岛" };
-        var autoItem = MenuItem("自动定位（IP）", (_, _) => { _island?.SetWeatherCity(""); CheckSiblings(city, 0); });
-        autoItem.IsChecked = string.IsNullOrEmpty(_settings.City);
-        city.Items.Add(autoItem);
-        for (int i = 0; i < cities.Length; i++)
-        {
-            int idx = i + 1;
-            string name = cities[i];
-            var item = MenuItem(name, (_, _) => { _island?.SetWeatherCity(name); CheckSiblings(city, idx); });
-            item.IsChecked = _settings.City == name;
-            city.Items.Add(item);
-        }
-        city.Items.Add(new System.Windows.Controls.Separator());
-        var customItem = MenuItem("自定义…", (_, _) =>
-        {
-            string? input = PromptCity();
-            if (input is not null)
-            {
-                _island?.SetWeatherCity(input);
-                CheckSiblings(city, city.Items.Count - 1);
-            }
-        });
-        customItem.IsChecked = !string.IsNullOrEmpty(_settings.City) && !cities.Contains(_settings.City);
-        city.Items.Add(customItem);
-        settings.Items.Add(city);
-        settings.Items.Add(MenuItem("仪表盘显示项…", (_, _) => _island?.ShowDashSettings()));
-        settings.Items.Add(MenuItem("信息胶囊显示项…", (_, _) => _island?.ShowComboSettings()));
-        settings.Items.Add(MenuItem("监控页显示项…", (_, _) => _island?.ShowMonitorSettings()));
-        menu.Items.Add(settings);
 
         // 工具：剪贴板/文件中转
         var tools = new System.Windows.Controls.MenuItem { Header = "工具" };
@@ -253,11 +148,35 @@ public partial class App : Application
         menu.Items.Add(tools);
 
         menu.Items.Add(new System.Windows.Controls.Separator());
-        // 温度读数需要管理员（PawnIO/存储 IOCTL）：非管理员时给重启入口
+        // 温度读数需要管理员（PawnIO）：非管理员时给重启入口
         if (!IsElevated())
             menu.Items.Add(MenuItem("以管理员重启（获取温度读数）", (_, _) => RestartAsAdmin()));
         menu.Items.Add(MenuItem("退出", (_, _) => Shutdown()));
         return menu;
+    }
+
+    /// <summary>打开设置中心（全部设置项统一入口）。</summary>
+    private void ShowSettingsWindow()
+    {
+        if (_island is null) return;
+        var palette = Themes.Palette.ByName(_settings.Theme)
+            ?? (_settings.Theme == "Light" ? Themes.Palette.Light : Themes.Palette.Dark);
+        var win = new Island.App.Controls.SettingsWindow(_settings, palette, new Island.App.Controls.SettingsWindow.Host
+        {
+            SetTheme = SetTheme,
+            SetEdge = SetEdge,
+            SetExpandMode = m => _island.SetExpandMode(m),
+            SetCompactView = v => _island.SetCompactView(v),
+            SetPetStyle = s => _island.SetPetStyle(s),
+            SetWeatherCity = c => _island.SetWeatherCity(c),
+            ShowDashSettings = () => _island.ShowDashSettings(),
+            ShowComboSettings = () => _island.ShowComboSettings(),
+            ShowMonitorSettings = () => _island.ShowMonitorSettings(),
+            RestartAsAdmin = RestartAsAdmin,
+            PromptCity = PromptCity,
+            IsElevated = IsElevated(),
+        });
+        win.ShowDialog();
     }
 
     private static bool IsElevated()
@@ -362,14 +281,6 @@ public partial class App : Application
         win.Content = root;
         win.ShowDialog();
         return result;
-    }
-
-    /// <summary>单选组勾选态：选中项打勾、其余取消（主题/边缘/展开方式/视图/款式共用）。</summary>
-    private static void CheckSiblings(System.Windows.Controls.MenuItem parent, int index)
-    {
-        for (int i = 0; i < parent.Items.Count; i++)
-            if (parent.Items[i] is System.Windows.Controls.MenuItem mi)
-                mi.IsChecked = i == index;
     }
 
     private void SetTheme(string theme)
