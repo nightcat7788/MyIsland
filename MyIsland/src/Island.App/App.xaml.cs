@@ -92,6 +92,8 @@ public partial class App : Application
 
         _settings = Settings.Load();
         _island = new IslandWindow(_settings);
+        // 非管理员运行时，监控页温度位显示"需管理员"提示（温度链路需管理员 + PawnIO）
+        _island.MonitorTempNeedAdmin = !IsElevated();
         _island.ContextMenu = BuildContextMenu();
         _island.Show();
 

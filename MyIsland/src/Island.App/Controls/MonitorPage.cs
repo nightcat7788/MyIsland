@@ -25,6 +25,9 @@ public sealed class MonitorPage : FrameworkElement
     public HashSet<string>? Items { get; set; }
     private bool Want(string key) => Items is null || Items.Contains(key);
 
+    /// <summary>非管理员运行时为 true：温度位显示"需管理员"提示而不是"—"。</summary>
+    public bool TempNeedAdmin { get; set; }
+
     private double Ppd => VisualTreeHelper.GetDpi(this).PixelsPerDip;
 
     private static readonly Color CpuC = Color.FromRgb(0x2E, 0x9B, 0xFF);
@@ -76,8 +79,9 @@ public sealed class MonitorPage : FrameworkElement
                     RenderKit.Baseline(dc, d, x, baseline); x += d.WidthIncludingTrailingWhitespace + 10;
                 }
                 double? ct = th?.CpuTemp;
-                var dt = RenderKit.Text(ct is { } t2 ? $"{Math.Round(t2)}°" : "—", 11,
-                    ct is { } t3 ? TempColor(t3, pal) : pal.TextTertiary, true, ppd);
+                var dt = RenderKit.Text(
+                    ct is { } t2 ? $"{Math.Round(t2)}°" : TempNeedAdmin ? "需管理员" : "—", 11,
+                    ct is { } t3 ? TempColor(t3, pal) : TempNeedAdmin ? pal.Warning : pal.TextTertiary, true, ppd);
                 RenderKit.Baseline(dc, dt, x, baseline);
             }
             RenderKit.DrawSpark(dc, new Rect(lw * 0.52, y, lw - 6 - lw * 0.52, 26), CpuHistory, CpuC, 36);
@@ -131,7 +135,8 @@ public sealed class MonitorPage : FrameworkElement
         }
 
         // ---------- GPU 行：表盘 + 读数 + 温度 + 右侧显卡名 ----------
-        if (Want("gpu") && s is not null && s.GpuUsage > 0)
+        // GPU 行常显（核显空闲时 GpuUsage=0 也保留温度/显存/显卡名，避免整行消失）
+        if (Want("gpu") && s is not null)
         {
             RenderKit.Dial(dc, new Point(x0 + dial / 2, y + dial / 2), dial, 2.6,
                 s.GpuUsage / 100, pal.Track, GpuC, pal.Text, "G", ppd);
@@ -140,8 +145,9 @@ public sealed class MonitorPage : FrameworkElement
             var gnum = RenderKit.Text($"{Math.Round(s.GpuUsage)}%", 15, pal.Text, true, ppd);
             RenderKit.Baseline(dc, gnum, x, bl); x += gnum.WidthIncludingTrailingWhitespace + 10;
             double? gt = th?.GpuTemp;
-            var gtT = RenderKit.Text(gt is { } g2 ? $"{Math.Round(g2)}°" : "—", 11,
-                gt is { } g3 ? TempColor(g3, pal) : pal.TextTertiary, true, ppd);
+            var gtT = RenderKit.Text(
+                gt is { } g2 ? $"{Math.Round(g2)}°" : TempNeedAdmin ? "需管理员" : "—", 11,
+                gt is { } g3 ? TempColor(g3, pal) : TempNeedAdmin ? pal.Warning : pal.TextTertiary, true, ppd);
             RenderKit.Baseline(dc, gtT, x, bl); x += gtT.WidthIncludingTrailingWhitespace + 10;
             // 显存（LiteMonitor 同款：D3D 专用/共享）
             if (th?.GpuMemoryUsedGB is { } gmu)

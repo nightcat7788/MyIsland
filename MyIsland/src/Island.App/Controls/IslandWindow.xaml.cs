@@ -306,6 +306,13 @@ public partial class IslandWindow : Window
     }
 
     // ---------- 悬停展开 / 收起 ----------
+    /// <summary>非管理员运行时为 true：监控页温度位显示"需管理员"提示。</summary>
+    public bool MonitorTempNeedAdmin
+    {
+        get => expandedPanel.Monitor.TempNeedAdmin;
+        set => expandedPanel.Monitor.TempNeedAdmin = value;
+    }
+
     /// <summary>展开方式：hover=悬停展开 always=常驻展开 never=长关（不自动展开）。</summary>
     public string ExpandMode => _settings.ExpandMode;
 
