@@ -526,8 +526,24 @@ public partial class IslandWindow : Window
         pd.OnSetVolume = v => _volume.SetVolume((float)v);
         pd.OnToggleMute = () => _volume.SetMute(!_volume.IsMutedNow);
         pd.OnSetLightTheme = light => Services.ControlService.SetSystemLightTheme(light);
+        pd.OnSetNightLight = on =>
+        {
+            // 本机从未配置过夜灯（无 Data 值）：带去系统设置先开启一次
+            if (!Services.ControlService.SetNightLight(on))
+                Services.ControlService.OpenSettings("nightlight");
+        };
         if (_volume.Current is { } vc) { pd.VolumeValue = vc.vol; pd.IsMuted = vc.mute; }
         pd.IsLightTheme = Services.ControlService.IsSystemLightTheme();
+        if (Services.ControlService.GetNightLightOn() is { } nl)
+        {
+            pd.HasNightLight = true;
+            pd.NightLightOn = nl;
+        }
+        else
+        {
+            // 从未配置过夜灯也显示卡片（点了会带去系统设置开启）
+            pd.HasNightLight = true;
+        }
         pd.UpdateControls();
         return pd;
     }

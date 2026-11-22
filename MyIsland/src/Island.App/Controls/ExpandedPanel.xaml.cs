@@ -77,6 +77,12 @@ public partial class ExpandedPanel : UserControl
             pd.ApplyLightTheme(cb.IsChecked == true);
     }
 
+    private void OnNightLightToggle(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is PanelData pd && sender is CheckBox cb)
+            pd.ApplyNightLight(cb.IsChecked == true);
+    }
+
     private void OnPage(object sender, RoutedEventArgs e)
     {
         if (sender is Button b && int.TryParse(b.Tag?.ToString(), out int i)) SelectPage(i);

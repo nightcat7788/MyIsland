@@ -201,6 +201,45 @@ public static class ControlService
         catch { }
     }
 
+    // ---------- 夜灯（夜间模式）：CloudStore 二进制状态位，免管理员 ----------
+    // 社区验证布局：REG_BINARY "Data"，偏移 18 = 开关（1 开 / 0 关）
+    private const string NightLightKeyPath =
+        @"Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Current\default$windows.data.bluelightreduction.bluelightreductionstate";
+
+    /// <summary>夜灯当前状态（null = 读不到/不支持）。</summary>
+    public static bool? GetNightLightOn()
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(NightLightKeyPath, false);
+            if (key?.GetValue("Data") is byte[] data && data.Length > 18)
+                return data[18] != 0;
+        }
+        catch { }
+        return null;
+    }
+
+    /// <summary>设置夜灯开关；返回是否写入成功（不支持返回 false）。</summary>
+    public static bool SetNightLight(bool on)
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(NightLightKeyPath, true);
+            if (key?.GetValue("Data") is byte[] data && data.Length > 18)
+            {
+                byte want = (byte)(on ? 1 : 0);
+                if (data[18] != want)
+                {
+                    data[18] = want;
+                    key.SetValue("Data", data, Microsoft.Win32.RegistryValueKind.Binary);
+                }
+                return true;
+            }
+        }
+        catch { }
+        return false;
+    }
+
     // ---------- 系统设置快捷链接 ----------
     /// <summary>打开指定系统设置页（ms-settings: 协议）。</summary>
     public static void OpenSettings(string page)
@@ -213,6 +252,7 @@ public static class ControlService
                 "sound" => "ms-settings:sound",
                 "display" => "ms-settings:display",
                 "power" => "ms-settings:powersleep",
+                "nightlight" => "ms-settings:nightlight",
                 _ => "ms-settings:",
             };
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo

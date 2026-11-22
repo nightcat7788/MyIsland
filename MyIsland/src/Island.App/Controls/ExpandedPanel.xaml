@@ -259,6 +259,21 @@
                             </DockPanel>
                         </Border>
 
+                        <!-- 夜灯（夜间模式；不支持时不显示） -->
+                        <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8"
+                                Visibility="{Binding HasNightLight, Converter={StaticResource BoolVis}}">
+                            <DockPanel>
+                                <StackPanel DockPanel.Dock="Left">
+                                    <TextBlock Text="夜灯（夜间模式）" FontSize="12" Foreground="{DynamicResource Fg}"/>
+                                    <TextBlock Text="暖色温护眼，数秒内生效" FontSize="10"
+                                               Foreground="{DynamicResource FgDim}"/>
+                                </StackPanel>
+                                <CheckBox DockPanel.Dock="Right" IsChecked="{Binding NightLightOn}"
+                                          Checked="OnNightLightToggle" Unchecked="OnNightLightToggle"
+                                          VerticalAlignment="Center" HorizontalAlignment="Right"/>
+                            </DockPanel>
+                        </Border>
+
                         <!-- 锁屏 / 睡眠 -->
                         <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
                             <DockPanel>

@@ -118,6 +118,13 @@ public sealed class PanelData : INotifyPropertyChanged
     public Action<bool>? OnSetLightTheme;
     public void ApplyLightTheme(bool light) { IsLightTheme = light; OnSetLightTheme?.Invoke(light); }
 
+    // 夜灯（不支持时卡片隐藏）
+    private bool _nightLightOn, _hasNightLight;
+    public bool NightLightOn { get => _nightLightOn; set => Set(ref _nightLightOn, value); }
+    public bool HasNightLight { get => _hasNightLight; set => Set(ref _hasNightLight, value); }
+    public Action<bool>? OnSetNightLight;
+    public void ApplyNightLight(bool on) { NightLightOn = on; OnSetNightLight?.Invoke(on); }
+
     public System.Windows.Input.ICommand BrightnessUp { get; private set; } = null!;
     public System.Windows.Input.ICommand BrightnessDown { get; private set; } = null!;
     public System.Windows.Input.ICommand ToggleWlan { get; private set; } = null!;
