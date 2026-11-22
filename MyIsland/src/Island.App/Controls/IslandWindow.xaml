@@ -1,0 +1,23 @@
+<Window x:Class="Island.App.Controls.IslandWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:controls="clr-namespace:Island.App.Controls"
+        Title="Island" Width="600" Height="440"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        ShowInTaskbar="False" ShowActivated="False" Topmost="True"
+        ResizeMode="NoResize">
+    <Grid x:Name="Root">
+        <!-- 自绘液态岛 + 收起态内容 -->
+        <controls:IslandCanvas x:Name="islandCanvas"
+                               MouseLeftButtonDown="OnMouseLeftDown"
+                               MouseLeftButtonUp="OnMouseLeftUp"
+                               MouseMove="OnMouseMove"
+                               MouseRightButtonDown="OnMouseRightDown"
+                               MouseWheel="OnMouseWheel"/>
+
+        <!-- 展开面板 -->
+        <controls:ExpandedPanel x:Name="expandedPanel" Opacity="0" IsHitTestVisible="False"
+                                HorizontalAlignment="Center" VerticalAlignment="Center"
+                                Width="540" Height="380" Margin="0,0,0,0"/>
+    </Grid>
+</Window>

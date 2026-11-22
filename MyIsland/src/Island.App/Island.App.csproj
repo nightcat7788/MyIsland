@@ -1,0 +1,53 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- 自产代码全部链接进单一 exe：本机 WDAC 策略逐 DLL 检查，
+         合并后只需签一个 exe 即可运行（参考 BrimDeck.Sensors 链接源文件的做法） -->
+    <SatelliteResourceLanguages>zh-Hans;en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <!-- 以源文件链接方式并入 Core 与 Native（不再 ProjectReference 出 DLL） -->
+  <ItemGroup>
+    <Compile Include="..\Island.Core\Monitoring\*.cs" Link="Merged\Core\%(Filename)%(Extension)" />
+    <Compile Include="..\Island.Core\Quota\*.cs" Link="Merged\Core\%(Filename)%(Extension)" />
+    <Compile Include="..\Island.Native\*.cs" Link="Merged\Native\%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Management" Version="10.0.2" />
+    <PackageReference Include="System.Diagnostics.PerformanceCounter" Version="8.0.0" />
+    <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.6" />
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.0" />
+  </ItemGroup>
+
+  <!-- inpoutx64.dll（提取自 LHM 0.9.4 内嵌资源）：随构建/发布复制到输出目录 -->
+  <ItemGroup>
+    <Content Include="..\..\tools\inpout\inpoutx64.dll">
+      <Link>inpoutx64.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <!-- 产品 logo：托盘图标 + 可执行文件图标 -->
+  <ItemGroup>
+    <Content Include="..\..\branding\island-logo-32.png">
+      <Link>island-logo-32.png</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\branding\island-logo.ico">
+      <Link>island-logo.ico</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <None Include="..\..\branding\island-logo.ico">
+      <Link>app.ico</Link>
+    </None>
+  </ItemGroup>
+</Project>

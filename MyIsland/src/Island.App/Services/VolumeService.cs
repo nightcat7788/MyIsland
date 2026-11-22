@@ -1,0 +1,57 @@
+using System;
+using NAudio.CoreAudioApi;
+
+namespace Island.App.Services;
+
+/// <summary>
+/// 音量监听：系统音量/静音变化（含用户按键盘/其他程序调整）时触发事件，
+/// 像手机一样在岛内弹出音量指示。参考 wisland 的 on_volume 交互。
+/// </summary>
+public sealed class VolumeService : IDisposable
+{
+    private readonly MMDeviceEnumerator _enumerator = new();
+    private MMDevice? _device;
+    private System.Threading.Timer? _timer;
+    private (float vol, bool mute)? _last;
+
+    /// <summary>(音量0..1, 是否静音)。后台线程触发。</summary>
+    public event Action<float, bool>? Changed;
+
+    public void Start()
+    {
+        try
+        {
+            _device = _enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+            _last = (_device.AudioEndpointVolume.MasterVolumeLevelScalar,
+                     _device.AudioEndpointVolume.Mute);
+        }
+        catch { /* 无音频设备 */ }
+
+        // 轮询而非事件订阅：AudioEndpointVolume 的回调在 COM 线程，轮询更稳更简单
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try
+            {
+                var d = _device;
+                if (d is null)
+                {
+                    d = _enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+                    _device = d;
+                }
+                var cur = (d.AudioEndpointVolume.MasterVolumeLevelScalar,
+                           d.AudioEndpointVolume.Mute);
+                if (_last is { } prev && cur != prev)
+                    Changed?.Invoke(cur.Item1, cur.Item2);
+                _last = cur;
+            }
+            catch { /* 设备切换瞬间忽略 */ }
+        }, null, 500, 500);
+    }
+
+    public void Dispose()
+    {
+        _timer?.Dispose();
+        _device?.Dispose();
+        _enumerator.Dispose();
+    }
+}

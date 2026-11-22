@@ -1,0 +1,53 @@
+using System.IO;
+using System.Text.Json;
+
+namespace Island.App.Services;
+
+/// <summary>全局设置，存到 %LOCALAPPDATA%\MyIsland\settings.json。原子写入避免损坏。</summary>
+public sealed class Settings
+{
+    public string Theme { get; set; } = "Dark";       // Dark / Light / Auto
+    public string Edge { get; set; } = "top";          // top/bottom/left/right
+    public double PosAlongEdge { get; set; } = 0.5;    // 0..1
+    public string ExpandMode { get; set; } = "hover";  // hover / always / never
+    public string CompactView { get; set; } = "dash";  // dash / clock / pet / combo / monitor / devices / clipboard
+    public bool AlwaysOnTop { get; set; } = true;
+    public bool HideFullscreen { get; set; } = true;
+    public string PetStyle { get; set; } = "classic";   // 小形象款式：classic / mono / cat / robot / pixel
+    public bool PetAutoCycle { get; set; } = true;      // 小形象 10s → 信息胶囊 30s 自动轮换（参考 BrimDeck 刘海轮播）
+    public bool IndicatorOnMaximize { get; set; } = true; // 前台窗口最大化时缩成指示条（BrimDeck 同款）
+    public int MonitorIntervalMs { get; set; } = 1000;
+    public int QuotaIntervalMin { get; set; } = 10;
+    public string City { get; set; } = "";             // 天气城市（空=IP 定位）
+
+    private static string Dir => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MyIsland");
+    public static string FilePath => Path.Combine(Dir, "settings.json");
+
+    public static Settings Load()
+    {
+        try
+        {
+            if (System.IO.File.Exists(FilePath))
+            {
+                var json = System.IO.File.ReadAllText(FilePath);
+                return JsonSerializer.Deserialize<Settings>(json) ?? new Settings();
+            }
+        }
+        catch { /* 损坏则用默认 */ }
+        return new Settings();
+    }
+
+    public void Save()
+    {
+        try
+        {
+            Directory.CreateDirectory(Dir);
+            string json = JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
+            string tmp = FilePath + ".tmp";
+            System.IO.File.WriteAllText(tmp, json);
+            System.IO.File.Move(tmp, FilePath, true);
+        }
+        catch { /* 写盘失败不影响运行 */ }
+    }
+}
