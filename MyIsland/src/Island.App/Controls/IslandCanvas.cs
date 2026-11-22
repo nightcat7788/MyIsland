@@ -364,18 +364,21 @@ public sealed class IslandCanvas : FrameworkElement
                     Color.FromRgb(0xF2, 0x72, 0xA8), "G", 18, 11.5) + 13;
         }
 
-        // ③ 右缘：上下行速率（两行小字）
+        // ③ 右缘：紧凑网速单行（↓3.40M ↑420K，彩色箭头 + 白粗字，BrimDeck 同款密度）
         double netBlock = 0;
         if (WantCombo("net") && snap is not null)
         {
-            var down = Text("↓" + MonitorSnapshot.FormatSpeed(snap.DownloadSpeed), 10,
-                Color.FromRgb(0x60, 0xC0, 0x78), ppd: ppd);
-            var up = Text("↑" + MonitorSnapshot.FormatSpeed(snap.UploadSpeed), 10,
-                Color.FromRgb(0xD8, 0x90, 0x78), ppd: ppd);
-            double rx = r.Right - 14;
-            dc.DrawText(up, new Point(rx - up.Width, cy - up.Height - 1));
-            dc.DrawText(down, new Point(rx - down.Width, cy + 1));
-            netBlock = Math.Max(up.Width, down.Width) + 14;
+            var di = Text("↓", 11, Color.FromRgb(0x60, 0xC0, 0x78), true, ppd);
+            var dv = Text(MonitorSnapshot.CompactSpeed(snap.DownloadSpeed), 11, pal.Text, true, ppd);
+            var ui = Text("↑", 11, Color.FromRgb(0xD8, 0x90, 0x78), true, ppd);
+            var uv = Text(MonitorSnapshot.CompactSpeed(snap.UploadSpeed), 11, pal.Text, true, ppd);
+            double bl = Math.Round(cy + 11 * 0.38);
+            double nx = r.Right - 14 - (di.Width + 3 + dv.WidthIncludingTrailingWhitespace + 10 + ui.Width + 3 + uv.WidthIncludingTrailingWhitespace);
+            Baseline(dc, di, nx, bl); nx += di.Width + 3;
+            Baseline(dc, dv, nx, bl); nx += dv.WidthIncludingTrailingWhitespace + 10;
+            Baseline(dc, ui, nx, bl); nx += ui.Width + 3;
+            Baseline(dc, uv, nx, bl); nx += uv.WidthIncludingTrailingWhitespace;
+            netBlock = (di.Width + 3 + dv.WidthIncludingTrailingWhitespace + 10 + ui.Width + 3 + uv.WidthIncludingTrailingWhitespace) + 14;
         }
 
         // 内容实测宽 = 左侧流（时间+表盘）+ 右侧网速块（无则只留右 padding）
@@ -481,8 +484,8 @@ public sealed class IslandCanvas : FrameworkElement
         }
         if (Want("net"))
         {
-            Item("↓", Color.FromRgb(0x60, 0xA8, 0xF0), MonitorSnapshot.FormatSpeed(snap.DownloadSpeed).Replace(" ", ""), "9.9MB/s");
-            Item("↑", Color.FromRgb(0xD8, 0x90, 0x30), MonitorSnapshot.FormatSpeed(snap.UploadSpeed).Replace(" ", ""), "9.9MB/s");
+            Item("↓", Color.FromRgb(0x60, 0xC0, 0x78), MonitorSnapshot.CompactSpeed(snap.DownloadSpeed), "9.99M");
+            Item("↑", Color.FromRgb(0xD8, 0x90, 0x78), MonitorSnapshot.CompactSpeed(snap.UploadSpeed), "9.99M");
         }
         // 内容实测宽 = 已排内容（含末尾组距 26，扣掉）+ 右留白 14
         return x - r.X - 26 + 14;
@@ -630,15 +633,22 @@ public sealed class IslandCanvas : FrameworkElement
 
         double netBlock = 0;
         double rx = r.Right - 14;
-        // 右缘：实时网速（上/下两行小字）
+        // 右缘：紧凑网速单行（↓3.40M ↑420K，彩色箭头 + 主题字）
         if (snap is not null)
         {
-            var down = Text("↓" + MonitorSnapshot.FormatSpeed(snap.DownloadSpeed), 10, pal.TextDim, ppd: ppd);
-            var up = Text("↑" + MonitorSnapshot.FormatSpeed(snap.UploadSpeed), 10, pal.TextDim, ppd: ppd);
-            dc.DrawText(up, new Point(rx - up.Width, cy - up.Height - 1));
-            dc.DrawText(down, new Point(rx - down.Width, cy + 1));
-            netBlock = Math.Max(up.Width, down.Width) + 14;
-            rx -= Math.Max(up.Width, down.Width) + 12;
+            var di = Text("↓", 10, Color.FromRgb(0x60, 0xC0, 0x78), true, ppd);
+            var dv = Text(MonitorSnapshot.CompactSpeed(snap.DownloadSpeed), 10, pal.Text, true, ppd);
+            var ui = Text("↑", 10, Color.FromRgb(0xD8, 0x90, 0x78), true, ppd);
+            var uv = Text(MonitorSnapshot.CompactSpeed(snap.UploadSpeed), 10, pal.Text, true, ppd);
+            double bl = Math.Round(cy + 10 * 0.38);
+            double nw = di.Width + 3 + dv.WidthIncludingTrailingWhitespace + 9 + ui.Width + 3 + uv.WidthIncludingTrailingWhitespace;
+            double nx = rx - nw;
+            Baseline(dc, di, nx, bl); nx += di.Width + 3;
+            Baseline(dc, dv, nx, bl); nx += dv.WidthIncludingTrailingWhitespace + 9;
+            Baseline(dc, ui, nx, bl); nx += ui.Width + 3;
+            Baseline(dc, uv, nx, bl);
+            netBlock = nw + 14;
+            rx -= nw + 12;
         }
         // 天气（BrimDeck compact-clock：时钟旁给环境信息）；无数据时不占位
         double weatherBlock = 0;
