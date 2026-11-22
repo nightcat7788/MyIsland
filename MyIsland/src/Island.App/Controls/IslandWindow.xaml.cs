@@ -518,7 +518,16 @@ public partial class IslandWindow : Window
                 Services.ControlService.SetBluetooth(!Services.ControlService.BluetoothEnabled);
                 pd.UpdateControls();
             }),
-            new RelayCommand(_ => Services.ControlService.OpenBluetoothSettings()));
+            new RelayCommand(_ => Services.ControlService.OpenBluetoothSettings()),
+            new RelayCommand(_ => Services.ControlService.Lock()),
+            new RelayCommand(_ => Services.ControlService.Sleep()),
+            new RelayCommand(p => Services.ControlService.OpenSettings(p as string ?? "")));
+        // 音量 / 深色模式回调与初值
+        pd.OnSetVolume = v => _volume.SetVolume((float)v);
+        pd.OnToggleMute = () => _volume.SetMute(!_volume.IsMutedNow);
+        pd.OnSetLightTheme = light => Services.ControlService.SetSystemLightTheme(light);
+        if (_volume.Current is { } vc) { pd.VolumeValue = vc.vol; pd.IsMuted = vc.mute; }
+        pd.IsLightTheme = Services.ControlService.IsSystemLightTheme();
         pd.UpdateControls();
         return pd;
     }

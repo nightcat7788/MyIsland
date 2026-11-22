@@ -14,6 +14,34 @@ public sealed class VolumeService : IDisposable
     private System.Threading.Timer? _timer;
     private (float vol, bool mute)? _last;
 
+    // ---------- 音量（NAudio MMDevice：读/写主音量与静音） ----------
+    /// <summary>设置主音量 0..1。</summary>
+    public void SetVolume(float v)
+    {
+        try
+        {
+            if (_device is not null)
+                _device.AudioEndpointVolume.MasterVolumeLevelScalar = Math.Clamp(v, 0, 1);
+        }
+        catch { }
+    }
+
+    /// <summary>设置静音。</summary>
+    public void SetMute(bool mute)
+    {
+        try
+        {
+            if (_device is not null) _device.AudioEndpointVolume.Mute = mute;
+        }
+        catch { }
+    }
+
+    /// <summary>当前（音量0..1, 静音）读数（无设备为 null）。</summary>
+    public (float vol, bool mute)? Current => _last;
+
+    /// <summary>当前是否静音。</summary>
+    public bool IsMutedNow => _last?.mute ?? false;
+
     /// <summary>(音量0..1, 是否静音)。后台线程触发。</summary>
     public event Action<float, bool>? Changed;
 

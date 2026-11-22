@@ -158,4 +158,66 @@ public static class ControlService
         SendMessageW(GetDesktopWindow(), WM_APPCOMMAND, IntPtr.Zero, (IntPtr)(APPCOMMAND_VOLUME_MUTE << 16));
     [DllImport("user32.dll")]
     private static extern IntPtr GetDesktopWindow();
+
+    // ---------- 锁屏 / 睡眠 ----------
+    [DllImport("user32.dll")] private static extern bool LockWorkStation();
+    [DllImport("powrprof.dll", SetLastError = true)]
+    private static extern bool SetSuspendState(bool hibernate, bool forceCritical, bool disableWakeEvent);
+
+    /// <summary>立即锁屏。</summary>
+    public static void Lock()
+    {
+        try { LockWorkStation(); } catch { }
+    }
+
+    /// <summary>立即睡眠。</summary>
+    public static void Sleep()
+    {
+        try { SetSuspendState(false, true, false); } catch { }
+    }
+
+    // ---------- 系统深色模式（HKCU 个人化，免管理员） ----------
+    private const string PersonalizeKey = @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
+
+    /// <summary>系统应用是否为浅色模式。</summary>
+    public static bool IsSystemLightTheme()
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(PersonalizeKey, false);
+            return key?.GetValue("AppsUseLightTheme") is int v && v == 1;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>设置系统应用深/浅色模式（即时生效，无需重启）。</summary>
+    public static void SetSystemLightTheme(bool light)
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(PersonalizeKey, true);
+            key?.SetValue("AppsUseLightTheme", light ? 1 : 0, Microsoft.Win32.RegistryValueKind.DWord);
+        }
+        catch { }
+    }
+
+    // ---------- 系统设置快捷链接 ----------
+    /// <summary>打开指定系统设置页（ms-settings: 协议）。</summary>
+    public static void OpenSettings(string page)
+    {
+        try
+        {
+            string uri = page switch
+            {
+                "network" => "ms-settings:network",
+                "sound" => "ms-settings:sound",
+                "display" => "ms-settings:display",
+                "power" => "ms-settings:powersleep",
+                _ => "ms-settings:",
+            };
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            { FileName = uri, UseShellExecute = true });
+        }
+        catch { }
+    }
 }

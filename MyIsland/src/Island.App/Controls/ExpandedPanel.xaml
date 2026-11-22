@@ -18,6 +18,7 @@
         <SolidColorBrush x:Key="DataPink" Color="#F272A8"/>
         <BooleanToVisibilityConverter x:Key="BoolVis"/>
         <controls:InverseBoolToVis x:Key="InvVis"/>
+        <controls:MuteTextConverter x:Key="MuteText"/>
 
         <!-- BrimDeck 式扁平按钮（页签/关闭/媒体控制共用）：透明底、圆角、悬停淡亮 -->
         <Style x:Key="FlatBtn" TargetType="Button">
@@ -227,7 +228,76 @@
                                            HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0"/>
                             </DockPanel>
                         </Border>
-                        <TextBlock Text="音量：滚轮悬停岛体调节（收起态浮条）；静音走系统托盘" FontSize="10"
+
+                        <!-- 音量（滑杆 + 静音） -->
+                        <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Left" Text="音量" FontSize="12"
+                                           Foreground="{DynamicResource Fg}" VerticalAlignment="Center" Width="60"/>
+                                <Button DockPanel.Dock="Right" Width="66" Height="26" Style="{StaticResource FlatBtn}"
+                                        Foreground="{DynamicResource Fg}" FontSize="11"
+                                        Content="{Binding IsMuted, Converter={StaticResource MuteText}}"
+                                        Click="OnMuteToggle"/>
+                                <Slider Minimum="0" Maximum="1" TickFrequency="0.05"
+                                        Value="{Binding VolumeValue, Mode=OneWay}"
+                                        ValueChanged="OnVolumeSlider"
+                                        VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- 系统浅色模式（深色开关） -->
+                        <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
+                            <DockPanel>
+                                <StackPanel DockPanel.Dock="Left">
+                                    <TextBlock Text="系统浅色模式" FontSize="12" Foreground="{DynamicResource Fg}"/>
+                                    <TextBlock Text="切换 Windows 应用深/浅色（即时生效）" FontSize="10"
+                                               Foreground="{DynamicResource FgDim}"/>
+                                </StackPanel>
+                                <CheckBox DockPanel.Dock="Right" IsChecked="{Binding IsLightTheme}"
+                                          Checked="OnLightThemeToggle" Unchecked="OnLightThemeToggle"
+                                          VerticalAlignment="Center" HorizontalAlignment="Right"/>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- 锁屏 / 睡眠 -->
+                        <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Left" Text="电源" FontSize="12"
+                                           Foreground="{DynamicResource Fg}" VerticalAlignment="Center" Width="60"/>
+                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                    <Button Content="锁屏" Width="56" Height="26" Style="{StaticResource FlatBtn}"
+                                            Foreground="{DynamicResource Fg}" FontSize="11"
+                                            Command="{Binding LockCommand}" Margin="0,0,6,0"/>
+                                    <Button Content="睡眠" Width="56" Height="26" Style="{StaticResource FlatBtn}"
+                                            Foreground="{DynamicResource Fg}" FontSize="11"
+                                            Command="{Binding SleepCommand}"/>
+                                </StackPanel>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- 系统设置快捷链接 -->
+                        <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Left" Text="系统设置" FontSize="12"
+                                           Foreground="{DynamicResource Fg}" VerticalAlignment="Center" Width="60"/>
+                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                    <Button Content="网络" Width="50" Height="26" Style="{StaticResource FlatBtn}"
+                                            Foreground="{DynamicResource Fg}" FontSize="11"
+                                            Command="{Binding OpenSettingsCommand}" CommandParameter="network" Margin="0,0,4,0"/>
+                                    <Button Content="声音" Width="50" Height="26" Style="{StaticResource FlatBtn}"
+                                            Foreground="{DynamicResource Fg}" FontSize="11"
+                                            Command="{Binding OpenSettingsCommand}" CommandParameter="sound" Margin="0,0,4,0"/>
+                                    <Button Content="显示" Width="50" Height="26" Style="{StaticResource FlatBtn}"
+                                            Foreground="{DynamicResource Fg}" FontSize="11"
+                                            Command="{Binding OpenSettingsCommand}" CommandParameter="display" Margin="0,0,4,0"/>
+                                    <Button Content="电源" Width="50" Height="26" Style="{StaticResource FlatBtn}"
+                                            Foreground="{DynamicResource Fg}" FontSize="11"
+                                            Command="{Binding OpenSettingsCommand}" CommandParameter="power"/>
+                                </StackPanel>
+                            </DockPanel>
+                        </Border>
+
+                        <TextBlock Text="滚轮悬停岛体也可调节音量（收起态浮条）" FontSize="10"
                                    Foreground="{DynamicResource FgDim}" HorizontalAlignment="Center" Margin="0,4,0,0"/>
                     </StackPanel>
                 </ScrollViewer>

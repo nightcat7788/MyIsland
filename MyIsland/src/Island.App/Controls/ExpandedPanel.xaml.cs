@@ -8,6 +8,15 @@ using System.Windows.Threading;
 
 namespace Island.App.Controls;
 
+/// <summary>静音按钮文字（true→取消静音 / false→静音）。</summary>
+public sealed class MuteTextConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        => value is true ? "取消静音" : "静音";
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
 /// <summary>true→Collapsed / false→Visible（"无数据"提示用）。</summary>
 public sealed class InverseBoolToVis : IValueConverter
 {
@@ -19,7 +28,7 @@ public sealed class InverseBoolToVis : IValueConverter
 
 /// <summary>
 /// 展开面板（BrimDeck 式页面结构）：顶栏分段胶囊切页 + 中央时间 + 右侧收起，
-/// 页面 = 监控 / AI 用量 / 剪贴板·文件 / 设备电量 / 控制，一次只显示一页。
+/// 页面 = 监控 / 剪贴板·文件 / 设备电量 / 控制，一次只显示一页。
 /// </summary>
 public partial class ExpandedPanel : UserControl
 {
@@ -49,6 +58,24 @@ public partial class ExpandedPanel : UserControl
     private void TickClock() => clockText.Text = DateTime.Now.ToString("HH:mm");
 
     private void OnClose(object sender, RoutedEventArgs e) => CloseRequested?.Invoke();
+
+    // 音量滑杆 / 静音 / 系统浅色模式：走 PanelData 回调（面板不直接持有服务引用）
+    private void OnVolumeSlider(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (DataContext is PanelData pd && Math.Abs(e.NewValue - pd.VolumeValue) > 0.001)
+            pd.ApplyVolume(e.NewValue);
+    }
+
+    private void OnMuteToggle(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is PanelData pd) pd.ApplyToggleMute();
+    }
+
+    private void OnLightThemeToggle(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is PanelData pd && sender is CheckBox cb)
+            pd.ApplyLightTheme(cb.IsChecked == true);
+    }
 
     private void OnPage(object sender, RoutedEventArgs e)
     {

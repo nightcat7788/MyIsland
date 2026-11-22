@@ -103,20 +103,41 @@ public sealed class PanelData : INotifyPropertyChanged
     public string BtState { get => _bt; set => Set(ref _bt, value); }
     public double BrightnessValue { get; set; }
 
+    // 音量 / 深色模式（宿主回调，面板不直接持有服务引用）
+    private double _volumeValue;
+    public double VolumeValue { get => _volumeValue; set => Set(ref _volumeValue, value); }
+    private bool _isMuted;
+    public bool IsMuted { get => _isMuted; set => Set(ref _isMuted, value); }
+    public Action<double>? OnSetVolume;
+    public Action? OnToggleMute;
+    public void ApplyVolume(double v) { VolumeValue = v; OnSetVolume?.Invoke(v); }
+    public void ApplyToggleMute() { IsMuted = !IsMuted; OnToggleMute?.Invoke(); }
+
+    private bool _isLightTheme;
+    public bool IsLightTheme { get => _isLightTheme; set => Set(ref _isLightTheme, value); }
+    public Action<bool>? OnSetLightTheme;
+    public void ApplyLightTheme(bool light) { IsLightTheme = light; OnSetLightTheme?.Invoke(light); }
+
     public System.Windows.Input.ICommand BrightnessUp { get; private set; } = null!;
     public System.Windows.Input.ICommand BrightnessDown { get; private set; } = null!;
     public System.Windows.Input.ICommand ToggleWlan { get; private set; } = null!;
     public System.Windows.Input.ICommand ToggleBt { get; private set; } = null!;
     public System.Windows.Input.ICommand OpenBtSettings { get; private set; } = null!;
+    public System.Windows.Input.ICommand LockCommand { get; private set; } = null!;
+    public System.Windows.Input.ICommand SleepCommand { get; private set; } = null!;
+    public System.Windows.Input.ICommand OpenSettingsCommand { get; private set; } = null!;
 
     /// <summary>接控制命令（App 侧注入，避免 PanelData 直接依赖 ControlService 不可测）。</summary>
     public void BindControls(
         System.Windows.Input.ICommand brightUp, System.Windows.Input.ICommand brightDown,
         System.Windows.Input.ICommand wlan, System.Windows.Input.ICommand bt,
-        System.Windows.Input.ICommand btSettings)
+        System.Windows.Input.ICommand btSettings,
+        System.Windows.Input.ICommand lockCmd, System.Windows.Input.ICommand sleepCmd,
+        System.Windows.Input.ICommand openSettings)
     {
         BrightnessUp = brightUp; BrightnessDown = brightDown;
         ToggleWlan = wlan; ToggleBt = bt; OpenBtSettings = btSettings;
+        LockCommand = lockCmd; SleepCommand = sleepCmd; OpenSettingsCommand = openSettings;
     }
 
     public void UpdateControls()
