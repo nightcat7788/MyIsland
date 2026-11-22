@@ -69,6 +69,10 @@ public sealed class IslandCanvas : FrameworkElement
     // AI 配额（收起态 combo 信息胶囊的配额环）：宿主每次刷新配额时注入
     public QuotaSnapshot? Quota { get; set; }
 
+    // dash 显示项过滤（null = 全部显示；宿主由 Settings.DashItems 注入）
+    public HashSet<string>? DashItems { get; set; }
+    private bool Want(string key) => DashItems is null || DashItems.Contains(key);
+
     private readonly PetFace _pet = new();
     public PetFace Pet => _pet;
 
@@ -392,7 +396,7 @@ public sealed class IslandCanvas : FrameworkElement
 
         // ① 核心柱（等距 6 组之首，亮蓝；轨道+填充）
         var cores = snap.CoreUsages;
-        if (cores is not null && cores.Length > 0)
+        if (Want("cores") && cores is not null && cores.Length > 0)
         {
             int n = Math.Min(8, cores.Length);
             double bw = 4, gap = 2.6, maxH = 26;
@@ -411,21 +415,26 @@ public sealed class IslandCanvas : FrameworkElement
 
         // ② CPU 温度 ③ GPU 温度 ④ 内存 ⑤ GPU% ⑥ 硬盘 ⑦ 网速↓ ⑧ 网速↑
         double? ct = thermal?.CpuTemp, gt = thermal?.GpuTemp;
-        Item("CPU", TempColor(ct), ct is { } c1 ? $"{Math.Round(c1)}°" : "--", "125°");
-        Item("GPU", TempColor(gt), gt is { } g1 ? $"{Math.Round(g1)}°" : "--", "125°");
-        Item("MEM", Color.FromRgb(0xA8, 0xF0, 0xF0), $"{snap.MemoryUsagePercent:F0}%", "100%",
-            LevelColor(snap.MemoryUsagePercent, Colors.White, pal));
-        if (snap.GpuUsage > 0)
+        if (Want("cputemp")) Item("CPU", TempColor(ct), ct is { } c1 ? $"{Math.Round(c1)}°" : "--", "125°");
+        if (Want("gputemp")) Item("GPU", TempColor(gt), gt is { } g1 ? $"{Math.Round(g1)}°" : "--", "125°");
+        if (Want("mem"))
+            Item("MEM", Color.FromRgb(0xA8, 0xF0, 0xF0), $"{snap.MemoryUsagePercent:F0}%", "100%",
+                LevelColor(snap.MemoryUsagePercent, Colors.White, pal));
+        if (Want("gpu") && snap.GpuUsage > 0)
             Item("GPU%", Color.FromRgb(0xF0, 0xF0, 0xA8), $"{snap.GpuUsage:F0}%", "100%",
                 LevelColor(snap.GpuUsage, Colors.White, pal));
-        Item("盘", Color.FromRgb(0x8F, 0xA8, 0xF0), $"{snap.DiskUsagePercent:F0}%", "100%",
-            LevelColor(snap.DiskUsagePercent, Colors.White, pal));
+        if (Want("disk"))
+            Item("盘", Color.FromRgb(0x8F, 0xA8, 0xF0), $"{snap.DiskUsagePercent:F0}%", "100%",
+                LevelColor(snap.DiskUsagePercent, Colors.White, pal));
         // SSD 温度（读不到显示 "--"）
-        double? st = thermal?.SsdTemp;
-        Item("SSD", TempColor(st), st is { } s1 ? $"{Math.Round(s1)}°" : "--", "125°");
+        if (Want("ssd"))
+        {
+            double? st = thermal?.SsdTemp;
+            Item("SSD", TempColor(st), st is { } s1 ? $"{Math.Round(s1)}°" : "--", "125°");
+        }
         // 本机电池（DeviceService 已在采；有电池才显示）
         var bat = DeviceService.Snapshot.FirstOrDefault(d => d.Kind == "battery");
-        if (bat is not null)
+        if (Want("battery") && bat is not null)
         {
             var bc = bat.Charging ? Color.FromRgb(0x60, 0xC0, 0x78)
                    : bat.Percent <= 20 ? pal.Up
@@ -434,8 +443,11 @@ public sealed class IslandCanvas : FrameworkElement
             Item(bat.Charging ? "电+" : "电", bc, $"{bat.Percent}%", "100%",
                 bat.Percent <= 20 ? pal.Up : bat.Percent <= 40 ? pal.Warning : Colors.White);
         }
-        Item("↓", Color.FromRgb(0x60, 0xA8, 0xF0), MonitorSnapshot.FormatSpeed(snap.DownloadSpeed).Replace(" ", ""), "9.9MB/s");
-        Item("↑", Color.FromRgb(0xD8, 0x90, 0x30), MonitorSnapshot.FormatSpeed(snap.UploadSpeed).Replace(" ", ""), "9.9MB/s");
+        if (Want("net"))
+        {
+            Item("↓", Color.FromRgb(0x60, 0xA8, 0xF0), MonitorSnapshot.FormatSpeed(snap.DownloadSpeed).Replace(" ", ""), "9.9MB/s");
+            Item("↑", Color.FromRgb(0xD8, 0x90, 0x30), MonitorSnapshot.FormatSpeed(snap.UploadSpeed).Replace(" ", ""), "9.9MB/s");
+        }
     }
 
     /// <summary>设备电量行（GitHub Dark 底，与 dash 统一）：图标 + 电量环/数字。</summary>

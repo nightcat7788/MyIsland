@@ -174,6 +174,7 @@ public partial class IslandWindow : Window
         _quotaTimer.Start();
         islandCanvas.Pet.Style = _settings.PetStyle;
         expandedPanel.Monitor.Palette = _palette;   // 监控页主题（ApplyTheme 在 Loaded 前跳过）
+        ApplyDashItems();                            // dash 显示项注入
         islandCanvas.CompactView = _settings.CompactView;
         StartPetCycle();   // 必须在恢复视图之后：仅 pet/combo 视图才会启动轮换
         ApplyExpandMode();
@@ -795,6 +796,23 @@ public partial class IslandWindow : Window
         _weather.Settings = _settings;
         _weather.Invalidate();
         islandCanvas.Weather = _weather.Get();
+    }
+
+    /// <summary>把 Settings.DashItems 注入自绘控件（空 = 全部显示）。</summary>
+    private void ApplyDashItems()
+    {
+        islandCanvas.DashItems = string.IsNullOrWhiteSpace(_settings.DashItems)
+            ? null
+            : new HashSet<string>(_settings.DashItems.Split(',', StringSplitOptions.RemoveEmptyEntries));
+        islandCanvas.InvalidateVisual();
+    }
+
+    /// <summary>打开 dash 显示项设置（勾选 + 实时预览）。</summary>
+    public void ShowDashSettings()
+    {
+        var win = new DashSettingsWindow(_settings, _palette,
+            () => (_snapshot, _thermal.Current), ApplyDashItems);
+        win.ShowDialog();
     }
 
     /// <summary>切收起视图（菜单入口），带挤压回弹反馈。</summary>

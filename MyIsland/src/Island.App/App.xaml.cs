@@ -234,6 +234,7 @@ public partial class App : Application
         customItem.IsChecked = !string.IsNullOrEmpty(_settings.City) && !cities.Contains(_settings.City);
         city.Items.Add(customItem);
         settings.Items.Add(city);
+        settings.Items.Add(MenuItem("仪表盘显示项…", (_, _) => _island?.ShowDashSettings()));
         menu.Items.Add(settings);
 
         // 工具：剪贴板/文件中转

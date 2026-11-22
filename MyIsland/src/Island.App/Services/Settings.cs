@@ -16,6 +16,8 @@ public sealed class Settings
     public string PetStyle { get; set; } = "classic";   // 小形象款式：classic / mono / cat / robot / pixel
     public bool PetAutoCycle { get; set; } = true;      // 小形象 10s → 信息胶囊 30s 自动轮换（参考 BrimDeck 刘海轮播）
     public bool IndicatorOnMaximize { get; set; } = true; // 前台窗口最大化时缩成指示条（BrimDeck 同款）
+    /// <summary>dash 视图显示项（逗号分隔：cores,cputemp,gputemp,mem,gpu,disk,ssd,battery,net；空=全部）。</summary>
+    public string DashItems { get; set; } = "";
     public int MonitorIntervalMs { get; set; } = 1000;
     public int QuotaIntervalMin { get; set; } = 10;
     public string City { get; set; } = "";             // 天气城市（空=IP 定位）
