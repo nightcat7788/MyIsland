@@ -174,7 +174,7 @@ public partial class IslandWindow : Window
         _quotaTimer.Start();
         islandCanvas.Pet.Style = _settings.PetStyle;
         expandedPanel.Monitor.Palette = _palette;   // 监控页主题（ApplyTheme 在 Loaded 前跳过）
-        ApplyDashItems();                            // dash 显示项注入
+        ApplyItemFilters();                          // dash/combo/监控页 显示项注入
         islandCanvas.CompactView = _settings.CompactView;
         StartPetCycle();   // 必须在恢复视图之后：仅 pet/combo 视图才会启动轮换
         ApplyExpandMode();
@@ -801,17 +801,96 @@ public partial class IslandWindow : Window
     /// <summary>把 Settings.DashItems 注入自绘控件（空 = 全部显示）。</summary>
     private void ApplyDashItems()
     {
-        islandCanvas.DashItems = string.IsNullOrWhiteSpace(_settings.DashItems)
-            ? null
-            : new HashSet<string>(_settings.DashItems.Split(',', StringSplitOptions.RemoveEmptyEntries));
+        islandCanvas.DashItems = ParseItems(_settings.DashItems);
         islandCanvas.InvalidateVisual();
+    }
+
+    private static HashSet<string>? ParseItems(string? items)
+        => string.IsNullOrWhiteSpace(items) ? null
+            : new HashSet<string>(items.Split(',', StringSplitOptions.RemoveEmptyEntries));
+
+    /// <summary>三处显示项过滤统一注入（dash / combo / 监控页）。</summary>
+    private void ApplyItemFilters()
+    {
+        ApplyDashItems();
+        islandCanvas.ComboItems = ParseItems(_settings.ComboItems);
+        expandedPanel.Monitor.Items = ParseItems(_settings.MonitorItems);
+        islandCanvas.InvalidateVisual();
+        expandedPanel.Monitor.InvalidateVisual();
     }
 
     /// <summary>打开 dash 显示项设置（勾选 + 实时预览）。</summary>
     public void ShowDashSettings()
     {
-        var win = new DashSettingsWindow(_settings, _palette,
-            () => (_snapshot, _thermal.Current), ApplyDashItems);
+        var preview = new IslandCanvas
+        {
+            CompactView = "dash", Palette = _palette, IsHitTestVisible = false,
+            Width = 660, Height = 69,
+        };
+        preview.LayoutTransform = new ScaleTransform(0.78, 0.78);
+        OpenModuleSettings(
+            "仪表盘显示项",
+            new ModuleSettingsWindow.Module[]
+            {
+                new("cores", "核心柱"), new("cputemp", "CPU 温度"), new("gputemp", "GPU 温度"),
+                new("mem", "内存"), new("gpu", "GPU 使用率"), new("disk", "硬盘活动"),
+                new("ssd", "SSD 温度"), new("battery", "电池"), new("net", "网速 ↓↑"),
+            },
+            preview,
+            () => _settings.DashItems,
+            v => { _settings.DashItems = v; _settings.Save(); },
+            h => preview.DashItems = h);
+    }
+
+    /// <summary>打开 combo 信息胶囊显示项设置。</summary>
+    public void ShowComboSettings()
+    {
+        var preview = new IslandCanvas
+        {
+            CompactView = "combo", Palette = _palette, IsHitTestVisible = false,
+            Width = 440, Height = 44,
+        };
+        preview.Quota = islandCanvas.Quota;
+        OpenModuleSettings(
+            "信息胶囊显示项",
+            new ModuleSettingsWindow.Module[]
+            {
+                new("rings", "配额环"), new("clock", "时间"),
+                new("dials", "读数表盘"), new("net", "网速"),
+            },
+            preview,
+            () => _settings.ComboItems,
+            v => { _settings.ComboItems = v; _settings.Save(); },
+            h => preview.ComboItems = h);
+    }
+
+    /// <summary>打开监控页显示项设置。</summary>
+    public void ShowMonitorSettings()
+    {
+        var preview = new MonitorPage { Palette = _palette, Width = 500, Height = 320 };
+        preview.LayoutTransform = new ScaleTransform(0.9, 0.9);
+        OpenModuleSettings(
+            "监控页显示项",
+            new ModuleSettingsWindow.Module[]
+            {
+                new("cpu", "CPU 行"), new("cores", "核心柱"), new("mem", "内存行"),
+                new("gpu", "GPU 行"), new("disk", "硬盘行"), new("net", "网速行"),
+                new("power", "功耗/主板行"), new("topproc", "进程榜"),
+            },
+            preview,
+            () => _settings.MonitorItems,
+            v => { _settings.MonitorItems = v; _settings.Save(); },
+            h => preview.Items = h);
+    }
+
+    private void OpenModuleSettings(
+        string title, ModuleSettingsWindow.Module[] modules, FrameworkElement preview,
+        Func<string?> getItems, Action<string> saveItems, Action<HashSet<string>?> applyFilter)
+    {
+        var win = new ModuleSettingsWindow(
+            title, modules, _palette, preview,
+            () => (_snapshot, _thermal.Current),
+            getItems, saveItems, applyFilter, ApplyItemFilters);
         win.ShowDialog();
     }
 

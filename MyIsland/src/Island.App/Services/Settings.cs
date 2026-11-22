@@ -18,6 +18,10 @@ public sealed class Settings
     public bool IndicatorOnMaximize { get; set; } = true; // 前台窗口最大化时缩成指示条（BrimDeck 同款）
     /// <summary>dash 视图显示项（逗号分隔：cores,cputemp,gputemp,mem,gpu,disk,ssd,battery,net；空=全部）。</summary>
     public string DashItems { get; set; } = "";
+    /// <summary>combo 信息胶囊显示项（rings,dials,clock,net；空=全部）。</summary>
+    public string ComboItems { get; set; } = "";
+    /// <summary>监控页显示项（cpu,cores,mem,gpu,disk,net,power,topproc；空=全部）。</summary>
+    public string MonitorItems { get; set; } = "";
     public int MonitorIntervalMs { get; set; } = 1000;
     public int QuotaIntervalMin { get; set; } = 10;
     public string City { get; set; } = "";             // 天气城市（空=IP 定位）

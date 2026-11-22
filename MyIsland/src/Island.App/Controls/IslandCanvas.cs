@@ -73,6 +73,10 @@ public sealed class IslandCanvas : FrameworkElement
     public HashSet<string>? DashItems { get; set; }
     private bool Want(string key) => DashItems is null || DashItems.Contains(key);
 
+    // combo 信息胶囊显示项过滤（rings/dials/clock/net）
+    public HashSet<string>? ComboItems { get; set; }
+    private bool WantCombo(string key) => ComboItems is null || ComboItems.Contains(key);
+
     private readonly PetFace _pet = new();
     public PetFace Pet => _pet;
 
@@ -289,7 +293,7 @@ public sealed class IslandCanvas : FrameworkElement
         double x = r.X + 14;
 
         // ① 配额环（满环 + 首字母；未连接/无数据的工具不占位）
-        if (Quota is { } q)
+        if (WantCombo("rings") && Quota is { } q)
         {
             double rx0 = x;
             foreach (var p in q.Providers)
@@ -308,12 +312,15 @@ public sealed class IslandCanvas : FrameworkElement
         }
 
         // ② 时间（按样本 "00:00" 预留宽度，分针跳变不推挤右侧读数）
-        var clock = Text(DateTime.Now.ToString("HH:mm"), 15, pal.Text, true, ppd);
-        Baseline(dc, clock, x, Math.Round(cy + 15 * 0.36));
-        x += Math.Ceiling(Text("00:00", 15, pal.Text, true, ppd).WidthIncludingTrailingWhitespace) + 16;
+        if (WantCombo("clock"))
+        {
+            var clock = Text(DateTime.Now.ToString("HH:mm"), 15, pal.Text, true, ppd);
+            Baseline(dc, clock, x, Math.Round(cy + 15 * 0.36));
+            x += Math.Ceiling(Text("00:00", 15, pal.Text, true, ppd).WidthIncludingTrailingWhitespace) + 16;
+        }
 
         // ③ 系统读数表盘（开口环 + 字母，与配额满环区分）
-        if (snap is not null)
+        if (WantCombo("dials") && snap is not null)
         {
             x += DrawDialGauge(dc, pal, x, cy, ppd, snap.CpuUsage,
                 Color.FromRgb(0x2E, 0x9B, 0xFF), "C", 18, 11.5) + 13;
@@ -322,8 +329,11 @@ public sealed class IslandCanvas : FrameworkElement
             if (snap.GpuUsage > 0)
                 x += DrawDialGauge(dc, pal, x, cy, ppd, snap.GpuUsage,
                     Color.FromRgb(0xF2, 0x72, 0xA8), "G", 18, 11.5) + 13;
+        }
 
-            // ④ 右缘：上下行速率（两行小字）
+        // ④ 右缘：上下行速率（两行小字）
+        if (WantCombo("net") && snap is not null)
+        {
             var down = Text("↓" + MonitorSnapshot.FormatSpeed(snap.DownloadSpeed), 10,
                 Color.FromRgb(0x60, 0xC0, 0x78), ppd: ppd);
             var up = Text("↑" + MonitorSnapshot.FormatSpeed(snap.UploadSpeed), 10,

@@ -21,6 +21,10 @@ public sealed class MonitorPage : FrameworkElement
     public double[]? NetHistory { get; set; }
     public Palette? Palette { get; set; }
 
+    // 显示项过滤（null = 全部；宿主由 Settings.MonitorItems 注入）
+    public HashSet<string>? Items { get; set; }
+    private bool Want(string key) => Items is null || Items.Contains(key);
+
     private double Ppd => VisualTreeHelper.GetDpi(this).PixelsPerDip;
 
     private static readonly Color CpuC = Color.FromRgb(0x2E, 0x9B, 0xFF);
@@ -50,36 +54,40 @@ public sealed class MonitorPage : FrameworkElement
         double ppd = Ppd;
         // 左右双栏（BrimDeck 监控页式）：左 62% 读数区，右进程榜
         double x0 = 6, lw = W * 0.62, w = lw - 12;
-        double y = 2;
+        double y = 2, x;
         const double dial = 26;
 
         // ---------- CPU 行：表盘 + 大数字 + 频率/温度 + 右侧走势曲线 ----------
-        RenderKit.Dial(dc, new Point(x0 + dial / 2, y + dial / 2), dial, 2.6,
-            s is null ? null : s.CpuUsage / 100, pal.Track, CpuC, pal.Text, "C", ppd);
-        double x = x0 + dial + 10;
-        double baseline = Math.Round(y + dial / 2 + 21 * 0.36);
-        var num = RenderKit.Text(s is null ? "—" : $"{Math.Round(s.CpuUsage)}", 21, pal.Text, true, ppd);
-        RenderKit.Baseline(dc, num, x, baseline); x += num.WidthIncludingTrailingWhitespace + 2;
-        var pctU = RenderKit.Text("%", 11, pal.TextDim, ppd: ppd);
-        RenderKit.Baseline(dc, pctU, x, baseline); x += pctU.WidthIncludingTrailingWhitespace + 10;
-        if (s is not null)
+        if (Want("cpu"))
         {
-            if (s.CpuFrequencyGHz > 0.1)
+            RenderKit.Dial(dc, new Point(x0 + dial / 2, y + dial / 2), dial, 2.6,
+                s is null ? null : s.CpuUsage / 100, pal.Track, CpuC, pal.Text, "C", ppd);
+            x = x0 + dial + 10;
+            double baseline = Math.Round(y + dial / 2 + 21 * 0.36);
+            var num = RenderKit.Text(s is null ? "—" : $"{Math.Round(s.CpuUsage)}", 21, pal.Text, true, ppd);
+            RenderKit.Baseline(dc, num, x, baseline); x += num.WidthIncludingTrailingWhitespace + 2;
+            var pctU = RenderKit.Text("%", 11, pal.TextDim, ppd: ppd);
+            RenderKit.Baseline(dc, pctU, x, baseline); x += pctU.WidthIncludingTrailingWhitespace + 10;
+            if (s is not null)
             {
-                var d = RenderKit.Text($"{s.CpuFrequencyGHz:F1} GHz", 11, pal.TextDim, ppd: ppd);
-                RenderKit.Baseline(dc, d, x, baseline); x += d.WidthIncludingTrailingWhitespace + 10;
+                if (s.CpuFrequencyGHz > 0.1)
+                {
+                    var d = RenderKit.Text($"{s.CpuFrequencyGHz:F1} GHz", 11, pal.TextDim, ppd: ppd);
+                    RenderKit.Baseline(dc, d, x, baseline); x += d.WidthIncludingTrailingWhitespace + 10;
+                }
+                double? ct = th?.CpuTemp;
+                var dt = RenderKit.Text(ct is { } t2 ? $"{Math.Round(t2)}°" : "—", 11,
+                    ct is { } t3 ? TempColor(t3, pal) : pal.TextTertiary, true, ppd);
+                RenderKit.Baseline(dc, dt, x, baseline);
             }
-            double? ct = th?.CpuTemp;
-            var dt = RenderKit.Text(ct is { } t2 ? $"{Math.Round(t2)}°" : "—", 11,
-                ct is { } t3 ? TempColor(t3, pal) : pal.TextTertiary, true, ppd);
-            RenderKit.Baseline(dc, dt, x, baseline);
+            RenderKit.DrawSpark(dc, new Rect(lw * 0.52, y, lw - 6 - lw * 0.52, 26), CpuHistory, CpuC, 36);
+            y += 34;
         }
-        RenderKit.DrawSpark(dc, new Rect(lw * 0.52, y, lw - 6 - lw * 0.52, 26), CpuHistory, CpuC, 36);
-        y += 34;
 
         // ---------- 核心柱（ftop 风格：大圆角柱，轨道+填充，按核心各自分级配色） ----------
+        // ---------- 核心柱（ftop 风格：大圆角柱，轨道+填充，按核心各自分级配色） ----------
         var cores = s?.CoreUsages;
-        if (cores is not null && cores.Length > 0)
+        if (Want("cores") && cores is not null && cores.Length > 0)
         {
             int n = Math.Min(16, cores.Length);
             double gap = 4, bw = (w - gap * (n - 1)) / n, bh = 42;
@@ -93,34 +101,37 @@ public sealed class MonitorPage : FrameworkElement
                     RenderKit.BrushOf(RenderKit.LevelColor(v * 100, v > 0.6 ? CpuC : MemC, pal)), null,
                     new Rect(bx, y + bh - fill, bw, fill), 3, 3);
             }
+            y += 50;
         }
-        y += 50;
 
         // ---------- MEM 行：表盘 + 用量文本 + 全宽进度条 ----------
-        RenderKit.Dial(dc, new Point(x0 + dial / 2, y + dial / 2), dial, 2.6,
-            s is null ? null : s.MemoryUsagePercent / 100, pal.Track, MemC, pal.Text, "M", ppd);
-        if (s is not null)
+        if (Want("mem"))
         {
-            x = x0 + dial + 10;
-            double bl = Math.Round(y + dial / 2 + 15 * 0.36);
-            var used = RenderKit.Text($"{s.MemoryUsedGB:F1}", 15, pal.Text, true, ppd);
-            var tot = RenderKit.Text($" / {s.MemoryTotalGB:F0} GB", 11, pal.TextDim, ppd: ppd);
-            RenderKit.Baseline(dc, used, x, bl); x += used.WidthIncludingTrailingWhitespace;
-            RenderKit.Baseline(dc, tot, x, bl);
-            var mp = RenderKit.Text($"{Math.Round(s.MemoryUsagePercent)}%", 11,
-                RenderKit.LevelColor(s.MemoryUsagePercent, pal.TextDim, pal), true, ppd);
-            RenderKit.Baseline(dc, mp, lw - 6 - mp.WidthIncludingTrailingWhitespace, bl);
+            RenderKit.Dial(dc, new Point(x0 + dial / 2, y + dial / 2), dial, 2.6,
+                s is null ? null : s.MemoryUsagePercent / 100, pal.Track, MemC, pal.Text, "M", ppd);
+            if (s is not null)
+            {
+                x = x0 + dial + 10;
+                double bl = Math.Round(y + dial / 2 + 15 * 0.36);
+                var used = RenderKit.Text($"{s.MemoryUsedGB:F1}", 15, pal.Text, true, ppd);
+                var tot = RenderKit.Text($" / {s.MemoryTotalGB:F0} GB", 11, pal.TextDim, ppd: ppd);
+                RenderKit.Baseline(dc, used, x, bl); x += used.WidthIncludingTrailingWhitespace;
+                RenderKit.Baseline(dc, tot, x, bl);
+                var mp = RenderKit.Text($"{Math.Round(s.MemoryUsagePercent)}%", 11,
+                    RenderKit.LevelColor(s.MemoryUsagePercent, pal.TextDim, pal), true, ppd);
+                RenderKit.Baseline(dc, mp, lw - 6 - mp.WidthIncludingTrailingWhitespace, bl);
+            }
+            y += 30;
+            double memFrac = s is null ? 0 : Math.Clamp(s.MemoryUsagePercent / 100, 0, 1);
+            dc.DrawRoundedRectangle(RenderKit.BrushOf(pal.Track), null, new Rect(x0, y, w, 5), 2.5, 2.5);
+            if (memFrac > 0.002)
+                dc.DrawRoundedRectangle(RenderKit.BrushOf(MemC), null,
+                    new Rect(x0, y, Math.Max(4, w * memFrac), 5), 2.5, 2.5);
+            y += 14;
         }
-        y += 30;
-        double memFrac = s is null ? 0 : Math.Clamp(s.MemoryUsagePercent / 100, 0, 1);
-        dc.DrawRoundedRectangle(RenderKit.BrushOf(pal.Track), null, new Rect(x0, y, w, 5), 2.5, 2.5);
-        if (memFrac > 0.002)
-            dc.DrawRoundedRectangle(RenderKit.BrushOf(MemC), null,
-                new Rect(x0, y, Math.Max(4, w * memFrac), 5), 2.5, 2.5);
-        y += 14;
 
         // ---------- GPU 行：表盘 + 读数 + 温度 + 右侧显卡名 ----------
-        if (s is not null && s.GpuUsage > 0)
+        if (Want("gpu") && s is not null && s.GpuUsage > 0)
         {
             RenderKit.Dial(dc, new Point(x0 + dial / 2, y + dial / 2), dial, 2.6,
                 s.GpuUsage / 100, pal.Track, GpuC, pal.Text, "G", ppd);
@@ -149,7 +160,7 @@ public sealed class MonitorPage : FrameworkElement
         }
 
         // ---------- 硬盘行（每块物理盘一行）：盘符表盘 + 活动时间% + 读/写速度 + 右侧空间 ----------
-        if (s is not null)
+        if (Want("disk") && s is not null)
         {
             // 优先逐盘实例；计数器实例缺失时回退单行（系统盘/_Total）
             var rows = new List<DiskStat>();
@@ -194,7 +205,7 @@ public sealed class MonitorPage : FrameworkElement
         }
 
         // ---------- 网速行：↓ 读数 + 平滑曲线 ｜ ↑ 读数 ----------
-        if (s is not null)
+        if (Want("net") && s is not null)
         {
             double bl = Math.Round(y + 14);
             var di = RenderKit.Text("↓", 13, DownC, true, ppd);
@@ -215,6 +226,7 @@ public sealed class MonitorPage : FrameworkElement
         }
 
         // ---------- 功耗/风扇行 + 右侧流量累计 ----------
+        if (Want("power"))
         {
             double bl = Math.Round(y + 13);
             var bolt = RenderKit.Text("⚡", 12, PowerC, ppd: ppd);
@@ -244,7 +256,7 @@ public sealed class MonitorPage : FrameworkElement
             }
         }
 
-        DrawTopProcesses(dc, pal, s, W, H, lw, ppd);
+        if (Want("topproc")) DrawTopProcesses(dc, pal, s, W, H, lw, ppd);
     }
 
     /// <summary>右栏：占用最高进程 Top5（BrimDeck 监控页右侧栏同款）。</summary>

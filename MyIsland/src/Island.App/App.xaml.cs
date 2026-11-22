@@ -235,6 +235,8 @@ public partial class App : Application
         city.Items.Add(customItem);
         settings.Items.Add(city);
         settings.Items.Add(MenuItem("仪表盘显示项…", (_, _) => _island?.ShowDashSettings()));
+        settings.Items.Add(MenuItem("信息胶囊显示项…", (_, _) => _island?.ShowComboSettings()));
+        settings.Items.Add(MenuItem("监控页显示项…", (_, _) => _island?.ShowMonitorSettings()));
         menu.Items.Add(settings);
 
         // 工具：剪贴板/文件中转
