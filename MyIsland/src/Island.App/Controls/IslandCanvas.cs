@@ -108,7 +108,8 @@ public sealed class IslandCanvas : FrameworkElement
         double squeezed = r.Height * Easing.Clamp(Squash, 0.5, 1.2);
         r = new Rect(r.X, r.Y + (r.Height - squeezed) / 2, r.Width, squeezed);
 
-        double corner = pal.SquareCorners ? Math.Min(3, r.Height / 2) : Math.Min(18, r.Height / 2);
+        // 胶囊形态：圆角 = 高度一半（体育场形），方角主题下保持小圆角
+        double corner = pal.SquareCorners ? Math.Min(3, r.Height / 2) : r.Height / 2;
         double fillet = 13;
 
         // 贴边侧圆角随液桥强度收缩（液桥在场时贴边侧偏方，与液桥平滑衔接）
@@ -240,7 +241,7 @@ public sealed class IslandCanvas : FrameworkElement
         if (snap is null) return 0;
         if (r.Width < 40 || r.Height < 20) return 0;
         double ppd = Ppd;
-        dc.DrawRoundedRectangle(Faint(Color.FromRgb(0x0D, 0x11, 0x17), 0.92), null, r, 16, 16);
+        dc.DrawRoundedRectangle(Faint(Color.FromRgb(0x0D, 0x11, 0x17), 0.92), null, r, r.Height / 2, r.Height / 2);
 
         var cpuC = Color.FromRgb(0x2E, 0x9B, 0xFF);
         var memC = Color.FromRgb(0x4F, 0xE3, 0xD7);
@@ -306,7 +307,7 @@ public sealed class IslandCanvas : FrameworkElement
     {
         if (r.Width < 40 || r.Height < 20) return 0;
         double ppd = Ppd;
-        dc.DrawRoundedRectangle(Faint(Color.FromRgb(0x0D, 0x11, 0x17), 0.92), null, r, 16, 16);
+        dc.DrawRoundedRectangle(Faint(Color.FromRgb(0x0D, 0x11, 0x17), 0.92), null, r, r.Height / 2, r.Height / 2);
         double x = r.X + 14;
 
         // ① 时间（按样本 "00:00" 预留宽度，分针跳变不推挤右侧读数）
@@ -371,7 +372,7 @@ public sealed class IslandCanvas : FrameworkElement
         if (snap is null) return 0;
         if (r.Width < 40 || r.Height < 20) return 0;
         double ppd = Ppd;
-        dc.DrawRoundedRectangle(Faint(Color.FromRgb(0x0D, 0x11, 0x17), 0.92), null, r, 16, 16);
+        dc.DrawRoundedRectangle(Faint(Color.FromRgb(0x0D, 0x11, 0x17), 0.92), null, r, r.Height / 2, r.Height / 2);
 
         double x = r.X + 14;
         // 温度分级：≤70° 绿 / 71–85° 橙 / >85° 红（与监控页一致）
@@ -458,7 +459,7 @@ public sealed class IslandCanvas : FrameworkElement
     {
         if (r.Width < 40 || r.Height < 20) return 0;
         double ppd = Ppd;
-        dc.DrawRoundedRectangle(Faint(Color.FromRgb(0x0D, 0x11, 0x17), 0.92), null, r, 16, 16);
+        dc.DrawRoundedRectangle(Faint(Color.FromRgb(0x0D, 0x11, 0x17), 0.92), null, r, r.Height / 2, r.Height / 2);
 
         var devices = DeviceService.Snapshot;
         double x = r.X + 16;
