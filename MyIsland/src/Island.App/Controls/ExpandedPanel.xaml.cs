@@ -36,8 +36,8 @@ public partial class ExpandedPanel : UserControl
     public ExpandedPanel()
     {
         InitializeComponent();
-        _pageBtns = new[] { btnMonitor, btnQuota, btnShelf, btnDevices, btnControl };
-        _pages = new UIElement[] { monitorPage, pageQuota, pageShelf, pageDevices, pageControl };
+        _pageBtns = new[] { btnMonitor, btnShelf, btnDevices, btnControl };
+        _pages = new UIElement[] { monitorPage, pageShelf, pageDevices, pageControl };
         SelectPage(0);
 
         _clock = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };

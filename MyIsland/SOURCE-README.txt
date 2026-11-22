@@ -11,7 +11,7 @@ MyIsland/
 │   ├── Island.App/                WPF 主应用（.NET 8, Windows）
 │   │   ├── Controls/              IslandCanvas(液态岛自绘) IslandWindow(宿主弹簧)
 │   │   │                          ExpandedPanel(展开面板XAML+页签) MonitorPage(监控页自绘)
-│   │   │                          RenderKit(共享渲染层: 文本/画笔缓存+表盘+走势图+分级色)
+│   │   │                          RenderKit(共享渲染层) ModuleSettingsWindow(显示项设置)
 │   │   │                          PanelData(ViewModel)
 │   │   ├── Services/              ThermalService(CPU/GPU/SSD温度: LHM+inpoutx64/SMN)
 │   │   │                          WeatherService(Open-Meteo) ControlService(亮度/WLAN/蓝牙)
@@ -21,9 +21,8 @@ MyIsland/
 │   │   │                          LiquidGeometry(液桥/水滴)
 │   │   ├── Themes/Theme.cs        Palette 语义色 + 9 预设主题
 │   │   └── app.ico                产品图标
-│   ├── Island.Core/               监控与配额模型（纯 .NET，跨平台）
-│   │   ├── Monitoring/            MonitorSnapshot / DiskStat / TopProcess
-│   │   └── Quota/                 QuotaService + JSONL 本地用量扫描（Claude/Codex）
+│   ├── Island.Core/               监控模型（纯 .NET，跨平台）
+│   │   └── Monitoring/            MonitorSnapshot / DiskStat / TopProcess
 │   ├── Island.Native/             SystemMonitor(PDH: CPU/核心/内存/GPU/磁盘/网速/Top进程)
 │   │                              NativeMethods(Win32) ScreenContext(全屏检测) GpuUsageReader
 │   └── Island.Avalonia/           Mac/跨平台版（Avalonia 11，详见 README-Mac.md）

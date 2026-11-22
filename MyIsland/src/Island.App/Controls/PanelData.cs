@@ -2,16 +2,12 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using Island.App.Services;
-using Island.Core.Monitoring;
-using Island.Core.Quota;
 
 namespace Island.App.Controls;
 
 /// <summary>展开面板的 ViewModel：配额/设备/剪贴板/文件/控制（监控页由 MonitorPage 自绘直取快照，不走绑定）。</summary>
 public sealed class PanelData : INotifyPropertyChanged
 {
-    public ObservableCollection<QuotaCard> Quotas { get; } = new();
-
     // ---------- 设备电量 ----------
     private System.Collections.ObjectModel.ObservableCollection<DeviceRow> _devices = new();
     public System.Collections.ObjectModel.ObservableCollection<DeviceRow> Devices
@@ -140,63 +136,6 @@ public sealed class PanelData : INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 
-    public void UpdateQuota(QuotaSnapshot snap)
-    {
-        Quotas.Clear();
-        foreach (var p in snap.Providers)
-        {
-            double? used = p.UsedPercent;
-            Quotas.Add(new QuotaCard
-            {
-                Name = p.DisplayName,
-                StatusText = p.StatusText,
-                TokensToday = p.TokensToday > 0 ? FormatTokens(p.TokensToday) : "—",
-                CostToday = p.CostToday > 0 ? $"${p.CostToday:F2}（估算）" : "—",
-                UsedPercent = used,
-                Detail = p.Detail,
-                // BrimDeck 用量列：大百分比 + 进度条，颜色随级别（≥70 橙 / ≥90 红）
-                PercentText = used is { } u ? $"{Math.Round(u)}%" : "—",
-                UsedFraction = (used ?? 0) / 100.0,
-                PercentBrush = used is { } u2
-                    ? u2 >= 90 ? BrushOf(0xE8, 0x4A, 0x4A)
-                    : u2 >= 70 ? BrushOf(0xE8, 0xA2, 0x4A)
-                    : ProviderBrush(p.Id)
-                    : ProviderBrush(p.Id),
-            });
-        }
-    }
-
-    /// <summary>工具品牌色（与收起态配额环一致）：Claude 橙 / Codex 绿 / Cursor 蓝。</summary>
-    private static System.Windows.Media.Brush ProviderBrush(string id) => id switch
-    {
-        "claude" => BrushOf(0xD9, 0x77, 0x57),
-        "codex" => BrushOf(0x10, 0xA3, 0x7F),
-        _ => BrushOf(0x5A, 0x96, 0xFF),
-    };
-
-    private static System.Windows.Media.Brush BrushOf(byte r, byte g, byte b)
-    {
-        var brush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(r, g, b));
-        brush.Freeze();
-        return brush;
-    }
-
     private static string FormatTokens(long n) =>
         n >= 1_000_000 ? $"{n / 1e6:F1}M" : n >= 1000 ? $"{n / 1000:F0}K" : n.ToString();
-}
-
-public sealed class QuotaCard
-{
-    public string Name { get; set; } = "";
-    public string StatusText { get; set; } = "";
-    public string TokensToday { get; set; } = "";
-    public string CostToday { get; set; } = "";
-    public double? UsedPercent { get; set; }
-    public string Detail { get; set; } = "";
-    /// <summary>大百分比文本（"34%" / 无数据 "—"）。</summary>
-    public string PercentText { get; set; } = "—";
-    /// <summary>进度条值 0..1。</summary>
-    public double UsedFraction { get; set; }
-    /// <summary>百分比/进度条颜色（品牌色，超阈值变预警/告警色）。</summary>
-    public System.Windows.Media.Brush PercentBrush { get; set; } = System.Windows.Media.Brushes.Gray;
 }

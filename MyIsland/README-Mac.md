@@ -29,7 +29,6 @@ dotnet publish src/Island.Avalonia -c Release -r osx-x64 --self-contained \
 | 胶囊收起态 | ✅ | dash 仪表盘 / 时钟 / 小形象 / 信息胶囊（pet⇄胶囊 10s/30s 轮换） |
 | 悬停展开 | ✅ | 150ms 开 / 350ms 关防抖（PointerMoved 热区判定） |
 | 监控页 | ✅ | CPU 表盘 + 核心柱 + 内存条 + GPU + 硬盘 + 网速曲线 + Top 进程 + 电池 |
-| AI 用量页 | ✅ | Claude/Codex 本地 JSONL 扫描（`~/.claude`、`~/.codex`，路径同构） |
 | 9 套主题 | ✅ | 托盘「面板主题」子菜单 |
 | 小形象 | ✅ | 4 款式 + 心情 + 情境（流汗/晕眩/困倦）|
 | CPU/内存/网速/进程 | ✅ | mach host_statistics64 + NetworkInterface + Process 差分 |
@@ -44,15 +43,15 @@ dotnet publish src/Island.Avalonia -c Release -r osx-x64 --self-contained \
 与 Windows 版一致：
 - 采样失败保留上一帧，绝不让后台线程崩掉进程；
 - 读不到的数据显示 "--" 或隐藏，绝不伪造；
-- 全部本地数据，零联网（AI 用量纯本地文件扫描）。
+- 全部本地数据，零联网（天气除外，Open-Meteo 仅取天气）。
 
 ## 目录
 
 ```
 src/Island.Avalonia/
 ├── IslandWindow.cs    主窗口：置顶透明 + 悬停展开 + 弹簧 + pet 轮换 + 托盘
-├── IslandCanvas.cs    自绘：dash/clock/pet/combo + 监控页 + AI 用量页
-├── RenderKit.cs       渲染助手（文本/画笔缓存、表盘、配额环、平滑走势图）
+├── IslandCanvas.cs    自绘：dash/clock/pet/combo + 监控页 + 剪贴板页
+├── RenderKit.cs       渲染助手（文本/画笔缓存、表盘、平滑走势图）
 ├── PetFaceAv.cs       小形象（PetFace 的 Avalonia 移植）
 ├── Samplers.cs        ISampler：WinSampler（复用 Windows 全套）/ MacSampler（mach+IOKit）
 ├── Themes.cs          Palette 语义色（9 套）

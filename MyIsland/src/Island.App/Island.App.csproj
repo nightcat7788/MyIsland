@@ -16,7 +16,6 @@
   <!-- 以源文件链接方式并入 Core 与 Native（不再 ProjectReference 出 DLL） -->
   <ItemGroup>
     <Compile Include="..\Island.Core\Monitoring\*.cs" Link="Merged\Core\%(Filename)%(Extension)" />
-    <Compile Include="..\Island.Core\Quota\*.cs" Link="Merged\Core\%(Filename)%(Extension)" />
     <Compile Include="..\Island.Native\*.cs" Link="Merged\Native\%(Filename)%(Extension)" />
   </ItemGroup>
 

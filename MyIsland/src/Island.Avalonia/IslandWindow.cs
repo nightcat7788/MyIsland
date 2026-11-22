@@ -7,7 +7,6 @@ using Avalonia.Threading;
 using Island.App.Animation;
 using Island.App.Themes;
 using Island.Core.Monitoring;
-using Island.Core.Quota;
 
 namespace Island.Avalonia;
 
@@ -25,9 +24,7 @@ public sealed class IslandWindow : Window
 
     private readonly IslandCanvas _canvas = new();
     private readonly ISampler _sampler;
-    private readonly QuotaService _quota = new();
     private readonly DispatcherTimer _frame;
-    private readonly DispatcherTimer _quotaTimer;
     private TrayIcon? _tray;
     private readonly Spring _bodyW = new(550, 260, 0.82);
     private readonly Spring _bodyH = new(69, 300, 0.8);
@@ -93,12 +90,6 @@ public sealed class IslandWindow : Window
             if (_canvas.HandleTabClick(e.GetPosition(_canvas))) { e.Handled = true; return; }
             if (!_expanded && _canvas.View == "pet") _canvas.Pet.React("surprise");
         };
-
-        // AI 用量：本地 JSONL 扫描，10 分钟一刷（后台线程，不卡 UI）
-        _quotaTimer = new DispatcherTimer(DispatcherPriority.Normal) { Interval = TimeSpan.FromMinutes(10) };
-        _quotaTimer.Tick += (_, _) => RefreshQuota();
-        _quotaTimer.Start();
-        RefreshQuota();
 
         // 天气：Open-Meteo（30 分钟刷新，内部缓存节流；城市随 settings.json 热更新）
         _weather.Settings = Island.App.Services.Settings.Load();
@@ -246,25 +237,6 @@ public sealed class IslandWindow : Window
         _canvas.InvalidateVisual();
     }
 
-    // ---------- AI 用量（后台线程扫描，结果回 UI 线程） ----------
-    private bool _quotaBusy;
-
-    private void RefreshQuota()
-    {
-        if (_quotaBusy) return;
-        _quotaBusy = true;
-        System.Threading.Tasks.Task.Run(() =>
-        {
-            try
-            {
-                var snap = _quota.Refresh();
-                Dispatcher.UIThread.Post(() => _canvas.Quota = snap);
-            }
-            catch { /* 本轮失败，下周期重试 */ }
-            finally { _quotaBusy = false; }
-        });
-    }
-
     // ---------- 菜单栏托盘（macOS 菜单栏 / Windows 通知区） ----------
     private void SetupTray()
     {
@@ -304,7 +276,6 @@ public sealed class IslandWindow : Window
     {
         _frame.Stop();
         _hoverTimer?.Stop();
-        _quotaTimer.Stop();
         _weatherTimer.Stop();
         _clipsTimer.Stop();
         _clips.Dispose();

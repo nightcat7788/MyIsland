@@ -21,7 +21,6 @@
   <!-- 与 Windows 版共享：数据模型 / 配额（纯 .NET 跨平台）/ 弹簧 / Windows 采样器 -->
   <ItemGroup>
     <Compile Include="..\Island.Core\Monitoring\MonitorModels.cs" Link="Merged\MonitorModels.cs" />
-    <Compile Include="..\Island.Core\Quota\*.cs" Link="Merged\Quota\%(Filename)%(Extension)" />
     <Compile Include="..\Island.Native\SystemMonitor.cs" Link="Merged\SystemMonitor.cs" />
     <Compile Include="..\Island.Native\NativeMethods.cs" Link="Merged\NativeMethods.cs" />
     <Compile Include="..\Island.Native\GpuUsageReader.cs" Link="Merged\GpuUsageReader.cs" />

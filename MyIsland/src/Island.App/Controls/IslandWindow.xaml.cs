@@ -7,7 +7,6 @@ using Island.App.Animation;
 using Island.App.Services;
 using Island.App.Themes;
 using Island.Core.Monitoring;
-using Island.Core.Quota;
 using Island.Native;
 using static Island.Native.NativeMethods;
 
@@ -26,13 +25,11 @@ public partial class IslandWindow : Window
 {
     private readonly Settings _settings;
     private readonly SystemMonitor _monitor;
-    private readonly QuotaService _quota;
     private readonly Services.WeatherService _weather = new();
     private readonly GlassBackdrop _glass = new();
     private readonly DispatcherTimer _frame;
     private readonly DispatcherTimer _pointerTrack;
     private readonly DispatcherTimer _fullscreenCheck;
-    private readonly DispatcherTimer _quotaTimer;
     private readonly DispatcherTimer _cycleTimer;
     private readonly DispatcherTimer _weatherTimer;
 
@@ -66,7 +63,6 @@ public partial class IslandWindow : Window
     {
         _settings = settings;
         _monitor = new SystemMonitor(settings.MonitorIntervalMs);
-        _quota = new QuotaService();
 
         InitializeComponent();
 
@@ -86,9 +82,6 @@ public partial class IslandWindow : Window
 
         _fullscreenCheck = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _fullscreenCheck.Tick += (_, _) => UpdateFullscreenHidden();
-
-        _quotaTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(Math.Max(1, settings.QuotaIntervalMin)) };
-        _quotaTimer.Tick += (_, _) => RefreshQuota();
 
         // 天气：首次拉取 + 每 30 分钟刷新（内部有缓存节流）
         _weather.Settings = settings;
@@ -136,7 +129,6 @@ public partial class IslandWindow : Window
 
         _monitor.Snapshot += OnMonitorSnapshot;
         _monitor.Start();
-        RefreshQuota();
 
         // 设备电量：30s 轮询（BLE/HID/WMI），收起态 devices 视图消费
         Services.DeviceService.Start();
@@ -171,7 +163,6 @@ public partial class IslandWindow : Window
         _frame.Start();
         _pointerTrack.Start();
         _fullscreenCheck.Start();
-        _quotaTimer.Start();
         islandCanvas.Pet.Style = _settings.PetStyle;
         expandedPanel.Monitor.Palette = _palette;   // 监控页主题（ApplyTheme 在 Loaded 前跳过）
         ApplyItemFilters();                          // dash/combo/监控页 显示项注入
@@ -185,7 +176,7 @@ public partial class IslandWindow : Window
     private void OnClosed(object? sender, EventArgs e)
     {
         _frame.Stop(); _pointerTrack.Stop(); _fullscreenCheck.Stop();
-        _quotaTimer.Stop(); _cycleTimer.Stop(); _weatherTimer.Stop();
+        _cycleTimer.Stop(); _weatherTimer.Stop();
         Services.ClipboardService.Detach();   // 摘掉剪贴板监听（窗口关了就不该再记录）
         _monitor.Dispose();
         _volume.Dispose();
@@ -502,33 +493,9 @@ public partial class IslandWindow : Window
         });
     }
 
-    private bool _quotaBusy;
-
-    private void RefreshQuota()
-    {
-        // 扫 JSONL 可能读数百 MB（Claude/Codex 会话目录），绝不能阻塞 UI 线程
-        if (_quotaBusy) return;
-        _quotaBusy = true;
-        System.Threading.Tasks.Task.Run(() =>
-        {
-            try
-            {
-                var snap = _quota.Refresh();
-                Dispatcher.Invoke(() =>
-                {
-                    islandCanvas.Quota = snap;   // combo 信息胶囊的配额环
-                    if (expandedPanel.DataContext is PanelData pd) pd.UpdateQuota(snap);
-                });
-            }
-            catch { /* 本轮失败，下个周期重试 */ }
-            finally { _quotaBusy = false; }
-        });
-    }
-
     private PanelData BuildPanelData()
     {
         var pd = new PanelData();
-        pd.UpdateQuota(_quota.Refresh());
         // 控制页命令绑定（亮度步进 10%；执行后立即回读刷新显示）
         pd.BindControls(
             new RelayCommand(_ =>
@@ -850,13 +817,11 @@ public partial class IslandWindow : Window
             CompactView = "combo", Palette = _palette, IsHitTestVisible = false,
             Width = 440, Height = 44,
         };
-        preview.Quota = islandCanvas.Quota;
         OpenModuleSettings(
             "信息胶囊显示项",
             new ModuleSettingsWindow.Module[]
             {
-                new("rings", "配额环"), new("clock", "时间"),
-                new("dials", "读数表盘"), new("net", "网速"),
+                new("clock", "时间"), new("dials", "读数表盘"), new("net", "网速"),
             },
             preview,
             () => _settings.ComboItems,

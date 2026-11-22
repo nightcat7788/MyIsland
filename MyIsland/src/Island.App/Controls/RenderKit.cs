@@ -116,37 +116,6 @@ internal static class RenderKit
         dc.DrawGeometry(null, PenOf(color, thickness), geo);
     }
 
-    /// <summary>配额环：满环（与开口表盘区分），环内首字母。</summary>
-    public static void Ring(DrawingContext dc, Point center, double size, double thickness,
-        double? share, Color track, Color arc, Color letterColor, string letter, double ppd)
-    {
-        double radius = size / 2 - thickness / 2;
-        dc.DrawEllipse(null, PenOf(track, thickness), center, radius, radius);
-        if (share is { } v)
-        {
-            v = Easing.Clamp(v, 0, 1);
-            if (v >= 0.999)
-                dc.DrawEllipse(null, PenOf(arc, thickness), center, radius, radius);
-            else if (v > 0.002)
-            {
-                double startA = -Math.PI / 2, endA = startA + v * 2 * Math.PI;
-                var geo = new StreamGeometry();
-                using (var ctx = geo.Open())
-                {
-                    ctx.BeginFigure(new Point(center.X + radius * Math.Cos(startA),
-                        center.Y + radius * Math.Sin(startA)), false, false);
-                    ctx.ArcTo(new Point(center.X + radius * Math.Cos(endA),
-                            center.Y + radius * Math.Sin(endA)),
-                        new Size(radius, radius), 0, v > 0.5, SweepDirection.Clockwise, true, false);
-                }
-                geo.Freeze();
-                dc.DrawGeometry(null, PenOf(arc, thickness), geo);
-            }
-        }
-        var t = Text(letter, Math.Max(1, size * 0.38), letterColor, true, ppd);
-        dc.DrawText(t, new Point(center.X - t.Width / 2, center.Y - t.Height / 2));
-    }
-
     // ---------- 取色（BrimDeck MusicVisuals.Accent 移植：饱和度加权平均 + HSL 亮度钳制） ----------
     /// <summary>从图片提取主彩色（16×16 降采样，灰色像素权重 0.12）。无彩色返回 null。</summary>
     public static Color? DominantColor(BitmapSource? source, bool dark)

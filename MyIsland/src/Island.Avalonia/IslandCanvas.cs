@@ -22,21 +22,19 @@ public sealed class IslandCanvas : Control
     public PetFaceAv Pet { get; } = new();
     public string Page { get; set; } = "monitor";   // monitor / quota（展开态页）
     public MonitorSnapshot? Snapshot { get; set; }
-    public Island.Core.Quota.QuotaSnapshot? Quota { get; set; }
     public Island.App.Services.WeatherInfo? Weather { get; set; }   // 时钟视图右缘
     public IReadOnlyList<ClipItem> Clips { get; set; } = Array.Empty<ClipItem>();
     public double[]? NetHistory { get; set; }
     public Palette Palette { get; set; } = Palette.Dark;
 
     // 页签热区（绘制时记录，宿主点击命中用）
-    private Rect _tabMonitor, _tabQuota, _tabClips;
+    private Rect _tabMonitor, _tabClips;
 
     /// <summary>页签点击命中；命中返回 true 并切页。</summary>
     public bool HandleTabClick(Point pos)
     {
         if (!IsExpanded) return false;
         if (_tabMonitor.Contains(pos)) { Page = "monitor"; InvalidateVisual(); return true; }
-        if (_tabQuota.Contains(pos)) { Page = "quota"; InvalidateVisual(); return true; }
         if (_tabClips.Contains(pos)) { Page = "clips"; InvalidateVisual(); return true; }
         return false;
     }
@@ -94,36 +92,18 @@ public sealed class IslandCanvas : Control
             new RoundedRect(r, 16));
         double x = r.X + 14;
 
-        // ① 配额环（满环 + 首字母）
-        if (Quota is { } q)
-        {
-            double rx0 = x;
-            foreach (var p in q.Providers)
-            {
-                if (p.Status is not Island.Core.Quota.ProviderStatus.Connected) continue;
-                var baseColor = QuotaColor(p.Id, pal);
-                var arc = p.UsedPercent is { } upct ? RenderKit.LevelColor(upct, baseColor, pal) : baseColor;
-                RenderKit.Ring(dc, new Point(x + 10, cy), 20, 2.4,
-                    p.UsedPercent is { } u ? u / 100 : null,
-                    pal.Track, arc, pal.Text,
-                    p.DisplayName.Length > 0 ? p.DisplayName[..1] : "?");
-                x += 20 + 7;
-            }
-            if (x > rx0) x += 6;
-        }
-
-        // ② 时间
+        // ① 时间
         var clock = RenderKit.Text(DateTime.Now.ToString("HH:mm"), 15, pal.Text, true);
         RenderKit.Baseline(dc, clock, x, Math.Round(cy + 15 * 0.36));
         x += Math.Ceiling(RenderKit.Text("00:00", 15, pal.Text, true).WidthIncludingTrailingWhitespace) + 16;
 
-        // ③ 读数表盘
+        // ② 读数表盘
         x += DrawDialGauge(dc, pal, x, cy, snap.CpuUsage, CpuC, "C") + 13;
         x += DrawDialGauge(dc, pal, x, cy, snap.MemoryUsagePercent, MemC, "M") + 13;
         if (snap.GpuUsage > 0)
             x += DrawDialGauge(dc, pal, x, cy, snap.GpuUsage, GpuC, "G") + 13;
 
-        // ④ 右缘网速
+        // ③ 右缘网速
         var down = RenderKit.Text("↓" + MonitorSnapshot.FormatSpeed(snap.DownloadSpeed), 10, DownC);
         var up = RenderKit.Text("↑" + MonitorSnapshot.FormatSpeed(snap.UploadSpeed), 10, UpC);
         double rx = r.Right - 14;
@@ -146,7 +126,7 @@ public sealed class IslandCanvas : Control
         return dialSize + 4 + slot;
     }
 
-    // ==================== 展开态：页签 + 监控页 / AI 用量页 ====================
+    // ==================== 展开态：页签 + 监控页 / 剪贴板页 ====================
     private void DrawExpanded(DrawingContext dc, Palette pal, Rect r)
     {
         dc.DrawRectangle(RenderKit.Faint(pal.Surface, 0.96), RenderKit.PenOf(pal.Rim, 1, 0.45),
@@ -164,11 +144,9 @@ public sealed class IslandCanvas : Control
             tabX += t.Width + 24;
         }
         Tab("监控", "monitor", ref _tabMonitor);
-        Tab("AI 用量", "quota", ref _tabQuota);
         Tab("剪贴板", "clips", ref _tabClips);
 
         double contentY = tabY + 24 + 16;
-        if (Page == "quota") { DrawQuotaPage(dc, pal, r, contentY); return; }
         if (Page == "clips") { DrawClipsPage(dc, pal, r, contentY); return; }
         DrawMonitorPage(dc, pal, r, contentY);
     }
@@ -192,63 +170,6 @@ public sealed class IslandCanvas : Control
             y += 26;
         }
     }
-
-    /// <summary>AI 用量页（BrimDeck 分列式；数据来自 Island.Core.Quota 本地 JSONL 扫描）。</summary>
-    private void DrawQuotaPage(DrawingContext dc, Palette pal, Rect r, double y0)
-    {
-        var q = Quota;
-        double x = r.X + 24;
-        if (q is null)
-        {
-            var t = RenderKit.Text("正在读取本地 AI 工具用量…", 12, pal.TextDim);
-            dc.DrawText(t, new Point(x, y0 + 40));
-            return;
-        }
-        foreach (var p in q.Providers.Take(3))
-        {
-            var name = RenderKit.Text(p.DisplayName, 15, pal.Text, true);
-            dc.DrawText(name, new Point(x, y0));
-            var status = RenderKit.Text(p.StatusText, 9.5, pal.TextTertiary);
-            dc.DrawText(status, new Point(x, y0 + 22));
-
-            double? used = p.UsedPercent;
-            var pctColor = used is { } u ? RenderKit.LevelColor(u, QuotaColor(p.Id, pal), pal) : pal.TextTertiary;
-            var pct = RenderKit.Text(used is { } u2 ? $"{Math.Round(u2)}%" : "—", 22, pctColor, true);
-            dc.DrawText(pct, new Point(x, y0 + 38));
-
-            double barY = y0 + 72;
-            const double bw = 132;
-            dc.DrawRectangle(RenderKit.BrushOf(pal.Track), null, new RoundedRect(new Rect(x, barY, bw, 4), 2));
-            if (used is { } u3 && u3 > 0)
-                dc.DrawRectangle(RenderKit.BrushOf(pctColor), null,
-                    new RoundedRect(new Rect(x, barY, Math.Max(3, bw * Math.Min(1, u3 / 100)), 4), 2));
-
-            var today = RenderKit.Text($"今日 {FmtTokens(p.TokensToday)}", 10, pal.TextDim);
-            dc.DrawText(today, new Point(x, y0 + 86));
-            if (p.CostToday > 0)
-            {
-                var cost = RenderKit.Text($"${p.CostToday:F2}（估）", 9.5, pal.TextTertiary);
-                dc.DrawText(cost, new Point(x, y0 + 102));
-            }
-            if (!string.IsNullOrEmpty(p.Detail))
-            {
-                var det = RenderKit.Text(p.Detail, 9, pal.TextTertiary);
-                dc.DrawText(det, new Point(x, y0 + 120));
-            }
-            x += 164;
-        }
-    }
-
-    private static Color QuotaColor(string id, Palette pal) => id switch
-    {
-        "claude" => Color.FromRgb(0xD9, 0x77, 0x57),
-        "codex" => Color.FromRgb(0x10, 0xA3, 0x7F),
-        "cursor" => Color.FromRgb(0x5A, 0x96, 0xFF),
-        _ => pal.Accent,
-    };
-
-    private static string FmtTokens(long n) =>
-        n >= 1_000_000 ? $"{n / 1e6:F1}M" : n >= 1000 ? $"{n / 1000:F0}K" : n.ToString();
 
     // ==================== 展开态：系统监控页（ftop 式，与 Windows 版 MonitorPage 同源） ====================
     private void DrawMonitorPage(DrawingContext dc, Palette pal, Rect r, double y0)

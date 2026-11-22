@@ -4,7 +4,6 @@ using Island.App.Animation;
 using Island.App.Services;
 using Island.App.Themes;
 using Island.Core.Monitoring;
-using Island.Core.Quota;
 
 namespace Island.App.Controls;
 
@@ -65,9 +64,6 @@ public sealed class IslandCanvas : FrameworkElement
     public ActivityView? Activity { get; set; }
     public double[]? CpuHistory { get; set; }
     public double[]? NetHistory { get; set; }
-
-    // AI 配额（收起态 combo 信息胶囊的配额环）：宿主每次刷新配额时注入
-    public QuotaSnapshot? Quota { get; set; }
 
     // dash 显示项过滤（null = 全部显示；宿主由 Settings.DashItems 注入）
     public HashSet<string>? DashItems { get; set; }
@@ -282,7 +278,7 @@ public sealed class IslandCanvas : FrameworkElement
     }
 
     /// <summary>
-    /// combo 信息胶囊（参考 BrimDeck 刘海轮播态）：配额环 + 时间 + 系统读数表盘 + 网速。
+    /// combo 信息胶囊（参考 BrimDeck 刘海轮播态）：时间 + 系统读数表盘 + 网速。
     /// 小形象视图 10 秒后自动变形为此视图，30 秒后变回（IslandWindow 的 pet 轮换）。
     /// </summary>
     private void DrawCombo(DrawingContext dc, Palette pal, Rect r, double cy, MonitorSnapshot? snap)
@@ -292,26 +288,7 @@ public sealed class IslandCanvas : FrameworkElement
         dc.DrawRoundedRectangle(Faint(Color.FromRgb(0x0D, 0x11, 0x17), 0.92), null, r, 16, 16);
         double x = r.X + 14;
 
-        // ① 配额环（满环 + 首字母；未连接/无数据的工具不占位）
-        if (WantCombo("rings") && Quota is { } q)
-        {
-            double rx0 = x;
-            foreach (var p in q.Providers)
-            {
-                if (p.Status is not ProviderStatus.Connected) continue;
-                var baseColor = QuotaRingColor(p.Id, pal);
-                // 环色随级别：≥70% Warning、≥90% Critical（BrimDeck 配额环同款语义）
-                var arc = p.UsedPercent is { } up ? LevelColor(up, baseColor, pal) : baseColor;
-                Ring(dc, new Point(x + 10, cy), 20, 2.4,
-                    p.UsedPercent is { } u ? u / 100 : null,
-                    pal.Track, arc, pal.Text,
-                    p.DisplayName.Length > 0 ? p.DisplayName[..1] : "?", ppd);
-                x += 20 + 7;
-            }
-            if (x > rx0) x += 6;
-        }
-
-        // ② 时间（按样本 "00:00" 预留宽度，分针跳变不推挤右侧读数）
+        // ① 时间（按样本 "00:00" 预留宽度，分针跳变不推挤右侧读数）
         if (WantCombo("clock"))
         {
             var clock = Text(DateTime.Now.ToString("HH:mm"), 15, pal.Text, true, ppd);
@@ -319,7 +296,7 @@ public sealed class IslandCanvas : FrameworkElement
             x += Math.Ceiling(Text("00:00", 15, pal.Text, true, ppd).WidthIncludingTrailingWhitespace) + 16;
         }
 
-        // ③ 系统读数表盘（开口环 + 字母，与配额满环区分）
+        // ② 系统读数表盘（开口环 + 字母）
         if (WantCombo("dials") && snap is not null)
         {
             x += DrawDialGauge(dc, pal, x, cy, ppd, snap.CpuUsage,
@@ -331,7 +308,7 @@ public sealed class IslandCanvas : FrameworkElement
                     Color.FromRgb(0xF2, 0x72, 0xA8), "G", 18, 11.5) + 13;
         }
 
-        // ④ 右缘：上下行速率（两行小字）
+        // ③ 右缘：上下行速率（两行小字）
         if (WantCombo("net") && snap is not null)
         {
             var down = Text("↓" + MonitorSnapshot.FormatSpeed(snap.DownloadSpeed), 10,
@@ -357,20 +334,6 @@ public sealed class IslandCanvas : FrameworkElement
         double slot = Math.Ceiling(Text("100%", font, pal.Text, true, ppd).WidthIncludingTrailingWhitespace);
         return dialSize + 4 + slot;
     }
-
-    /// <summary>配额环：满环（转发 RenderKit.Ring）。</summary>
-    private static void Ring(DrawingContext dc, Point center, double size, double thickness,
-        double? share, Color track, Color arc, Color letterColor, string letter, double ppd)
-        => RenderKit.Ring(dc, center, size, thickness, share, track, arc, letterColor, letter, ppd);
-
-    /// <summary>配额环品牌色（Claude 橙 / Codex 绿 / Cursor 蓝），未知工具用主题强调色。</summary>
-    private static Color QuotaRingColor(string id, Palette pal) => id switch
-    {
-        "claude" => Color.FromRgb(0xD9, 0x77, 0x57),
-        "codex" => Color.FromRgb(0x10, 0xA3, 0x7F),
-        "cursor" => Color.FromRgb(0x5A, 0x96, 0xFF),
-        _ => pal.Accent,
-    };
 
     /// <summary>
     /// dash 视图（用户定稿结构）：6 组等距「彩色图标+白值」。

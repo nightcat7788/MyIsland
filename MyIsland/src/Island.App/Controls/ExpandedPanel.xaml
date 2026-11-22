@@ -61,10 +61,6 @@
                                 Width="32" Height="24" Style="{StaticResource FlatBtn}">
                             <TextBlock Text="📈" FontSize="12" Foreground="{DynamicResource FgDim}"/>
                         </Button>
-                        <Button x:Name="btnQuota" Tag="1" Click="OnPage" ToolTip="AI 用量"
-                                Width="32" Height="24" Style="{StaticResource FlatBtn}">
-                            <TextBlock Text="💠" FontSize="12" Foreground="{DynamicResource FgDim}"/>
-                        </Button>
                         <Button x:Name="btnShelf" Tag="2" Click="OnPage" ToolTip="剪贴板 · 文件"
                                 Width="32" Height="24" Style="{StaticResource FlatBtn}">
                             <TextBlock Text="⎘" FontSize="12" Foreground="{DynamicResource FgDim}"/>
@@ -93,56 +89,7 @@
                 <!-- 页0：系统监控（自绘 ftop 式） -->
                 <controls:MonitorPage x:Name="monitorPage"/>
 
-                <!-- 页1：AI 用量（BrimDeck 式分列：名称+徽章、大百分比、进度条、今日/七日汇总） -->
-                <ScrollViewer x:Name="pageQuota" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
-                    <ItemsControl ItemsSource="{Binding Quotas}" Margin="0,4,0,0">
-                        <ItemsControl.ItemsPanel>
-                            <ItemsPanelTemplate>
-                                <StackPanel Orientation="Horizontal"/>
-                            </ItemsPanelTemplate>
-                        </ItemsControl.ItemsPanel>
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate>
-                                <StackPanel Width="140" Margin="10,4">
-                                    <DockPanel LastChildFill="False">
-                                        <TextBlock Text="{Binding Name}" FontSize="15" FontWeight="SemiBold"
-                                                   Foreground="{DynamicResource Fg}"/>
-                                        <Border DockPanel.Dock="Right" Padding="6,1.5" CornerRadius="6"
-                                                BorderBrush="{DynamicResource FgTertiary}" BorderThickness="1">
-                                            <TextBlock Text="{Binding StatusText}" FontSize="9"
-                                                       Foreground="{DynamicResource FgDim}"/>
-                                        </Border>
-                                    </DockPanel>
-                                    <DockPanel Margin="0,10,0,5" LastChildFill="False">
-                                        <TextBlock Text="{Binding PercentText}" FontSize="21" FontWeight="Bold"
-                                                   Foreground="{Binding PercentBrush}"/>
-                                        <TextBlock Text="已用" FontSize="10" Foreground="{DynamicResource FgDim}"
-                                                   VerticalAlignment="Bottom" Margin="4,0,0,3"/>
-                                    </DockPanel>
-                                    <ProgressBar Maximum="1" Height="4" Value="{Binding UsedFraction}"
-                                                 Foreground="{Binding PercentBrush}"
-                                                 Background="{DynamicResource Track}"/>
-                                    <Border Height="1" Background="{DynamicResource Track}" Margin="0,12,0,8" Opacity="0.6"/>
-                                    <DockPanel LastChildFill="False" Margin="0,0,0,3">
-                                        <TextBlock Text="今日" FontSize="10" Foreground="{DynamicResource FgDim}"/>
-                                        <TextBlock DockPanel.Dock="Right" Text="{Binding TokensToday}"
-                                                   FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource Fg}"/>
-                                    </DockPanel>
-                                    <DockPanel LastChildFill="False" Margin="0,0,0,3">
-                                        <TextBlock Text="费用" FontSize="10" Foreground="{DynamicResource FgDim}"/>
-                                        <TextBlock DockPanel.Dock="Right" Text="{Binding CostToday}"
-                                                   FontSize="11" Foreground="{DynamicResource FgDim}"/>
-                                    </DockPanel>
-                                    <TextBlock Text="{Binding Detail}" FontSize="9.5"
-                                               Foreground="{DynamicResource FgTertiary}" Margin="0,4,0,0"
-                                               TextWrapping="Wrap"/>
-                                </StackPanel>
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-                </ScrollViewer>
-
-                <!-- 页2：剪贴板 · 文件 -->
+                <!-- 页1：剪贴板 · 文件 -->
                 <Grid x:Name="pageShelf" Visibility="Collapsed" Margin="0,4,0,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
@@ -193,7 +140,7 @@
                     </ScrollViewer>
                 </Grid>
 
-                <!-- 页3：设备电量 -->
+                <!-- 页2：设备电量 -->
                 <ScrollViewer x:Name="pageDevices" Visibility="Collapsed"
                               VerticalScrollBarVisibility="Auto" Margin="0,4,0,0">
                     <StackPanel>
@@ -227,7 +174,7 @@
                     </StackPanel>
                 </ScrollViewer>
 
-                <!-- 页4：控制 -->
+                <!-- 页3：控制 -->
                 <ScrollViewer x:Name="pageControl" Visibility="Collapsed"
                               VerticalScrollBarVisibility="Auto" Margin="0,4,0,0">
                     <StackPanel>
