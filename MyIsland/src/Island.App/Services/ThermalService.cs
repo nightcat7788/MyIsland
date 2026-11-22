@@ -65,7 +65,10 @@ public sealed class ThermalService : IDisposable
                     _computer = new Computer
                     {
                         IsCpuEnabled = true, IsGpuEnabled = true, IsMotherboardEnabled = true,
-                        IsMemoryEnabled = false, IsStorageEnabled = true, IsControllerEnabled = false,
+                        // ⚠️ 2026-11-22 实机教训：LHM 存储传感器（NVMe SMART IOCTL）在本机
+                        // (Lenovo secured-core) 触发 SECURE_KERNEL_ERROR 0x1EA 蓝屏两次，
+                        // 与启用时间点精确相关。默认永久关闭；SSD 温度显示 "--"。
+                        IsMemoryEnabled = false, IsStorageEnabled = false, IsControllerEnabled = false,
                         IsNetworkEnabled = false, IsPsuEnabled = false,
                     };
                     _computer.Open();
@@ -88,7 +91,8 @@ public sealed class ThermalService : IDisposable
                     IsGpuEnabled = true,
                     IsMemoryEnabled = false,
                     IsMotherboardEnabled = true,
-                    IsStorageEnabled = true,
+                    // ⚠️ 存储传感器在本机引发蓝屏（0x1EA），永久关闭；SSD 温度显示 "--"
+                    IsStorageEnabled = false,
                     IsControllerEnabled = false,
                     IsNetworkEnabled = false,
                     IsPsuEnabled = false,
