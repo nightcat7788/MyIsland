@@ -193,6 +193,7 @@ public partial class IslandWindow : Window
         if (_settings.ClickThrough) SetClickThrough(true);   // 恢复上次的穿透状态
         islandCanvas.Pet.Style = _settings.PetStyle;
         expandedPanel.Monitor.Palette = _palette;   // 监控页主题（ApplyTheme 在 Loaded 前跳过）
+        expandedPanel.DevicesView.Palette = _palette;
         ApplyItemFilters();                          // dash/combo/监控页 显示项注入
         islandCanvas.CompactView = _settings.CompactView;
         StartPetCycle();   // 必须在恢复视图之后：仅 pet/combo 视图才会启动轮换
@@ -522,6 +523,7 @@ public partial class IslandWindow : Window
                 pd.UpdateClipboard();   // 剪贴板（内部 2s 节流）
                 pd.UpdateFiles();       // 文件中转
             }
+            expandedPanel.DevicesView.InvalidateVisual();   // 自绘设备页：随帧重绘
         });
     }
 
@@ -835,6 +837,7 @@ public partial class IslandWindow : Window
         {
             islandCanvas.Palette = _palette;
             expandedPanel.Monitor.Palette = _palette;
+            expandedPanel.DevicesView.Palette = _palette;
             islandCanvas.InvalidateVisual();
             expandedPanel.Monitor.InvalidateVisual();
         }

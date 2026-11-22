@@ -144,35 +144,8 @@
                 <!-- 页2：设备电量 -->
                 <ScrollViewer x:Name="pageDevices" Visibility="Collapsed"
                               VerticalScrollBarVisibility="Auto" Margin="0,4,0,0">
-                    <StackPanel>
-                        <ItemsControl ItemsSource="{Binding Devices}">
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate>
-                                    <Border Background="{DynamicResource CardBg}" CornerRadius="12"
-                                            Padding="14,10" Margin="0,0,0,8">
-                                        <DockPanel>
-                                            <TextBlock DockPanel.Dock="Left" Text="{Binding Name}" FontSize="13"
-                                                       FontWeight="SemiBold" Foreground="{DynamicResource Fg}" Width="180"
-                                                       TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
-                                            <ProgressBar DockPanel.Dock="Right" Width="130" Height="6" Maximum="1"
-                                                         Value="{Binding Fraction}" Foreground="{Binding Color}"
-                                                         Background="{DynamicResource Track}" HorizontalAlignment="Right"
-                                                         VerticalAlignment="Center"/>
-                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,0,10,0">
-                                                <TextBlock Text="{Binding Kind}" FontSize="10"
-                                                           Foreground="{DynamicResource FgDim}" VerticalAlignment="Center"/>
-                                                <TextBlock Text="{Binding PercentText}" FontSize="13" FontWeight="SemiBold"
-                                                           Foreground="{Binding Color}" Margin="6,0,0,0"/>
-                                            </StackPanel>
-                                        </DockPanel>
-                                    </Border>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-                        <TextBlock Text="未检测到无线设备（蓝牙/HID 电量）" Foreground="{DynamicResource FgDim}"
-                                   FontSize="11" HorizontalAlignment="Center" Margin="0,12,0,4"
-                                   Visibility="{Binding HasDevices, Converter={StaticResource InvVis}}"/>
-                    </StackPanel>
+                    <!-- 设备电量页（BrimDeck 同款：大电量环 + 图标 + 大号百分比 + 名称 + 状态），整页自绘 -->
+                    <controls:DevicesPage x:Name="devicesPage" Height="330"/>
                 </ScrollViewer>
 
                 <!-- 页3：控制 -->

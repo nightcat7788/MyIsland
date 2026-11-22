@@ -473,47 +473,60 @@ public sealed class IslandCanvas : FrameworkElement
         return x - r.X - 26 + 14;
     }
 
-    /// <summary>设备电量行（GitHub Dark 底，与 dash 统一）：图标 + 电量环/数字。</summary>
+    /// <summary>设备电量行（BrimDeck compact-devices 同款：文件数 + 设备图标 + 大号分级配色百分比）。</summary>
     private double DrawDevices(DrawingContext dc, Palette pal, Rect r, double cy)
     {
         if (r.Width < 40 || r.Height < 20) return 0;
         double ppd = Ppd;
         dc.DrawRoundedRectangle(Faint(Color.FromRgb(0x0D, 0x11, 0x17), 0.92), null, r, r.Height / 2, r.Height / 2);
 
-        var devices = DeviceService.Snapshot;
         double x = r.X + 16;
-        if (devices.Count == 0)
+
+        // 文件中转计数（有文件才显示，BrimDeck 同款 📁 N）
+        int files = FileTrayService.Count;
+        if (files > 0)
+        {
+            var fi = Text("文", 11, pal.Accent, true, ppd);
+            dc.DrawText(fi, new Point(x, cy - fi.Height / 2));
+            x += fi.Width + 4;
+            var fc = Text($"{files}", 13, pal.Text, true, ppd);
+            dc.DrawText(fc, new Point(x, cy - fc.Height / 2));
+            x += fc.Width + 20;
+        }
+
+        var devices = DeviceService.Snapshot;
+        if (devices.Count == 0 && files == 0)
         {
             var empty = Text("📡 未检测到无线设备电量（蓝牙/HID）", 11, pal.TextDim, ppd: ppd);
             dc.DrawText(empty, new Point(x, cy - empty.Height / 2));
-            return empty.Width + 32;
+            return empty.Width + 32 + (files > 0 ? x - r.X : 0);
         }
-        var title = Text("设备", 10, pal.TextDim, ppd: ppd);
-        dc.DrawText(title, new Point(x, cy - title.Height / 2));
-        x += title.Width + 12;
 
         foreach (var d in devices.Take(5))
         {
-            // 电量色：≤20% critical、≤40% warning，其余绿（与读数分级一致）
-            var color = d.Percent <= 20 ? pal.Up
+            // 分级配色：充电绿 / ≤20 红 / ≤40 橙 / 其余白
+            var color = d.Charging ? Color.FromRgb(0x3F, 0xC1, 0x5E)
+                      : d.Percent <= 20 ? pal.Up
                       : d.Percent <= 40 ? pal.Warning
-                      : Color.FromRgb(0x60, 0xC0, 0x78);
-            // 电量环
-            double cr = 10;
-            dc.DrawEllipse(null, PenOf(pal.Track, 2.6), new Point(x + cr, cy), cr, cr);
-            var arc = ArcGeometry(x + cr, cy, cr - 1.4, d.Percent / 100.0);
-            dc.DrawGeometry(null, PenOf(color, 2.6), arc);
-            // 图标字
-            var glyph = Text(DeviceService.Glyph(d.Kind), 8, Colors.White, true, ppd);
-            dc.DrawText(glyph, new Point(x + cr - glyph.Width / 2, cy - glyph.Height / 2));
-            x += cr * 2 + 5;
-            // 百分比
-            var pct = Text($"{d.Percent}%", 12, Colors.White, true, ppd);
+                      : pal.Text;
+            // 设备图标（dim）+ 大号百分比（分级色，粗体）
+            var glyph = Text(DeviceService.Glyph(d.Kind), 11, pal.TextDim, true, ppd);
+            dc.DrawText(glyph, new Point(x, cy - glyph.Height / 2));
+            x += glyph.Width + 5;
+            var pct = Text($"{d.Percent}%", 13, color, true, ppd);
             dc.DrawText(pct, new Point(x, cy - pct.Height / 2));
-            x += pct.Width + 14;
+            x += pct.Width;
+            // 充电小闪电
+            if (d.Charging)
+            {
+                var bolt = Text("⚡", 9, Color.FromRgb(0x3F, 0xC1, 0x5E), ppd: ppd);
+                dc.DrawText(bolt, new Point(x + 1, cy - pct.Height / 2 - 2));
+                x += bolt.Width + 2;
+            }
+            x += 18;
         }
-        // 内容实测宽 = 已排内容（扣末尾组距 14）+ 右留白 16
-        return x - r.X - 14 + 16;
+        // 内容实测宽 = 已排内容（扣末尾组距 18）+ 右留白 16
+        return x - r.X - 18 + 16;
     }
 
     /// <summary>剪贴板提示行：最近一条内容预览。</summary>

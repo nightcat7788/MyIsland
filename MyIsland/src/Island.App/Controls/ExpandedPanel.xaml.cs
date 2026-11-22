@@ -39,6 +39,9 @@ public partial class ExpandedPanel : UserControl
     /// <summary>监控页（宿主直接注入快照数据，不走绑定）。</summary>
     public MonitorPage Monitor => monitorPage;
 
+    /// <summary>设备电量页（自绘，数据直接读 DeviceService）。</summary>
+    public DevicesPage DevicesView => devicesPage;
+
     /// <summary>请求收起面板（顶栏 ✕）。</summary>
     public event Action? CloseRequested;
 
