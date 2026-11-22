@@ -71,6 +71,27 @@ public sealed class VolumeService : IDisposable
         catch { return false; }
     }
 
+    /// <summary>麦克风是否正被使用（默认采集端点存在活动会话；L4 隐私点同款数据源）。</summary>
+    public bool MicInUse
+    {
+        get
+        {
+            try
+            {
+                var ep = _enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
+                var sessions = ep.AudioSessionManager.Sessions;
+                for (int i = 0; i < sessions.Count; i++)
+                {
+                    using var s = sessions[i];
+                    if (s.State == NAudio.CoreAudioApi.Interfaces.AudioSessionState.AudioSessionStateActive)
+                        return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+    }
+
     /// <summary>(音量0..1, 是否静音)。后台线程触发。</summary>
     public event Action<float, bool>? Changed;
 

@@ -63,6 +63,9 @@ public sealed class IslandCanvas : FrameworkElement
     /// <summary>前台窗口（进程名 + 标题，宿主每秒注入；活动窗口视图消费）。</summary>
     public (string Proc, string Title)? ActiveWindow { get; set; }
 
+    /// <summary>麦克风使用中（宿主每秒注入）：收起态右上角画隐私绿点（L4 隐私点同款）。</summary>
+    public bool MicActive { get; set; }
+
     // 临时活动（音量指示等）：带过期时间，优先级最高
     public ActivityView? Activity { get; set; }
     public double[]? CpuHistory { get; set; }
@@ -154,6 +157,16 @@ public sealed class IslandCanvas : FrameworkElement
             dc.DrawGeometry(null, RenderKit.RimLightPen, geo);
 
         if (IsExpanded || IsIndicator) return;   // 展开面板由 XAML 画；指示条只留呼吸底
+
+        // 隐私点（iPhone/L4 同款）：麦克风使用中，胶囊右上角常绿点
+        if (MicActive)
+        {
+            double dotX = r.Right - r.Height * 0.42, dotY = r.Y + r.Height * 0.32;
+            dc.DrawEllipse(BrushOf(Color.FromRgb(0x3F, 0xC1, 0x5E)), null,
+                new Point(dotX, dotY), 3.4, 3.4);
+            dc.DrawEllipse(null, PenOf(Color.FromRgb(0x3F, 0xC1, 0x5E), 1.2, 0.45),
+                new Point(dotX, dotY), 5.2, 5.2);
+        }
 
         if (!IsExpanded)
         {

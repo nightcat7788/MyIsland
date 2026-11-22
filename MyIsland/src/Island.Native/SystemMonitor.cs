@@ -302,6 +302,7 @@ public sealed class SystemMonitor : IDisposable
         SampleDriveSpaces();
         var disks = SampleDisks();
         SampleTopProcesses();
+        SamplePing();
         // 系统盘空间（来自全体驱动器字典）
         string sysRoot = (System.IO.Path.GetPathRoot(Environment.SystemDirectory) ?? "C:\\").TrimEnd('\\');
         _driveSpace.TryGetValue(sysRoot, out var sysSpace);
@@ -336,6 +337,7 @@ public sealed class SystemMonitor : IDisposable
             ThreadCount = SafeCount(_threadCounter),
             CommitGB = commit.used,
             CommitLimitGB = commit.total,
+            PingMs = _pingMs,
         };
         lock (_gate) Current = snap;
         Snapshot?.Invoke(snap);
@@ -388,6 +390,27 @@ public sealed class SystemMonitor : IDisposable
     {
         try { return c is null ? 0 : (int)c.NextValue(); }
         catch { return 0; }
+    }
+
+    // ---------- Ping（L4 Hardware 同款：3s 节流异步 ICMP，不阻塞采样线程） ----------
+    private long _pingMs = -1;
+    private DateTime _lastPing = DateTime.MinValue;
+
+    private void SamplePing()
+    {
+        if ((DateTime.Now - _lastPing).TotalSeconds < 3) return;
+        _lastPing = DateTime.Now;
+        _ = System.Threading.Tasks.Task.Run(async () =>
+        {
+            try
+            {
+                using var p = new System.Net.NetworkInformation.Ping();
+                var r = await p.SendPingAsync("223.5.5.5", 1500);   // 阿里 DNS，国内延迟基准
+                _pingMs = r.Status == System.Net.NetworkInformation.IPStatus.Success
+                    ? r.RoundtripTime : -1;
+            }
+            catch { /* 离线/被防火墙拦：保持上一帧 */ }
+        });
     }
 
     private void ReadNetwork(out double down, out double up)

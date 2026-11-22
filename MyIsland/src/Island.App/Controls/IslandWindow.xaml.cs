@@ -78,7 +78,11 @@ public partial class IslandWindow : Window
         MouseEnter += (_, _) => { if (!_expanded) _squash.To(1.07, 240, 0.55); };
         MouseLeave += (_, _) => { if (!_expanded) _squash.To(1, 240, 0.6); };
         PreviewMouseLeftButtonDown += (_, _) =>
-        { if (!_expanded) { _squash.Snap(0.88); _squash.To(1, 300, 0.5); } };
+        {
+            if (_expanded) return;
+            _squash.Snap(0.88); _squash.To(1, 300, 0.5);
+            TrackTripleClick();   // 三击 → 专注模式（半透明+穿透）
+        };
 
         // 监控刷新率（设置中心可调，立即生效并持久化）
         // 见 SetMonitorInterval()
@@ -105,6 +109,8 @@ public partial class IslandWindow : Window
         ApplyTheme();
     }
 
+    private const int HotkeyToggleId = 0xB001;
+
     private void OnSourceInitialized(object? sender, EventArgs e)
     {
         IntPtr hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
@@ -113,6 +119,8 @@ public partial class IslandWindow : Window
         SetWindowLongPtr(hwnd, GWL_EXSTYLE, new IntPtr(style));
         // DPI 变化（拖到别的显示器/系统缩放调整）：让光标换算与毛玻璃重新取缩放
         System.Windows.Interop.HwndSource.FromHwnd(hwnd)?.AddHook(OnWndProc);
+        // 全局热键 Ctrl+Alt+Space：展开/收起（L4-NotchBar 同款触发）
+        RegisterHotKey(hwnd, HotkeyToggleId, MOD_CTRL | MOD_ALT, 0x20 /* VK_SPACE */);
         PositionOnEdge();
     }
 
@@ -120,6 +128,12 @@ public partial class IslandWindow : Window
     {
         if (msg == WM_DPICHANGED) _dpiScale = 0;
         else if (msg == WM_SETTINGCHANGE && _settings.Theme == "Auto") ApplyTheme();   // 壁纸/深浅切换跟随
+        else if (msg == WM_HOTKEY && wParam.ToInt32() == HotkeyToggleId)
+        {
+            if (_focusFade) { _focusFade = false; Opacity = 1.0; }   // 专注模式下热键先恢复可见
+            ToggleExpand();
+            handled = true;
+        }
         return IntPtr.Zero;
     }
 
@@ -185,6 +199,8 @@ public partial class IslandWindow : Window
 
     private void OnClosed(object? sender, EventArgs e)
     {
+        IntPtr hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        if (hwnd != IntPtr.Zero) UnregisterHotKey(hwnd, HotkeyToggleId);
         _frame.Stop(); _pointerTrack.Stop(); _fullscreenCheck.Stop();
         _cycleTimer.Stop(); _weatherTimer.Stop();
         Services.ClipboardService.Detach();   // 摘掉剪贴板监听（窗口关了就不该再记录）
@@ -467,6 +483,7 @@ public partial class IslandWindow : Window
             mon.InvalidateVisual();
             UpdateTempTooltip(_thermal.Current);
             ApplyAutoCollapsedWidth();   // 内容增减（显示项/电池/天气）→ 岛体宽度自动跟随
+            islandCanvas.MicActive = _volume.MicInUse;   // 隐私点：麦克风使用中亮绿点
 
             CheckAlerts();
 
@@ -1068,11 +1085,35 @@ public partial class IslandWindow : Window
         _settings.ClickThrough = on;
         _settings.Save();
         IntPtr hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
-        IntPtr ex = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
-        long style = ex.ToInt64();
-        style = on ? style | WS_EX_TRANSPARENT : style & ~WS_EX_TRANSPARENT;
-        SetWindowLongPtr(hwnd, GWL_EXSTYLE, new IntPtr(style));
+        if (hwnd != IntPtr.Zero)
+        {
+            IntPtr ex = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+            long style = ex.ToInt64();
+            style = on ? style | WS_EX_TRANSPARENT : style & ~WS_EX_TRANSPARENT;
+            SetWindowLongPtr(hwnd, GWL_EXSTYLE, new IntPtr(style));
+        }
         if (on) SetExpanded(false);
+    }
+
+    // ---------- 专注模式（L4 三击同款）：三击岛体 → 半透明 + 穿透；再三击恢复 ----------
+
+    private bool _focusFade;
+    private readonly System.Collections.Generic.List<DateTime> _clicks = new();
+
+    /// <summary>三击检测（700ms 内三击切换专注模式）。由 PreviewMouseLeftButtonDown 调用。</summary>
+    private void TrackTripleClick()
+    {
+        if (_expanded) return;
+        var now = DateTime.Now;
+        _clicks.RemoveAll(t => (now - t).TotalMilliseconds > 700);
+        _clicks.Add(now);
+        if (_clicks.Count >= 3)
+        {
+            _clicks.Clear();
+            // 专注模式只淡出半透明（不穿透明——否则无法再点回来；穿透用设置里的开关）
+            _focusFade = !_focusFade;
+            Opacity = _focusFade ? 0.35 : 1.0;
+        }
     }
 
     /// <summary>当前本体屏幕矩形（DIP），供毛玻璃等模块定位截屏区域。</summary>

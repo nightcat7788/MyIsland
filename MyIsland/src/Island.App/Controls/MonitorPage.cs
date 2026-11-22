@@ -237,6 +237,13 @@ public sealed class MonitorPage : FrameworkElement
             RenderKit.Baseline(dc, ui, x2, bl);
             var ur = RenderKit.Text(MonitorSnapshot.FormatSpeed(s.UploadSpeed), 13, pal.Text, true, ppd);
             RenderKit.Baseline(dc, ur, x2 + 16, bl);
+            // ping（L4 Hardware 同款：延迟分级配色 ≤50 绿 / ≤120 橙 / 更高红）
+            if (s.PingMs >= 0)
+            {
+                var pc = s.PingMs <= 50 ? DownC : s.PingMs <= 120 ? pal.Warning : pal.Up;
+                var ping = RenderKit.Text($"ping {s.PingMs}ms", 10, pc, ppd: ppd);
+                RenderKit.Baseline(dc, ping, lw - 6 - ping.WidthIncludingTrailingWhitespace, bl);
+            }
             y += 26;
         }
 

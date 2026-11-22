@@ -77,6 +77,9 @@ public sealed record MonitorSnapshot
     /// <summary>提交上限 GB。</summary>
     public double CommitLimitGB { get; init; }
 
+    /// <summary>网络延迟 ms（ping 223.5.5.5；-1 = 未知/离线）。</summary>
+    public long PingMs { get; init; } = -1;
+
     public string SessionText =>
         $"今日 ↓{FormatBytes(TodayDownload)} ↑{FormatBytes(TodayUpload)} · 会话 ↓{FormatBytes(SessionDownload)} ↑{FormatBytes(SessionUpload)}";
 
