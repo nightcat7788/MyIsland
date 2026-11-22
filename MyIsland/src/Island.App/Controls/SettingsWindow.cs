@@ -13,8 +13,9 @@ using Island.App.Themes;
 namespace Island.App.Controls;
 
 /// <summary>
-/// 设置中心（2026-11 重做）：BrimDeck 式深色卡片页 —— 无边框圆角窗口、
-/// 分区卡片、胶囊开关、重模板化深色下拉框、主题色主按钮。所有改动即时生效并持久化。
+/// 设置中心（2026-11-23 v2，参考 LiteMonitor 设置面板）：
+/// 左侧图标导航 + 右侧卡片分页 + 底部按钮栏；无边框圆角深色窗口，
+/// 胶囊开关 + 重模板深色下拉 + 主题色主按钮。所有改动即时生效并持久化。
 /// </summary>
 public sealed class SettingsWindow : Window
 {
@@ -42,6 +43,11 @@ public sealed class SettingsWindow : Window
     private bool _ready;
     private ControlTemplate? _comboTemplate;
 
+    // 导航状态
+    private readonly Dictionary<string, UIElement> _pages = new();
+    private readonly Dictionary<string, Border> _navItems = new();
+    private string _currentPage = "";
+
     private static readonly (string Id, string Label)[] Themes =
     {
         ("Dark", "深色"), ("Light", "浅色"), ("Auto", "跟随系统+壁纸"), ("OneDark", "One Dark Pro"),
@@ -62,6 +68,9 @@ public sealed class SettingsWindow : Window
     private static readonly string[] Cities =
         { "北京", "上海", "广州", "深圳", "杭州", "成都", "重庆", "西安", "武汉", "南京", "苏州", "厦门", "长沙", "青岛" };
 
+    private static readonly (string Id, string Glyph, string Label)[] Nav =
+        { ("appearance", "◐", "外观"), ("behavior", "⚡", "行为"), ("content", "▦", "内容"), ("system", "⚙", "系统") };
+
     public SettingsWindow(Settings settings, Palette palette, Host host)
     {
         _settings = settings;
@@ -70,7 +79,7 @@ public sealed class SettingsWindow : Window
 
         // ---------- 无边框圆角深色窗口 ----------
         Title = "MyIsland 设置";
-        Width = 560; Height = 680;
+        Width = 760; Height = 620;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         WindowStyle = WindowStyle.None;
         AllowsTransparency = true;
@@ -94,78 +103,45 @@ public sealed class SettingsWindow : Window
             },
         };
         var shellGrid = new Grid();
-        shellGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // 标题栏
-        shellGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); // 内容
+        shellGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });              // 标题栏
+        shellGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); // 主区
+        shellGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });              // 底部按钮栏
         shell.Child = shellGrid;
 
         shellGrid.Children.Add(BuildTitleBar());
 
-        // ---------- 内容 ----------
-        var root = new StackPanel { Margin = new Thickness(16, 4, 16, 16) };
+        // ---------- 主区：左导航 + 右分页 ----------
+        var main = new Grid { Margin = new Thickness(6, 0, 6, 0) };
+        main.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(150) });
+        main.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
-        // 外观
-        var appearance = Card("外观");
-        appearance.Add(Row("面板主题", Combo(Themes, settings.Theme, v => _host.SetTheme(v))));
-        appearance.Add(Row("停靠边缘", Combo(Edges, settings.Edge, v => _host.SetEdge(v))));
-        appearance.Add(Row("收起视图", Combo(Views, settings.CompactView, v => _host.SetCompactView(v))));
-        appearance.Add(Row("小形象款式", Combo(PetStyles, settings.PetStyle, v => _host.SetPetStyle(v)), last: true));
-        root.Children.Add(appearance);
+        var navPanel = new StackPanel { Margin = new Thickness(6, 2, 6, 6) };
+        foreach (var (id, glyph, label) in Nav)
+            navPanel.Children.Add(BuildNavItem(id, glyph, label));
+        main.Children.Add(navPanel);
 
-        // 行为
-        var behavior = Card("行为");
-        behavior.Add(Row("展开方式", Combo(ExpandModes, settings.ExpandMode, v => _host.SetExpandMode(v))));
-        behavior.Add(ToggleRow("最大化时缩成指示条", settings.IndicatorOnMaximize,
-            v => { settings.IndicatorOnMaximize = v; settings.Save(); }));
-        behavior.Add(ToggleRow("全屏游戏/视频时自动隐藏", settings.HideFullscreen,
-            v => { settings.HideFullscreen = v; settings.Save(); }));
-        behavior.Add(ToggleRow("小形象 ⇄ 信息胶囊 自动轮换", settings.PetAutoCycle,
-            v => { settings.PetAutoCycle = v; settings.Save(); }));
-        behavior.Add(ToggleRow("鼠标穿透（只显示不拦截，游戏适用）", settings.ClickThrough,
-            v => _host.SetClickThrough(v)));
-        behavior.Add(ToggleRow("长期显示灵动岛（全屏/最大化也不隐藏）", settings.AlwaysVisible,
-            v => { settings.AlwaysVisible = v; settings.Save(); }, last: true));
-        root.Children.Add(behavior);
-
-        // 内容
-        var content = Card("内容");
-        content.Add(Row("天气城市", CityCombo()));
-        content.Add(Row("仪表盘显示项", GhostLink("自定义", () => _host.ShowDashSettings())));
-        content.Add(Row("信息胶囊显示项", GhostLink("自定义", () => _host.ShowComboSettings())));
-        content.Add(Row("监控页显示项", GhostLink("自定义", () => _host.ShowMonitorSettings()), last: true));
-        root.Children.Add(content);
-
-        // 系统
-        var system = Card("系统");
-        system.Add(AutostartRow());
-        if (!_host.IsElevated)
+        // 分页容器
+        var pageHost = new Grid { Margin = new Thickness(2, 0, 10, 4) };
+        _pages["appearance"] = WrapScroll(BuildAppearancePage());
+        _pages["behavior"] = WrapScroll(BuildBehaviorPage());
+        _pages["content"] = WrapScroll(BuildContentPage());
+        _pages["system"] = WrapScroll(BuildSystemPage());
+        foreach (var pg in _pages.Values)
         {
-            system.Add(Hint("温度读数（CPU/GPU）需要管理员权限与 PawnIO 驱动。"));
-            var admin = OutlineButton("以管理员重启（获取温度读数）", _p.Warning);
-            admin.HorizontalAlignment = HorizontalAlignment.Left;
-            admin.Margin = new Thickness(0, 2, 0, 2);
-            admin.Click += (_, _) => { _host.RestartAsAdmin(); Close(); };
-            system.Add(admin);
+            pg.Visibility = Visibility.Collapsed;
+            pageHost.Children.Add(pg);
         }
-        root.Children.Add(system);
+        Grid.SetColumn(pageHost, 1);
+        main.Children.Add(pageHost);
 
-        // 底部主按钮
-        var done = PrimaryButton("完成");
-        done.Width = 96;
-        done.IsDefault = true;
-        done.HorizontalAlignment = HorizontalAlignment.Right;
-        done.Margin = new Thickness(0, 2, 2, 0);
-        done.Click += (_, _) => Close();
-        root.Children.Add(done);
+        Grid.SetRow(main, 1);
+        shellGrid.Children.Add(main);
 
-        var scroll = new ScrollViewer
-        {
-            Content = root,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-        };
-        Grid.SetRow(scroll, 1);
-        shellGrid.Children.Add(scroll);
+        // ---------- 底部按钮栏（LiteMonitor 同款：左重置 + 右确定） ----------
+        shellGrid.Children.Add(BuildFooter());
 
         Content = shell;
+        ShowPage("appearance");
         _ready = true;
     }
 
@@ -173,7 +149,7 @@ public sealed class SettingsWindow : Window
 
     private UIElement BuildTitleBar()
     {
-        var bar = new Grid { Margin = new Thickness(16, 12, 12, 6) };
+        var bar = new Grid { Margin = new Thickness(18, 12, 14, 8) };
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
@@ -209,6 +185,250 @@ public sealed class SettingsWindow : Window
 
         bar.MouseLeftButtonDown += (_, e) => { if (e.ButtonState == MouseButtonState.Pressed) DragMove(); };
         return bar;
+    }
+
+    // ---------- 左侧导航 ----------
+
+    private UIElement BuildNavItem(string id, string glyph, string label)
+    {
+        var glyphTb = new TextBlock
+        {
+            Text = glyph, FontSize = 13, Width = 24,
+            Foreground = BrushOf(_p.TextDim),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var labelTb = new TextBlock
+        {
+            Text = label, FontSize = 13,
+            Foreground = BrushOf(_p.TextDim),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var dot = new Border
+        {
+            Width = 3, Height = 16, CornerRadius = new CornerRadius(1.5),
+            Background = BrushOf(_p.Accent), Visibility = Visibility.Collapsed,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 8, 0),
+        };
+        var row = new StackPanel { Orientation = Orientation.Horizontal };
+        row.Children.Add(dot);
+        row.Children.Add(glyphTb);
+        row.Children.Add(labelTb);
+
+        var item = new Border
+        {
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(10, 9, 10, 9),
+            Margin = new Thickness(0, 1, 0, 1),
+            Background = Brushes.Transparent,
+            Cursor = Cursors.Hand,
+            Child = row,
+            Tag = (glyphTb, labelTb, dot),
+        };
+        item.MouseLeftButtonUp += (_, _) => ShowPage(id);
+        item.MouseEnter += (_, _) =>
+        {
+            if (_currentPage != id) item.Background = WithOpacity(_p.SurfaceAlt, 0.6);
+        };
+        item.MouseLeave += (_, _) =>
+        {
+            if (_currentPage != id) item.Background = Brushes.Transparent;
+        };
+        _navItems[id] = item;
+        return item;
+    }
+
+    private void ShowPage(string id)
+    {
+        _currentPage = id;
+        foreach (var (pid, page) in _pages)
+            page.Visibility = pid == id ? Visibility.Visible : Visibility.Collapsed;
+        foreach (var (pid, item) in _navItems)
+        {
+            bool on = pid == id;
+            item.Background = on ? BrushOf(_p.SurfaceAlt) : Brushes.Transparent;
+            if (item.Tag is (TextBlock g, TextBlock l, Border dot))
+            {
+                g.Foreground = BrushOf(on ? _p.Accent : _p.TextDim);
+                l.Foreground = BrushOf(on ? _p.Text : _p.TextDim);
+                l.FontWeight = on ? FontWeights.SemiBold : FontWeights.Normal;
+                dot.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+            }
+        }
+    }
+
+    // ---------- 底部按钮栏 ----------
+
+    private UIElement BuildFooter()
+    {
+        var bar = new Border
+        {
+            BorderBrush = BrushOf(_p.Track),
+            BorderThickness = new Thickness(0, 1, 0, 0),
+            Padding = new Thickness(16, 10, 16, 12),
+        };
+        var dock = new DockPanel();
+
+        // 左：全部重置（两段确认，防误触）
+        var reset = OutlineButton("全部重置", _p.Warning);
+        bool armed = false;
+        reset.Click += (_, _) =>
+        {
+            if (!armed)
+            {
+                armed = true;
+                reset.Content = "再点一次确认重置";
+                var t = new System.Windows.Threading.DispatcherTimer
+                { Interval = TimeSpan.FromSeconds(3) };
+                t.Tick += (_, _) => { armed = false; reset.Content = "全部重置"; t.Stop(); };
+                t.Start();
+                return;
+            }
+            ResetDefaults();
+            Close();
+        };
+        DockPanel.SetDock(reset, Dock.Left);
+        dock.Children.Add(reset);
+
+        // 右：完成（主题色主按钮）
+        var done = PrimaryButton("完成");
+        done.Width = 96;
+        done.IsDefault = true;
+        done.Click += (_, _) => Close();
+        DockPanel.SetDock(done, Dock.Right);
+        dock.Children.Add(done);
+
+        bar.Child = dock;
+        Grid.SetRow(bar, 2);
+        return bar;
+    }
+
+    /// <summary>全部重置：所有设置回到出厂值（走宿主回调，立即生效）。</summary>
+    private void ResetDefaults()
+    {
+        _host.SetTheme("Dark");
+        _host.SetEdge("top");
+        _host.SetExpandMode("hover");
+        _host.SetCompactView("dash");
+        _host.SetPetStyle("classic");
+        _host.SetWeatherCity("");
+        _host.SetClickThrough(false);
+        _settings.IndicatorOnMaximize = true;
+        _settings.HideFullscreen = true;
+        _settings.PetAutoCycle = true;
+        _settings.AlwaysVisible = false;
+        _settings.DashItems = "";
+        _settings.ComboItems = "";
+        _settings.MonitorItems = "";
+        _settings.Save();
+    }
+
+    // ---------- 四个分页 ----------
+
+    private UIElement WrapScroll(UIElement content) => new ScrollViewer
+    {
+        Content = content,
+        VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+    };
+
+    private UIElement BuildAppearancePage()
+    {
+        var panel = new StackPanel { Margin = new Thickness(4, 4, 6, 4) };
+        // LiteMonitor 式两列网格：标签在上、控件在下
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        void Cell(int row, int col, string label, UIElement control)
+        {
+            var cell = new StackPanel { Margin = new Thickness(0, 4, 14, 8) };
+            cell.Children.Add(new TextBlock
+            {
+                Text = label, FontSize = 11,
+                Foreground = BrushOf(_p.TextDim), Margin = new Thickness(2, 0, 0, 4),
+            });
+            if (control is FrameworkElement fe)
+            {
+                fe.HorizontalAlignment = HorizontalAlignment.Left;
+                fe.VerticalAlignment = VerticalAlignment.Center;
+            }
+            cell.Children.Add(control);
+            Grid.SetRow(cell, row); Grid.SetColumn(cell, col);
+            grid.Children.Add(cell);
+        }
+
+        Cell(0, 0, "面板主题", Combo(Themes, _settings.Theme, v => _host.SetTheme(v)));
+        Cell(0, 1, "停靠边缘", Combo(Edges, _settings.Edge, v => _host.SetEdge(v)));
+        Cell(1, 0, "收起视图", Combo(Views, _settings.CompactView, v => _host.SetCompactView(v)));
+        Cell(1, 1, "小形象款式", Combo(PetStyles, _settings.PetStyle, v => _host.SetPetStyle(v)));
+
+        var card = Card("外观设置");
+        card.Add(grid);
+        panel.Children.Add(card);
+        return panel;
+    }
+
+    private UIElement BuildBehaviorPage()
+    {
+        var panel = new StackPanel { Margin = new Thickness(4, 4, 6, 4) };
+
+        var expand = Card("展开方式");
+        expand.Add(Row("悬停/常驻/长关", Combo(ExpandModes, _settings.ExpandMode, v => _host.SetExpandMode(v)), last: true));
+        panel.Children.Add(expand);
+
+        var behavior = Card("行为开关");
+        behavior.Add(ToggleRow("最大化时缩成指示条", _settings.IndicatorOnMaximize,
+            v => { _settings.IndicatorOnMaximize = v; _settings.Save(); }));
+        behavior.Add(ToggleRow("全屏游戏/视频时自动隐藏", _settings.HideFullscreen,
+            v => { _settings.HideFullscreen = v; _settings.Save(); }));
+        behavior.Add(ToggleRow("小形象 ⇄ 信息胶囊 自动轮换", _settings.PetAutoCycle,
+            v => { _settings.PetAutoCycle = v; _settings.Save(); }));
+        behavior.Add(ToggleRow("鼠标穿透（只显示不拦截，游戏适用）", _settings.ClickThrough,
+            v => _host.SetClickThrough(v)));
+        behavior.Add(ToggleRow("长期显示灵动岛（全屏/最大化也不隐藏）", _settings.AlwaysVisible,
+            v => { _settings.AlwaysVisible = v; _settings.Save(); }, last: true));
+        panel.Children.Add(behavior);
+        return panel;
+    }
+
+    private UIElement BuildContentPage()
+    {
+        var panel = new StackPanel { Margin = new Thickness(4, 4, 6, 4) };
+
+        var weather = Card("天气");
+        weather.Add(Row("天气城市", CityCombo(), last: true));
+        panel.Children.Add(weather);
+
+        var items = Card("显示项自定义");
+        items.Add(Row("仪表盘显示项", GhostLink("自定义", () => _host.ShowDashSettings())));
+        items.Add(Row("信息胶囊显示项", GhostLink("自定义", () => _host.ShowComboSettings())));
+        items.Add(Row("监控页显示项", GhostLink("自定义", () => _host.ShowMonitorSettings()), last: true));
+        panel.Children.Add(items);
+        return panel;
+    }
+
+    private UIElement BuildSystemPage()
+    {
+        var panel = new StackPanel { Margin = new Thickness(4, 4, 6, 4) };
+
+        var sys = Card("系统");
+        sys.Add(AutostartRow());
+        panel.Children.Add(sys);
+
+        if (!_host.IsElevated)
+        {
+            var perm = Card("权限");
+            perm.Add(Hint("温度读数（CPU/GPU）需要管理员权限与 PawnIO 驱动。"));
+            var admin = OutlineButton("以管理员重启（获取温度读数）", _p.Warning);
+            admin.HorizontalAlignment = HorizontalAlignment.Left;
+            admin.Margin = new Thickness(0, 2, 0, 2);
+            admin.Click += (_, _) => { _host.RestartAsAdmin(); Close(); };
+            perm.Add(admin);
+            panel.Children.Add(perm);
+        }
+        return panel;
     }
 
     // ---------- 卡片与行 ----------
@@ -249,7 +469,6 @@ public sealed class SettingsWindow : Window
             base.Children.Add(shell);
         }
         public void Add(UIElement element) => _inner.Children.Add(element);
-        public int Count => _inner.Children.Count;
     }
 
     private FrameworkElement Row(string label, FrameworkElement control, bool last = false)
@@ -313,7 +532,7 @@ public sealed class SettingsWindow : Window
         _comboTemplate ??= BuildComboTemplate();
         var cb = new ComboBox
         {
-            MinWidth = 190,
+            MinWidth = 180,
             Height = 32,
             Foreground = BrushOf(_p.Text),
             Template = _comboTemplate,
@@ -323,7 +542,6 @@ public sealed class SettingsWindow : Window
         itemStyle.Setters.Add(new Setter(BackgroundProperty, Brushes.Transparent));
         itemStyle.Setters.Add(new Setter(PaddingProperty, new Thickness(12, 7, 12, 7)));
         itemStyle.Setters.Add(new Setter(MarginProperty, new Thickness(4, 1, 4, 1)));
-        var templateFactory = new FrameworkElementFactory(typeof(Border));
         // 圆角项容器
         var itemTpl = new ControlTemplate(typeof(ComboBoxItem));
         var b = new FrameworkElementFactory(typeof(Border));
@@ -439,7 +657,7 @@ public sealed class SettingsWindow : Window
         return b;
     }
 
-    /// <summary>描边按钮（管理员重启等次级动作）。</summary>
+    /// <summary>描边按钮（重置 / 管理员重启等次级动作）。</summary>
     private Button OutlineButton(string text, Color color)
     {
         var b = new Button
