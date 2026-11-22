@@ -182,35 +182,50 @@ public sealed class IslandCanvas : FrameworkElement
         dc.DrawText(pct, new Point(r.Right - 14 - pct.Width, cy - pct.Height / 2));
     }
 
+    /// <summary>收起态内容实测宽度（DIP）：各视图渲染时回报，宿主据此自动调节岛体大小。</summary>
+    public double CompactContentWidth { get; private set; }
+    /// <summary>是否已完成首次内容测量（未测量前宿主流固定设计宽度）。</summary>
+    public bool HasMeasuredCompact { get; private set; }
+
     private void DrawCompact(DrawingContext dc, Palette pal, Rect r)
     {
         double cx = r.X + r.Width / 2;
         double cy = r.Y + r.Height / 2;
 
+        double w;
         switch (CompactView)
         {
             case "pet":
                 _pet.SurfaceColor = pal.Surface;   // 眼睑遮罩跟随主题
                 _pet.Draw(dc, cx, cy, 1.0, 1, LookPoint, PointerNear);
+                w = 110;
                 break;
             case "clock":
-                DrawClock(dc, pal, r, cy, Snapshot);
+                w = DrawClock(dc, pal, r, cy, Snapshot);
                 break;
             case "monitor":
-                DrawMonitor(dc, pal, r, cy, Snapshot, NetHistory);
+                w = DrawMonitor(dc, pal, r, cy, Snapshot, NetHistory);
                 break;
             case "combo":
-                DrawCombo(dc, pal, r, cy, Snapshot);
+                w = DrawCombo(dc, pal, r, cy, Snapshot);
                 break;
             case "dash":
-                DrawDash(dc, pal, r, cy, Snapshot, Thermal, NetHistory);
+                w = DrawDash(dc, pal, r, cy, Snapshot, Thermal, NetHistory);
                 break;
             case "devices":
-                DrawDevices(dc, pal, r, cy);
+                w = DrawDevices(dc, pal, r, cy);
                 break;
             case "clipboard":
-                DrawClipboardHint(dc, pal, r, cy);
+                w = DrawClipboardHint(dc, pal, r, cy);
                 break;
+            default:
+                w = 110;
+                break;
+        }
+        if (w > 40)
+        {
+            CompactContentWidth = w;
+            HasMeasuredCompact = true;
         }
     }
 
@@ -219,11 +234,11 @@ public sealed class IslandCanvas : FrameworkElement
     /// 上行 = 核心柱 + CPU/MEM/GPU 表盘（270° 环 + 字母 + 读数，读数按最宽样本预留，跳数不动布局）；
     /// 下行 = 平滑网速曲线 + 上下行速率。GitHub Dark 底。
     /// </summary>
-    private void DrawMonitor(DrawingContext dc, Palette pal, Rect r, double cy,
+    private double DrawMonitor(DrawingContext dc, Palette pal, Rect r, double cy,
         MonitorSnapshot? snap, double[]? netHistory)
     {
-        if (snap is null) return;
-        if (r.Width < 40 || r.Height < 20) return;
+        if (snap is null) return 0;
+        if (r.Width < 40 || r.Height < 20) return 0;
         double ppd = Ppd;
         dc.DrawRoundedRectangle(Faint(Color.FromRgb(0x0D, 0x11, 0x17), 0.92), null, r, 16, 16);
 
@@ -275,15 +290,21 @@ public sealed class IslandCanvas : FrameworkElement
         double rx = r.Right - 14;
         dc.DrawText(up, new Point(rx - up.Width, y2 - up.Height - 1));
         dc.DrawText(down, new Point(rx - down.Width, y2 + 1));
+
+        // 内容实测宽 = max(表盘行, 曲线最短 60 + 网速块) + 右留白
+        double netBlock = Math.Max(up.Width, down.Width) + 14;
+        double row1 = x - r.X + 14;
+        double row2 = 16 + 60 + 6 + netBlock;
+        return Math.Max(row1, row2);
     }
 
     /// <summary>
     /// combo 信息胶囊（参考 BrimDeck 刘海轮播态）：时间 + 系统读数表盘 + 网速。
     /// 小形象视图 10 秒后自动变形为此视图，30 秒后变回（IslandWindow 的 pet 轮换）。
     /// </summary>
-    private void DrawCombo(DrawingContext dc, Palette pal, Rect r, double cy, MonitorSnapshot? snap)
+    private double DrawCombo(DrawingContext dc, Palette pal, Rect r, double cy, MonitorSnapshot? snap)
     {
-        if (r.Width < 40 || r.Height < 20) return;
+        if (r.Width < 40 || r.Height < 20) return 0;
         double ppd = Ppd;
         dc.DrawRoundedRectangle(Faint(Color.FromRgb(0x0D, 0x11, 0x17), 0.92), null, r, 16, 16);
         double x = r.X + 14;
@@ -309,6 +330,7 @@ public sealed class IslandCanvas : FrameworkElement
         }
 
         // ③ 右缘：上下行速率（两行小字）
+        double netBlock = 0;
         if (WantCombo("net") && snap is not null)
         {
             var down = Text("↓" + MonitorSnapshot.FormatSpeed(snap.DownloadSpeed), 10,
@@ -318,7 +340,11 @@ public sealed class IslandCanvas : FrameworkElement
             double rx = r.Right - 14;
             dc.DrawText(up, new Point(rx - up.Width, cy - up.Height - 1));
             dc.DrawText(down, new Point(rx - down.Width, cy + 1));
+            netBlock = Math.Max(up.Width, down.Width) + 14;
         }
+
+        // 内容实测宽 = 左侧流（时间+表盘）+ 右侧网速块（无则只留右 padding）
+        return x - r.X + (netBlock > 0 ? 12 + netBlock : 14);
     }
 
     /// <summary>读数表盘 + 右侧数字（BrimDeck MonitorStrip.Gauge）：返回占用宽度（数字按最宽样本预留）。</summary>
@@ -339,11 +365,11 @@ public sealed class IslandCanvas : FrameworkElement
     /// dash 视图（用户定稿结构）：6 组等距「彩色图标+白值」。
     /// 每组宽度按最宽样本预留（跳数不挤压邻组）；核心柱带轨道；用量读数按 70/90 分级配色。
     /// </summary>
-    private void DrawDash(DrawingContext dc, Palette pal, Rect r, double cy,
+    private double DrawDash(DrawingContext dc, Palette pal, Rect r, double cy,
         MonitorSnapshot? snap, Services.ThermalSnapshot? thermal, double[]? netHistory)
     {
-        if (snap is null) return;
-        if (r.Width < 40 || r.Height < 20) return;
+        if (snap is null) return 0;
+        if (r.Width < 40 || r.Height < 20) return 0;
         double ppd = Ppd;
         dc.DrawRoundedRectangle(Faint(Color.FromRgb(0x0D, 0x11, 0x17), 0.92), null, r, 16, 16);
 
@@ -394,7 +420,8 @@ public sealed class IslandCanvas : FrameworkElement
         if (Want("mem"))
             Item("MEM", Color.FromRgb(0xA8, 0xF0, 0xF0), $"{snap.MemoryUsagePercent:F0}%", "100%",
                 LevelColor(snap.MemoryUsagePercent, Colors.White, pal));
-        if (Want("gpu") && snap.GpuUsage > 0)
+        // GPU% 常显（核显空闲=0 也占位，避免岛体宽度随负载跳动）
+        if (Want("gpu"))
             Item("GPU%", Color.FromRgb(0xF0, 0xF0, 0xA8), $"{snap.GpuUsage:F0}%", "100%",
                 LevelColor(snap.GpuUsage, Colors.White, pal));
         if (Want("disk"))
@@ -422,12 +449,14 @@ public sealed class IslandCanvas : FrameworkElement
             Item("↓", Color.FromRgb(0x60, 0xA8, 0xF0), MonitorSnapshot.FormatSpeed(snap.DownloadSpeed).Replace(" ", ""), "9.9MB/s");
             Item("↑", Color.FromRgb(0xD8, 0x90, 0x30), MonitorSnapshot.FormatSpeed(snap.UploadSpeed).Replace(" ", ""), "9.9MB/s");
         }
+        // 内容实测宽 = 已排内容（含末尾组距 26，扣掉）+ 右留白 14
+        return x - r.X - 26 + 14;
     }
 
     /// <summary>设备电量行（GitHub Dark 底，与 dash 统一）：图标 + 电量环/数字。</summary>
-    private void DrawDevices(DrawingContext dc, Palette pal, Rect r, double cy)
+    private double DrawDevices(DrawingContext dc, Palette pal, Rect r, double cy)
     {
-        if (r.Width < 40 || r.Height < 20) return;
+        if (r.Width < 40 || r.Height < 20) return 0;
         double ppd = Ppd;
         dc.DrawRoundedRectangle(Faint(Color.FromRgb(0x0D, 0x11, 0x17), 0.92), null, r, 16, 16);
 
@@ -437,7 +466,7 @@ public sealed class IslandCanvas : FrameworkElement
         {
             var empty = Text("📡 未检测到无线设备电量（蓝牙/HID）", 11, pal.TextDim, ppd: ppd);
             dc.DrawText(empty, new Point(x, cy - empty.Height / 2));
-            return;
+            return empty.Width + 32;
         }
         var title = Text("设备", 10, pal.TextDim, ppd: ppd);
         dc.DrawText(title, new Point(x, cy - title.Height / 2));
@@ -463,10 +492,12 @@ public sealed class IslandCanvas : FrameworkElement
             dc.DrawText(pct, new Point(x, cy - pct.Height / 2));
             x += pct.Width + 14;
         }
+        // 内容实测宽 = 已排内容（扣末尾组距 14）+ 右留白 16
+        return x - r.X - 14 + 16;
     }
 
     /// <summary>剪贴板提示行：最近一条内容预览。</summary>
-    private void DrawClipboardHint(DrawingContext dc, Palette pal, Rect r, double cy)
+    private double DrawClipboardHint(DrawingContext dc, Palette pal, Rect r, double cy)
     {
         double ppd = Ppd;
         var last = ClipboardService.LastPreview;
@@ -474,15 +505,24 @@ public sealed class IslandCanvas : FrameworkElement
         var icon = Text("⎘", 13, pal.Accent, ppd: ppd);
         dc.DrawText(icon, new Point(x, cy - icon.Height / 2));
         x += icon.Width + 8;
-        var t = Text(string.IsNullOrEmpty(last) ? "剪贴板为空" : last, 11.5,
-            string.IsNullOrEmpty(last) ? pal.TextDim : pal.Text, ppd: ppd);
+        // 预览超长时截断（内容宽度上限 260，避免剪贴板长文本撑爆岛体）
+        string preview = string.IsNullOrEmpty(last) ? "剪贴板为空" : last;
+        var previewColor = string.IsNullOrEmpty(last) ? pal.TextDim : pal.Text;
+        var t = Text(preview, 11.5, previewColor, ppd: ppd);
+        const double maxPreview = 260;
+        if (t.Width > maxPreview)
+            t = RenderKit.Trimmed(preview, 11.5, previewColor, maxPreview, false, ppd);
         dc.DrawText(t, new Point(x, cy - t.Height / 2));
+        x += t.Width;
+        double countBlock = 0;
         int count = ClipboardService.Count;
         if (count > 0)
         {
             var n = Text($"{count} 条", 10, pal.TextDim, ppd: ppd);
             dc.DrawText(n, new Point(r.Right - 14 - n.Width, cy - n.Height / 2));
+            countBlock = n.Width + 14;
         }
+        return x - r.X + (countBlock > 0 ? 12 + countBlock : 14);
     }
 
     /// <summary>电量环弧线（从顶部顺时针，fraction=0..1）。</summary>
@@ -506,12 +546,13 @@ public sealed class IslandCanvas : FrameworkElement
     }
 
     /// <summary>时钟视图：左时间，中天气（已接线），右上下行网速。时间字号固定，宽度稳定。</summary>
-    private void DrawClock(DrawingContext dc, Palette pal, Rect r, double cy, MonitorSnapshot? snap)
+    private double DrawClock(DrawingContext dc, Palette pal, Rect r, double cy, MonitorSnapshot? snap)
     {
         double ppd = Ppd;
         var t = Text(DateTime.Now.ToString("HH:mm"), 15, pal.Text, true, ppd);
         dc.DrawText(t, new Point(r.X + 16, cy - t.Height / 2));
 
+        double netBlock = 0;
         double rx = r.Right - 14;
         // 右缘：实时网速（上/下两行小字）
         if (snap is not null)
@@ -520,20 +561,26 @@ public sealed class IslandCanvas : FrameworkElement
             var up = Text("↑" + MonitorSnapshot.FormatSpeed(snap.UploadSpeed), 10, pal.TextDim, ppd: ppd);
             dc.DrawText(up, new Point(rx - up.Width, cy - up.Height - 1));
             dc.DrawText(down, new Point(rx - down.Width, cy + 1));
+            netBlock = Math.Max(up.Width, down.Width) + 14;
             rx -= Math.Max(up.Width, down.Width) + 12;
         }
         // 天气（BrimDeck compact-clock：时钟旁给环境信息）；无数据时不占位
+        double weatherBlock = 0;
         if (Weather is { } w)
         {
             var temp = Text($"{Math.Round(w.Temp)}°", 12, pal.Text, true, ppd);
             var emoji = Text(w.Emoji, 12, pal.Text, ppd: ppd);
             double wx = rx - emoji.Width - 3 - temp.Width;
+            // 天气块始终计入内容宽度（否则缩放动画中途会暂时不画 → 宽度振荡）
+            weatherBlock = emoji.Width + 3 + temp.Width + 12;
             if (wx > r.X + 16 + t.Width + 8)   // 空间够才画，避免压到时间
             {
                 dc.DrawText(emoji, new Point(wx, cy - emoji.Height / 2));
                 dc.DrawText(temp, new Point(wx + emoji.Width + 3, cy - temp.Height / 2));
             }
         }
+        // 内容实测宽 = 时间 + 天气 + 网速块（按出现与否累加）
+        return 16 + t.Width + 12 + weatherBlock + netBlock;
     }
 
 }

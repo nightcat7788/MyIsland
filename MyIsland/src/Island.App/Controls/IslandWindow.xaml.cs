@@ -449,6 +449,7 @@ public partial class IslandWindow : Window
             mon.Thermal = _thermal.Current;
             mon.InvalidateVisual();
             UpdateTempTooltip(_thermal.Current);
+            ApplyAutoCollapsedWidth();   // 内容增减（显示项/电池/天气）→ 岛体宽度自动跟随
 
             CheckAlerts();
 
@@ -715,9 +716,31 @@ public partial class IslandWindow : Window
         islandCanvas.InvalidateVisual();
     }
 
-    /// <summary>当前收起态尺寸（指示条模式下固定 44×6）。</summary>
+    /// <summary>当前收起态尺寸（指示条模式下固定 44×6；宽度按内容实测自动调节，上限=设计宽度）。</summary>
     private (double Width, double Height) CurrentCollapsedSize()
-        => _indicatorMode ? (44, 6) : CollapsedSize(islandCanvas.CompactView);
+    {
+        if (_indicatorMode) return (44, 6);
+        var view = islandCanvas.CompactView;
+        var fix = CollapsedSize(view);
+        double w = islandCanvas.HasMeasuredCompact
+            ? Math.Clamp(islandCanvas.CompactContentWidth, 110, fix.Width)
+            : fix.Width;
+        return (w, fix.Height);
+    }
+
+    /// <summary>内容宽度变化时重新设定岛体目标宽度（弹簧动画过渡，1s 节流由调用方保证）。</summary>
+    private double _lastAutoW = -1;
+    private void ApplyAutoCollapsedWidth()
+    {
+        if (_expanded || _indicatorMode) return;
+        var s = CurrentCollapsedSize();
+        if (Math.Abs(s.Width - _lastAutoW) > 3)
+        {
+            _lastAutoW = s.Width;
+            _bodyW.To(s.Width);
+            _bodyH.To(s.Height);
+        }
+    }
 
     private void ApplyTheme()
     {
