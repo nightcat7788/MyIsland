@@ -279,6 +279,20 @@
                             </DockPanel>
                         </Border>
 
+                        <!-- 内存清理（LiteMonitor 同款） -->
+                        <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
+                            <DockPanel>
+                                <StackPanel DockPanel.Dock="Left">
+                                    <TextBlock Text="内存清理" FontSize="12" Foreground="{DynamicResource Fg}"/>
+                                    <TextBlock x:Name="memCleanResult" Text="清空各进程工作集，释放可用内存" FontSize="10"
+                                               Foreground="{DynamicResource FgDim}"/>
+                                </StackPanel>
+                                <Button DockPanel.Dock="Right" Content="立即清理" Width="66" Height="26"
+                                        Style="{StaticResource FlatBtn}" Foreground="{DynamicResource Fg}" FontSize="11"
+                                        Click="OnCleanMemory" HorizontalAlignment="Right"/>
+                            </DockPanel>
+                        </Border>
+
                         <!-- 锁屏 / 睡眠 -->
                         <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
                             <DockPanel>

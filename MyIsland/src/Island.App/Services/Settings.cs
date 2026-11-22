@@ -33,6 +33,8 @@ public sealed class Settings
     public int TempAlertThreshold { get; set; } = 88;
     public int QuotaIntervalMin { get; set; } = 10;
     public string City { get; set; } = "";             // 天气城市（空=IP 定位）
+    /// <summary>手动选择网卡 Id（空=自动聚合；LiteMonitor PreferredNetwork 同款）。</summary>
+    public string PreferredNetwork { get; set; } = "";
 
     private static string Dir => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MyIsland");

@@ -34,6 +34,7 @@ public sealed class SettingsWindow : Window
         public Action RestartAsAdmin = () => { };
         public Action<bool> SetClickThrough = _ => { };
         public Action<int> SetMonitorInterval = _ => { };
+        public Action<string> SetPreferredNic = _ => { };
         public Func<string?> PromptCity = () => null;
         public bool IsElevated = true;
     }
@@ -430,6 +431,7 @@ public sealed class SettingsWindow : Window
 
         var sys = Card("系统");
         sys.Add(AutostartRow());
+        sys.Add(Row("监控网卡", NicCombo(), last: true));
         panel.Children.Add(sys);
 
         if (!_host.IsElevated)
@@ -771,6 +773,26 @@ public sealed class SettingsWindow : Window
             _host.IsElevated ? "开机自启（计划任务 · 管理员权限）" : "开机自启", toggle, last: true));
         panel.Children.Add(status);
         return panel;
+    }
+
+    /// <summary>网卡选择下拉（LiteMonitor PreferredNetwork 同款：自动 + 本机物理网卡）。</summary>
+    private ComboBox NicCombo()
+    {
+        var cb = DarkCombo();
+        var nics = ControlService.GetNetworkAdapters();
+        int selected = 0;
+        for (int i = 0; i < nics.Count; i++)
+        {
+            cb.Items.Add(new ComboBoxItem { Content = nics[i].Name, Tag = nics[i].Id });
+            if (nics[i].Id == _settings.PreferredNetwork) selected = i;
+        }
+        cb.SelectedIndex = selected;
+        cb.SelectionChanged += (_, _) =>
+        {
+            if (_ready && cb.SelectedItem is ComboBoxItem { Tag: string id })
+                _host.SetPreferredNic(id);
+        };
+        return cb;
     }
 
     private ComboBox CityCombo()

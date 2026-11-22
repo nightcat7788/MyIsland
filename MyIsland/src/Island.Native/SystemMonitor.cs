@@ -60,6 +60,7 @@ public sealed class SystemMonitor : IDisposable
 
     public void Start()
     {
+        LoadTraffic();   // 恢复今日累计（重启不归零）
         InitNetworkBaseline();
         _timer.Start();
         Sample(); // 立即给一个初值
@@ -461,6 +462,13 @@ public sealed class SystemMonitor : IDisposable
         _todayUp += dUp;
         _lastIn = inBytes; _lastOut = outBytes; _lastNetTime = now;
 
+        // 今日流量持久化：30s 一写（崩溃/重启不丢）
+        if ((now - _lastTrafficSave).TotalSeconds >= 30)
+        {
+            _lastTrafficSave = now;
+            SaveTraffic();
+        }
+
         // 指数平滑，避免数字乱跳
         _smoothDown = _smoothDown * 0.6 + rawDown * 0.4;
         _smoothUp = _smoothUp * 0.6 + rawUp * 0.4;
@@ -469,6 +477,40 @@ public sealed class SystemMonitor : IDisposable
 
     private DateTime _today = DateTime.Now.Date;
     private long _todayDown, _todayUp;
+
+    // ---------- 今日流量持久化（LiteMonitor 流量统计同款：重启不归零） ----------
+    private static string TrafficFile => System.IO.Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MyIsland", "traffic.json");
+    private DateTime _lastTrafficSave = DateTime.MinValue;
+
+    private void LoadTraffic()
+    {
+        try
+        {
+            if (!System.IO.File.Exists(TrafficFile)) return;
+            var json = System.IO.File.ReadAllText(TrafficFile);
+            var doc = System.Text.Json.JsonDocument.Parse(json).RootElement;
+            string date = doc.GetProperty("date").GetString() ?? "";
+            if (date == DateTime.Now.ToString("yyyy-MM-dd"))
+            {
+                _todayDown = doc.GetProperty("down").GetInt64();
+                _todayUp = doc.GetProperty("up").GetInt64();
+            }
+            // 跨天：不恢复（今日归零），昨天的总量由文件保留（后续可做历史页）
+        }
+        catch { }
+    }
+
+    private void SaveTraffic()
+    {
+        try
+        {
+            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(TrafficFile)!);
+            string json = $"{{\"date\":\"{DateTime.Now:yyyy-MM-dd}\",\"down\":{_todayDown},\"up\":{_todayUp}}}";
+            System.IO.File.WriteAllText(TrafficFile, json);
+        }
+        catch { }
+    }
 
     private long _sessionDown, _sessionUp;
     private string _linkType = "";
@@ -530,6 +572,8 @@ public sealed class SystemMonitor : IDisposable
             foreach (var nic in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
             {
                 if (nic.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up) continue;
+                // 手动选择网卡（LiteMonitor PreferredNetwork 同款）：只统计选定网卡
+                if (!string.IsNullOrEmpty(PreferredNicId) && nic.Id != PreferredNicId) continue;
                 var stats = nic.GetIPStatistics();
                 if (stats is null) continue;
                 // 过滤回环/隧道：只统计有网关的物理网卡（与 DetectLinkType 一致的口径）
@@ -543,6 +587,9 @@ public sealed class SystemMonitor : IDisposable
         }
         catch { /* 单次失败：调用方按 0 处理并重建基线 */ }
     }
+
+    /// <summary>手动选择的网卡 Id（空=自动聚合所有物理网卡；设置中心"网卡"选项）。</summary>
+    public string PreferredNicId { get; set; } = "";
 
     public void Dispose()
     {

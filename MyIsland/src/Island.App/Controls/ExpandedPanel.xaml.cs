@@ -81,6 +81,13 @@ public partial class ExpandedPanel : UserControl
         btnMic.Content = pd.MicMuted ? "已静音" : "麦克风";
     }
 
+    /// <summary>内存清理（LiteMonitor 同款）：按钮点击即清，结果显示在副标题。</summary>
+    private void OnCleanMemory(object sender, RoutedEventArgs e)
+    {
+        long freed = Services.ControlService.CleanMemory();
+        memCleanResult.Text = freed > 0 ? $"已释放约 {freed} MB 可用内存" : "已清理（内存压力本就不高）";
+    }
+
     /// <summary>控制页打开时刷新电源计划按钮（powercfg 枚举，高亮当前项）。</summary>
     private void RefreshPowerPlans()
     {

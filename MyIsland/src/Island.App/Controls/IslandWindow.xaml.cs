@@ -63,6 +63,7 @@ public partial class IslandWindow : Window
     {
         _settings = settings;
         _monitor = new SystemMonitor(settings.MonitorIntervalMs);
+        _monitor.PreferredNicId = settings.PreferredNetwork;   // 恢复手动网卡选择
 
         InitializeComponent();
 
@@ -368,6 +369,14 @@ public partial class IslandWindow : Window
         _settings.MonitorIntervalMs = ms;
         _settings.Save();
         _monitor.SetInterval(ms);
+    }
+
+    /// <summary>手动选择网卡（设置中心调用）：立即生效并持久化。</summary>
+    public void SetPreferredNic(string nicId)
+    {
+        _settings.PreferredNetwork = nicId;
+        _settings.Save();
+        _monitor.PreferredNicId = nicId;
     }
 
     /// <summary>非管理员运行时为 true：监控页温度位显示"需管理员"提示。</summary>

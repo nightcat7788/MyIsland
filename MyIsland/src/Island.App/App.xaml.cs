@@ -181,6 +181,7 @@ public partial class App : Application
             RestartAsAdmin = RestartAsAdmin,
             SetClickThrough = on => _island.SetClickThrough(on),
             SetMonitorInterval = ms => _island.SetMonitorInterval(ms),
+            SetPreferredNic = id => _island.SetPreferredNic(id),
             PromptCity = PromptCity,
             IsElevated = IsElevated(),
         });

@@ -286,6 +286,54 @@ public static class ControlService
         catch { return false; }
     }
 
+    // ---------- 内存清理（LiteMonitor 同款：本进程 GC + 尽量清空各进程工作集） ----------
+
+    /// <summary>返回释放的可用内存增量（MB，可能为 0）。</summary>
+    public static long CleanMemory()
+    {
+        long before = AvailableMB();
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        try { EmptyWorkingSet(System.Diagnostics.Process.GetCurrentProcess().Handle); } catch { }
+        foreach (var p in System.Diagnostics.Process.GetProcesses())
+        {
+            try { EmptyWorkingSet(p.Handle); } catch { /* 系统进程无权限：跳过 */ }
+            finally { p.Dispose(); }
+        }
+        return Math.Max(0, AvailableMB() - before);
+    }
+
+    private static long AvailableMB()
+    {
+        try
+        {
+            using var c = new System.Diagnostics.PerformanceCounter("Memory", "Available MBytes", true);
+            return (long)c.NextValue();
+        }
+        catch { return 0; }
+    }
+
+    [System.Runtime.InteropServices.DllImport("psapi.dll")]
+    private static extern bool EmptyWorkingSet(IntPtr hProcess);
+
+    // ---------- 网卡枚举（设置中心手动选网卡用） ----------
+
+    public static List<(string Id, string Name)> GetNetworkAdapters()
+    {
+        var list = new List<(string, string)> { ("", "自动（聚合所有物理网卡）") };
+        try
+        {
+            foreach (var nic in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (nic.NetworkInterfaceType is System.Net.NetworkInformation.NetworkInterfaceType.Loopback
+                    or System.Net.NetworkInformation.NetworkInterfaceType.Tunnel) continue;
+                list.Add((nic.Id, nic.Name));
+            }
+        }
+        catch { }
+        return list;
+    }
+
     public static void OpenSettings(string page)
     {
         try
