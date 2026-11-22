@@ -147,12 +147,35 @@ public sealed class IslandCanvas : FrameworkElement
         var drip = LiquidGeometry.Drip(Edge, line, centerU, DripRadius);
         if (drip is not null) geo.Children.Add(drip);
 
-        // 毛玻璃纹理底 + 主题色压层
+        // ---------- 液态毛玻璃（Liquid Glass）分层渲染 ----------
+        // ① 毛玻璃纹理底（壁纸模糊采样）
         if (BackdropBrush is not null)
             dc.DrawGeometry(BackdropBrush, null, geo);
-        dc.DrawGeometry(Faint(pal.Surface, IsExpanded ? 0.94 : 0.86), PenOf(pal.Rim, 1.0, 0.45), geo);
-
-        // 高光边缘（Liquid Glass 式 rim light）：顶部 1px 渐隐白边，深主题下给胶囊玻璃厚度
+        // ② 主题色压层：降到 0.58（收起）让模糊底透出来；展开 0.9 保可读性
+        dc.DrawGeometry(Faint(pal.Surface, IsExpanded ? 0.90 : 0.58), PenOf(pal.Rim, 1.0, 0.5), geo);
+        // ③ 顶部 sheen 高光带：白 12% → 45% 高度处消隐（液态玻璃的顶部反光）
+        if (!pal.SquareCorners && !IsIndicator && r.Width > 24 && r.Height > 16)
+        {
+            var sheen = new LinearGradientBrush(
+                Color.FromArgb(0x20, 0xFF, 0xFF, 0xFF), Colors.Transparent, 90);
+            sheen.Freeze();
+            var sheenGeo = LiquidGeometry.RoundedRect(
+                new Rect(r.X + 1.5, r.Y + 1, Math.Max(4, r.Width - 3), Math.Max(2, r.Height * 0.45)),
+                corner, corner, 0, 0);
+            dc.DrawGeometry(sheen, null, sheenGeo);
+        }
+        // ④ 底部内阴影（玻璃厚度感：底部 18% 处压一条暗带）
+        if (!pal.SquareCorners && !IsIndicator && r.Width > 24 && r.Height > 16)
+        {
+            var shade = new LinearGradientBrush(Colors.Transparent,
+                Color.FromArgb(0x2E, 0x00, 0x00, 0x00), 90);
+            shade.Freeze();
+            var shadeGeo = LiquidGeometry.RoundedRect(
+                new Rect(r.X + 1.5, r.Y + r.Height * 0.62, Math.Max(4, r.Width - 3), Math.Max(2, r.Height * 0.36)),
+                0, 0, corner, corner);
+            dc.DrawGeometry(shade, null, shadeGeo);
+        }
+        // ⑤ 高光边缘（rim light）：顶部 1px 渐隐白边，深主题下给胶囊玻璃厚度
         if (pal.IsDark && !pal.SquareCorners)
             dc.DrawGeometry(null, RenderKit.RimLightPen, geo);
 
@@ -259,7 +282,7 @@ public sealed class IslandCanvas : FrameworkElement
         if (snap is null) return 0;
         if (r.Width < 40 || r.Height < 20) return 0;
         double ppd = Ppd;
-        dc.DrawRoundedRectangle(Faint(Color.FromRgb(0x0D, 0x11, 0x17), 0.92), null, r, r.Height / 2, r.Height / 2);
+        dc.DrawRoundedRectangle(Faint(Color.FromRgb(0x0D, 0x11, 0x17), 0.66), null, r, r.Height / 2, r.Height / 2);
 
         var cpuC = Color.FromRgb(0x2E, 0x9B, 0xFF);
         var memC = Color.FromRgb(0x4F, 0xE3, 0xD7);
@@ -317,7 +340,7 @@ public sealed class IslandCanvas : FrameworkElement
     {
         if (r.Width < 40 || r.Height < 20) return 0;
         double ppd = Ppd;
-        dc.DrawRoundedRectangle(Faint(Color.FromRgb(0x0D, 0x11, 0x17), 0.92), null, r, r.Height / 2, r.Height / 2);
+        dc.DrawRoundedRectangle(Faint(Color.FromRgb(0x0D, 0x11, 0x17), 0.66), null, r, r.Height / 2, r.Height / 2);
         double x = r.X + 14;
 
         // ① 时间（按样本 "00:00" 预留宽度，分针跳变不推挤右侧读数）
@@ -382,7 +405,7 @@ public sealed class IslandCanvas : FrameworkElement
         if (snap is null) return 0;
         if (r.Width < 40 || r.Height < 20) return 0;
         double ppd = Ppd;
-        dc.DrawRoundedRectangle(Faint(Color.FromRgb(0x0D, 0x11, 0x17), 0.92), null, r, r.Height / 2, r.Height / 2);
+        dc.DrawRoundedRectangle(Faint(Color.FromRgb(0x0D, 0x11, 0x17), 0.66), null, r, r.Height / 2, r.Height / 2);
 
         double x = r.X + 14;
         // 温度分级：≤70° 绿 / 71–85° 橙 / >85° 红（与监控页一致）
@@ -469,7 +492,7 @@ public sealed class IslandCanvas : FrameworkElement
     {
         if (r.Width < 40 || r.Height < 20) return 0;
         double ppd = Ppd;
-        dc.DrawRoundedRectangle(Faint(Color.FromRgb(0x0D, 0x11, 0x17), 0.92), null, r, r.Height / 2, r.Height / 2);
+        dc.DrawRoundedRectangle(Faint(Color.FromRgb(0x0D, 0x11, 0x17), 0.66), null, r, r.Height / 2, r.Height / 2);
 
         double x = r.X + 16;
 
@@ -554,7 +577,7 @@ public sealed class IslandCanvas : FrameworkElement
     {
         if (r.Width < 40 || r.Height < 20) return 0;
         double ppd = Ppd;
-        dc.DrawRoundedRectangle(Faint(Color.FromRgb(0x0D, 0x11, 0x17), 0.92), null, r, r.Height / 2, r.Height / 2);
+        dc.DrawRoundedRectangle(Faint(Color.FromRgb(0x0D, 0x11, 0x17), 0.66), null, r, r.Height / 2, r.Height / 2);
 
         double x = r.X + 16;
         // 呼吸圆点（主题色，标识"正在跟随前台窗口"）
