@@ -38,6 +38,10 @@ public sealed class IslandWindow : Window
     private bool _expanded;
     private DispatcherTimer? _hoverTimer;
     private readonly DispatcherTimer _cycleTimer;
+    private readonly DispatcherTimer _weatherTimer;
+    private readonly DispatcherTimer _clipsTimer;
+    private readonly Island.App.Services.WeatherService _weather = new();
+    private readonly ClipboardHistory _clips = new();
     private const int PetPhaseSec = 10, ComboPhaseSec = 30;
 
     public IslandWindow()
@@ -95,6 +99,26 @@ public sealed class IslandWindow : Window
         _quotaTimer.Tick += (_, _) => RefreshQuota();
         _quotaTimer.Start();
         RefreshQuota();
+
+        // 天气：Open-Meteo（30 分钟刷新，内部缓存节流）
+        _weather.Settings = new Island.App.Services.Settings();
+        _canvas.Weather = _weather.Get();   // 立即拉一次（内部后台线程）
+        _weatherTimer = new DispatcherTimer(DispatcherPriority.Normal) { Interval = TimeSpan.FromMinutes(30) };
+        _weatherTimer.Tick += (_, _) => _canvas.Weather = _weather.Get();
+        _weatherTimer.Start();
+
+        // 剪贴板历史（跨平台轮询，1.5s；内容变化时刷新面板）
+        _clips.Start(this);
+        _clipsTimer = new DispatcherTimer(DispatcherPriority.Normal) { Interval = TimeSpan.FromSeconds(2) };
+        _clipsTimer.Tick += (_, _) =>
+        {
+            if (_expanded && _canvas.Page == "clips")
+            {
+                _canvas.Clips = _clips.Items;
+                _canvas.InvalidateVisual();
+            }
+        };
+        _clipsTimer.Start();
 
         SetupTray();
     }
@@ -276,6 +300,10 @@ public sealed class IslandWindow : Window
         _frame.Stop();
         _hoverTimer?.Stop();
         _quotaTimer.Stop();
+        _weatherTimer.Stop();
+        _clipsTimer.Stop();
+        _clips.Dispose();
+        _weather.Dispose();
         if (_tray is not null) _tray.IsVisible = false;
         _sampler.Dispose();
         base.OnClosed(e);

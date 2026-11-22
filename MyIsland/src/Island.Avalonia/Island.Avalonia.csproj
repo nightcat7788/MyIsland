@@ -29,6 +29,9 @@
     <!-- 温度服务是纯 .NET + LHM（无 WPF 依赖）：Windows 上提供 CPU/GPU/SSD 温度；Mac 上自动无数据 -->
     <Compile Include="..\Island.App\Services\ThermalService.cs" Link="Merged\ThermalService.cs" />
     <Compile Include="..\Island.App\Services\InpOutSmnService.cs" Link="Merged\InpOutSmnService.cs" />
+    <!-- 天气/设置是纯 .NET（Open-Meteo + JSON），跨平台直接复用 -->
+    <Compile Include="..\Island.App\Services\WeatherService.cs" Link="Merged\WeatherService.cs" />
+    <Compile Include="..\Island.App\Services\Settings.cs" Link="Merged\Settings.cs" />
   </ItemGroup>
 
   <ItemGroup>

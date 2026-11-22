@@ -23,11 +23,13 @@ public sealed class IslandCanvas : Control
     public string Page { get; set; } = "monitor";   // monitor / quota（展开态页）
     public MonitorSnapshot? Snapshot { get; set; }
     public Island.Core.Quota.QuotaSnapshot? Quota { get; set; }
+    public Island.App.Services.WeatherInfo? Weather { get; set; }   // 时钟视图右缘
+    public IReadOnlyList<ClipItem> Clips { get; set; } = Array.Empty<ClipItem>();
     public double[]? NetHistory { get; set; }
     public Palette Palette { get; set; } = Palette.Dark;
 
     // 页签热区（绘制时记录，宿主点击命中用）
-    private Rect _tabMonitor, _tabQuota;
+    private Rect _tabMonitor, _tabQuota, _tabClips;
 
     /// <summary>页签点击命中；命中返回 true 并切页。</summary>
     public bool HandleTabClick(Point pos)
@@ -35,6 +37,7 @@ public sealed class IslandCanvas : Control
         if (!IsExpanded) return false;
         if (_tabMonitor.Contains(pos)) { Page = "monitor"; InvalidateVisual(); return true; }
         if (_tabQuota.Contains(pos)) { Page = "quota"; InvalidateVisual(); return true; }
+        if (_tabClips.Contains(pos)) { Page = "clips"; InvalidateVisual(); return true; }
         return false;
     }
 
@@ -150,21 +153,43 @@ public sealed class IslandCanvas : Control
 
         // ---- 页签（BrimDeck 式分段切换的极简版） ----
         double tabX = r.X + 20, tabY = r.Y + 14;
-        var t1 = RenderKit.Text("监控", 12, Page == "monitor" ? pal.Text : pal.TextDim, Page == "monitor");
-        _tabMonitor = new Rect(tabX - 6, tabY - 4, t1.Width + 12, t1.Height + 8);
-        if (Page == "monitor")
-            dc.DrawRectangle(RenderKit.Faint(pal.Accent, 0.22), null, new RoundedRect(_tabMonitor, 7));
-        dc.DrawText(t1, new Point(tabX, tabY));
-        tabX += t1.Width + 24;
-        var t2 = RenderKit.Text("AI 用量", 12, Page == "quota" ? pal.Text : pal.TextDim, Page == "quota");
-        _tabQuota = new Rect(tabX - 6, tabY - 4, t2.Width + 12, t2.Height + 8);
-        if (Page == "quota")
-            dc.DrawRectangle(RenderKit.Faint(pal.Accent, 0.22), null, new RoundedRect(_tabQuota, 7));
-        dc.DrawText(t2, new Point(tabX, tabY));
+        void Tab(string label, string page, ref Rect rect)
+        {
+            var t = RenderKit.Text(label, 12, Page == page ? pal.Text : pal.TextDim, Page == page);
+            rect = new Rect(tabX - 6, tabY - 4, t.Width + 12, t.Height + 8);
+            if (Page == page)
+                dc.DrawRectangle(RenderKit.Faint(pal.Accent, 0.22), null, new RoundedRect(rect, 7));
+            dc.DrawText(t, new Point(tabX, tabY));
+            tabX += t.Width + 24;
+        }
+        Tab("监控", "monitor", ref _tabMonitor);
+        Tab("AI 用量", "quota", ref _tabQuota);
+        Tab("剪贴板", "clips", ref _tabClips);
 
-        double contentY = tabY + t1.Height + 16;
+        double contentY = tabY + 24 + 16;
         if (Page == "quota") { DrawQuotaPage(dc, pal, r, contentY); return; }
+        if (Page == "clips") { DrawClipsPage(dc, pal, r, contentY); return; }
         DrawMonitorPage(dc, pal, r, contentY);
+    }
+
+    /// <summary>剪贴板页：最近 20 条（纯本地内存，不写盘）。</summary>
+    private void DrawClipsPage(DrawingContext dc, Palette pal, Rect r, double y0)
+    {
+        double x = r.X + 24, y = y0;
+        if (Clips.Count == 0)
+        {
+            var t = RenderKit.Text("复制文字后自动记录（仅本地内存）", 12, pal.TextDim);
+            dc.DrawText(t, new Point(x, y + 30));
+            return;
+        }
+        foreach (var c in Clips.Take(9))
+        {
+            var time = RenderKit.Text(c.At.ToString("HH:mm"), 10, pal.TextTertiary);
+            dc.DrawText(time, new Point(x, y + 2));
+            var prev = RenderKit.Trimmed(c.Preview, 11.5, pal.Text, r.Width - 130, false);
+            dc.DrawText(prev, new Point(x + 52, y));
+            y += 26;
+        }
     }
 
     /// <summary>AI 用量页（BrimDeck 分列式；数据来自 Island.Core.Quota 本地 JSONL 扫描）。</summary>
@@ -501,11 +526,26 @@ public sealed class IslandCanvas : Control
         var t = RenderKit.Text(DateTime.Now.ToString("HH:mm"), 15, pal.Text, true);
         dc.DrawText(t, new Point(r.X + 16, cy - t.Height / 2));
         var snap = Snapshot;
-        if (snap is null) return;
-        var down = RenderKit.Text("↓" + MonitorSnapshot.FormatSpeed(snap.DownloadSpeed), 10, pal.TextDim);
-        var up = RenderKit.Text("↑" + MonitorSnapshot.FormatSpeed(snap.UploadSpeed), 10, pal.TextDim);
         double rx = r.Right - 14;
-        dc.DrawText(up, new Point(rx - up.Width, cy - up.Height - 1));
-        dc.DrawText(down, new Point(rx - down.Width, cy + 1));
+        if (snap is not null)
+        {
+            var down = RenderKit.Text("↓" + MonitorSnapshot.FormatSpeed(snap.DownloadSpeed), 10, pal.TextDim);
+            var up = RenderKit.Text("↑" + MonitorSnapshot.FormatSpeed(snap.UploadSpeed), 10, pal.TextDim);
+            dc.DrawText(up, new Point(rx - up.Width, cy - up.Height - 1));
+            dc.DrawText(down, new Point(rx - down.Width, cy + 1));
+            rx -= Math.Max(up.Width, down.Width) + 12;
+        }
+        // 天气（与 Windows 版同款：emoji + 温度，空间够才画）
+        if (Weather is { } w)
+        {
+            var temp = RenderKit.Text($"{Math.Round(w.Temp)}°", 12, pal.Text, true);
+            var emoji = RenderKit.Text(w.Emoji, 12, pal.Text);
+            double wx = rx - emoji.Width - 3 - temp.Width;
+            if (wx > r.X + 16 + t.Width + 8)
+            {
+                dc.DrawText(emoji, new Point(wx, cy - emoji.Height / 2));
+                dc.DrawText(temp, new Point(wx + emoji.Width + 3, cy - temp.Height / 2));
+            }
+        }
     }
 }
