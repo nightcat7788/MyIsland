@@ -87,6 +87,8 @@ public sealed class SettingsWindow : Window
             v => { settings.PetAutoCycle = v; settings.Save(); }));
         root.Children.Add(Check("鼠标穿透（只显示不拦截，游戏适用）", settings.ClickThrough,
             v => _host.SetClickThrough(v)));
+        root.Children.Add(Check("长期显示灵动岛（全屏/最大化也不隐藏）", settings.AlwaysVisible,
+            v => { settings.AlwaysVisible = v; settings.Save(); }));
 
         root.Children.Add(Title2("内容"));
         root.Children.Add(Row("天气城市", CityCombo()));

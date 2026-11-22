@@ -597,6 +597,13 @@ public partial class IslandWindow : Window
 
     private void UpdateFullscreenHidden()
     {
+        // 长期显示：全屏/最大化都不隐藏不缩条，优先级最高
+        if (_settings.AlwaysVisible)
+        {
+            Visibility = Visibility.Visible;
+            SetIndicator(false);
+            return;
+        }
         var ctx = ForegroundDetector.Detect();
         if (_settings.HideFullscreen && ctx.IsDistracting)
         {
