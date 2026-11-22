@@ -68,8 +68,6 @@ public sealed class IslandCanvas : FrameworkElement
 
     // 临时活动（音量指示等）：带过期时间，优先级最高
     public ActivityView? Activity { get; set; }
-    public double[]? CpuHistory { get; set; }
-    public double[]? NetHistory { get; set; }
 
     // dash 显示项过滤（null = 全部显示；宿主由 Settings.DashItems 注入）
     public HashSet<string>? DashItems { get; set; }
@@ -99,9 +97,6 @@ public sealed class IslandCanvas : FrameworkElement
     private static void Dial(DrawingContext dc, Point center, double size, double ring,
         double? share, Color track, Color arc, Color letterColor, string letter, double ppd)
         => RenderKit.Dial(dc, center, size, ring, share, track, arc, letterColor, letter, ppd);
-
-    private static void DrawSpark(DrawingContext dc, Rect area, double[]? data, Color color, int n = 36)
-        => RenderKit.DrawSpark(dc, area, data, color, n);
 
     // ---------- 主渲染 ----------
     protected override void OnRender(DrawingContext dc)
@@ -245,13 +240,13 @@ public sealed class IslandCanvas : FrameworkElement
                 w = DrawClock(dc, pal, r, cy, Snapshot);
                 break;
             case "monitor":
-                w = DrawMonitor(dc, pal, r, cy, Snapshot, NetHistory);
+                w = DrawMonitor(dc, pal, r, cy, Snapshot);
                 break;
             case "combo":
                 w = DrawCombo(dc, pal, r, cy, Snapshot);
                 break;
             case "dash":
-                w = DrawDash(dc, pal, r, cy, Snapshot, Thermal, NetHistory);
+                w = DrawDash(dc, pal, r, cy, Snapshot, Thermal);
                 break;
             case "devices":
                 w = DrawDevices(dc, pal, r, cy);
@@ -278,7 +273,7 @@ public sealed class IslandCanvas : FrameworkElement
     /// 细核心柱群（≤16 核）+ C/M/G/D 表盘读数 + 紧凑网速（↓3.40M ↑420K）。GitHub Dark 底。
     /// </summary>
     private double DrawMonitor(DrawingContext dc, Palette pal, Rect r, double cy,
-        MonitorSnapshot? snap, double[]? netHistory)
+        MonitorSnapshot? snap)
     {
         if (snap is null) return 0;
         if (r.Width < 40 || r.Height < 20) return 0;
@@ -405,7 +400,7 @@ public sealed class IslandCanvas : FrameworkElement
     /// 每组宽度按最宽样本预留（跳数不挤压邻组）；核心柱带轨道；用量读数按 70/90 分级配色。
     /// </summary>
     private double DrawDash(DrawingContext dc, Palette pal, Rect r, double cy,
-        MonitorSnapshot? snap, Services.ThermalSnapshot? thermal, double[]? netHistory)
+        MonitorSnapshot? snap, Services.ThermalSnapshot? thermal)
     {
         if (snap is null) return 0;
         if (r.Width < 40 || r.Height < 20) return 0;
@@ -603,26 +598,6 @@ public sealed class IslandCanvas : FrameworkElement
         if (!string.IsNullOrEmpty(tt))
             dc.DrawText(t, new Point(x, cy - t.Height / 2));
         return x - r.X + (string.IsNullOrEmpty(tt) ? 0 : t.Width) + 16;
-    }
-
-    /// <summary>电量环弧线（从顶部顺时针，fraction=0..1）。</summary>
-    private static StreamGeometry ArcGeometry(double cx, double cy, double radius, double fraction)
-    {
-        fraction = Easing.Clamp(fraction, 0.02, 1);
-        var geo = new StreamGeometry();
-        using (var ctx = geo.Open())
-        {
-            // 起点顶部，顺时针
-            double start = -Math.PI / 2;
-            double end = start + fraction * 2 * Math.PI;
-            var p0 = new Point(cx + radius * Math.Cos(start), cy + radius * Math.Sin(start));
-            var p1 = new Point(cx + radius * Math.Cos(end), cy + radius * Math.Sin(end));
-            ctx.BeginFigure(p0, false, false);
-            bool large = fraction > 0.5;
-            ctx.ArcTo(p1, new Size(radius, radius), 0, large, SweepDirection.Clockwise, true, false);
-        }
-        geo.Freeze();
-        return geo;
     }
 
     /// <summary>时钟视图：左时间，中天气（已接线），右上下行网速。时间字号固定，宽度稳定。</summary>

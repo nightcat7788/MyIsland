@@ -517,8 +517,6 @@ public partial class IslandWindow : Window
                 downSeq[i] = _downHist[(_histIdx + i) % _downHist.Length];
                 upSeq[i] = _upHist[(_histIdx + i) % _upHist.Length];
             }
-            islandCanvas.CpuHistory = cpuSeq;
-            islandCanvas.NetHistory = netSeq;
 
             // 展开页监控页（自绘，不走绑定）
             var mon = expandedPanel.Monitor;
@@ -537,7 +535,6 @@ public partial class IslandWindow : Window
 
             if (expandedPanel.DataContext is PanelData pd)
             {
-                pd.UpdateDevices();     // 设备电量（内部 5s 节流）
                 pd.UpdateClipboard();   // 剪贴板（内部 2s 节流）
                 pd.UpdateFiles();       // 文件中转
             }

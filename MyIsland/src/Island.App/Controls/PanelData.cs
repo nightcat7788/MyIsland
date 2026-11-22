@@ -5,40 +5,9 @@ using Island.App.Services;
 
 namespace Island.App.Controls;
 
-/// <summary>展开面板的 ViewModel：配额/设备/剪贴板/文件/控制（监控页由 MonitorPage 自绘直取快照，不走绑定）。</summary>
+/// <summary>展开面板的 ViewModel：剪贴板/文件/控制（监控页、设备页均自绘直取服务，不走绑定）。</summary>
 public sealed class PanelData : INotifyPropertyChanged
 {
-    // ---------- 设备电量 ----------
-    private System.Collections.ObjectModel.ObservableCollection<DeviceRow> _devices = new();
-    public System.Collections.ObjectModel.ObservableCollection<DeviceRow> Devices
-    { get => _devices; set => Set(ref _devices, value); }
-
-    public sealed record DeviceRow(string Name, string Kind, string PercentText, string Color, double Fraction);
-
-    private DateTime _lastDeviceAt;
-    private string _devicesSig = "";
-
-    public void UpdateDevices()
-    {
-        if ((DateTime.Now - _lastDeviceAt).TotalSeconds < 5) return;
-        _lastDeviceAt = DateTime.Now;
-        var list = Services.DeviceService.Snapshot;
-        // 签名相同就跳过重建：避免每秒清空集合造成列表闪烁/滚动位置丢失
-        string sig = string.Join('|', list.Select(d => d.Name + d.Percent));
-        if (sig == _devicesSig) return;
-        _devicesSig = sig;
-        Devices.Clear();
-        foreach (var d in list)
-        {
-            string color = d.Percent <= 20 ? "#E84A4A" : d.Percent <= 40 ? "#E8A24A" : "#3CBE78";
-            Devices.Add(new DeviceRow(d.Name, d.Kind, $"{d.Percent}%", color, d.Percent / 100.0));
-        }
-        HasDevices = list.Count > 0;
-    }
-
-    private bool _hasDevices;
-    public bool HasDevices { get => _hasDevices; set => Set(ref _hasDevices, value); }
-
     // ---------- 剪贴板历史 ----------
     private System.Collections.ObjectModel.ObservableCollection<ClipboardRow> _clipboard = new();
     public System.Collections.ObjectModel.ObservableCollection<ClipboardRow> Clipboard
