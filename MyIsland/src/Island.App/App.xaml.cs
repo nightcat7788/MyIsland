@@ -206,6 +206,36 @@ public partial class App : Application
         };
         menu.Items.Add(indItem);
 
+        // 设置：天气城市（自动定位/常用城市/自定义）
+        var settings = new System.Windows.Controls.MenuItem { Header = "设置" };
+        var city = new System.Windows.Controls.MenuItem { Header = "天气城市" };
+        var cities = new[] { "北京", "上海", "广州", "深圳", "杭州", "成都", "重庆", "西安", "武汉", "南京", "苏州", "厦门", "长沙", "青岛" };
+        var autoItem = MenuItem("自动定位（IP）", (_, _) => { _island?.SetWeatherCity(""); CheckSiblings(city, 0); });
+        autoItem.IsChecked = string.IsNullOrEmpty(_settings.City);
+        city.Items.Add(autoItem);
+        for (int i = 0; i < cities.Length; i++)
+        {
+            int idx = i + 1;
+            string name = cities[i];
+            var item = MenuItem(name, (_, _) => { _island?.SetWeatherCity(name); CheckSiblings(city, idx); });
+            item.IsChecked = _settings.City == name;
+            city.Items.Add(item);
+        }
+        city.Items.Add(new System.Windows.Controls.Separator());
+        var customItem = MenuItem("自定义…", (_, _) =>
+        {
+            string? input = PromptCity();
+            if (input is not null)
+            {
+                _island?.SetWeatherCity(input);
+                CheckSiblings(city, city.Items.Count - 1);
+            }
+        });
+        customItem.IsChecked = !string.IsNullOrEmpty(_settings.City) && !cities.Contains(_settings.City);
+        city.Items.Add(customItem);
+        settings.Items.Add(city);
+        menu.Items.Add(settings);
+
         // 工具：剪贴板/文件中转
         var tools = new System.Windows.Controls.MenuItem { Header = "工具" };
         tools.Items.Add(MenuItem("打开文件中转目录", (_, _) =>
@@ -275,6 +305,60 @@ public partial class App : Application
         var item = new System.Windows.Controls.MenuItem { Header = header };
         item.Click += click;
         return item;
+    }
+
+    /// <summary>自定义城市输入对话框（支持中文/英文城市名，走 Open-Meteo 地理编码）。</summary>
+    private static string? PromptCity()
+    {
+        var win = new System.Windows.Window
+        {
+            Title = "自定义天气城市",
+            Width = 320, Height = 150,
+            WindowStartupLocation = System.Windows.WindowStartupLocation.CenterScreen,
+            ResizeMode = System.Windows.ResizeMode.NoResize,
+            Topmost = true,
+            Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(28, 30, 38)),
+        };
+        var tb = new System.Windows.Controls.TextBox
+        {
+            Margin = new Thickness(16, 14, 16, 0),
+            Height = 30, FontSize = 14,
+            Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(40, 43, 54)),
+            Foreground = System.Windows.Media.Brushes.White,
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(8, 4, 8, 4),
+            ToolTip = "输入城市名（中文或英文），如：成都 / Hangzhou",
+        };
+        string? result = null;
+        var ok = new System.Windows.Controls.Button
+        {
+            Content = "确定", Width = 72, Height = 28, IsDefault = true,
+            Margin = new Thickness(0, 12, 12, 0), HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
+        };
+        var cancel = new System.Windows.Controls.Button
+        {
+            Content = "取消", Width = 72, Height = 28, IsCancel = true,
+            Margin = new Thickness(0, 12, 16, 0), HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
+        };
+        ok.Click += (_, _) =>
+        {
+            string t = tb.Text.Trim();
+            if (t.Length > 0) { result = t; win.Close(); }
+            else tb.Focus();
+        };
+        var btnPanel = new System.Windows.Controls.StackPanel
+        {
+            Orientation = System.Windows.Controls.Orientation.Horizontal,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
+        };
+        btnPanel.Children.Add(cancel);
+        btnPanel.Children.Add(ok);
+        var root = new System.Windows.Controls.StackPanel();
+        root.Children.Add(tb);
+        root.Children.Add(btnPanel);
+        win.Content = root;
+        win.ShowDialog();
+        return result;
     }
 
     /// <summary>单选组勾选态：选中项打勾、其余取消（主题/边缘/展开方式/视图/款式共用）。</summary>

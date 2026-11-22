@@ -32,6 +32,12 @@ public sealed class WeatherService : IDisposable
     /// <summary>当前天气（可能为缓存；null=从未成功）。</summary>
     public WeatherInfo? Current { get { lock (_gate) return _last; } }
 
+    /// <summary>城市变更后调用：作废缓存，下次 Get() 立即重新定位并拉取。</summary>
+    public void Invalidate()
+    {
+        lock (_gate) { _lastFetch = DateTime.MinValue; _resolvedCity = null; _coords = null; }
+    }
+
     /// <summary>取天气：缓存新鲜（30 分钟）直接返回，否则后台刷新。</summary>
     public WeatherInfo? Get()
     {

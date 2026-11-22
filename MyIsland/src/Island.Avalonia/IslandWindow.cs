@@ -100,11 +100,16 @@ public sealed class IslandWindow : Window
         _quotaTimer.Start();
         RefreshQuota();
 
-        // 天气：Open-Meteo（30 分钟刷新，内部缓存节流）
-        _weather.Settings = new Island.App.Services.Settings();
+        // 天气：Open-Meteo（30 分钟刷新，内部缓存节流；城市随 settings.json 热更新）
+        _weather.Settings = Island.App.Services.Settings.Load();
         _canvas.Weather = _weather.Get();   // 立即拉一次（内部后台线程）
-        _weatherTimer = new DispatcherTimer(DispatcherPriority.Normal) { Interval = TimeSpan.FromMinutes(30) };
-        _weatherTimer.Tick += (_, _) => _canvas.Weather = _weather.Get();
+        _weatherTimer = new DispatcherTimer(DispatcherPriority.Normal) { Interval = TimeSpan.FromMinutes(5) };
+        _weatherTimer.Tick += (_, _) =>
+        {
+            var s = Island.App.Services.Settings.Load();
+            if (s.City != _weather.Settings.City) { _weather.Settings = s; _weather.Invalidate(); }
+            _canvas.Weather = _weather.Get();
+        };
         _weatherTimer.Start();
 
         // 剪贴板历史（跨平台轮询，1.5s；内容变化时刷新面板）

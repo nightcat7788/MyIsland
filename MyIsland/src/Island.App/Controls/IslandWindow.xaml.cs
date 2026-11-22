@@ -787,6 +787,16 @@ public partial class IslandWindow : Window
     public void ApplyThemeExternal() => ApplyTheme();
     public void RepositionExternal() => PositionOnEdge();
 
+    /// <summary>切换天气城市（菜单入口）：作废缓存立即重拉。</summary>
+    public void SetWeatherCity(string city)
+    {
+        _settings.City = city;
+        _settings.Save();
+        _weather.Settings = _settings;
+        _weather.Invalidate();
+        islandCanvas.Weather = _weather.Get();
+    }
+
     /// <summary>切收起视图（菜单入口），带挤压回弹反馈。</summary>
     public void SetCompactView(string view)
     {
