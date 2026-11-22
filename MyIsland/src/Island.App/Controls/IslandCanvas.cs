@@ -312,12 +312,12 @@ public sealed class IslandCanvas : FrameworkElement
         }
 
         // ---- 表盘读数（数字按 "100%" 预留，跳数不动布局） ----
-        const double dialSize = 18, dialFont = 11.5;
-        x += DrawDialGauge(dc, pal, x, cy, ppd, snap.CpuUsage, cpuC, "C", dialSize, dialFont) + 13;
-        x += DrawDialGauge(dc, pal, x, cy, ppd, snap.MemoryUsagePercent, memC, "M", dialSize, dialFont) + 13;
+        const double dialSize = 20, dialFont = 12.5;
+        x += DrawDialGauge(dc, pal, x, cy, ppd, snap.CpuUsage, cpuC, "C", dialSize, dialFont) + 16;
+        x += DrawDialGauge(dc, pal, x, cy, ppd, snap.MemoryUsagePercent, memC, "M", dialSize, dialFont) + 16;
         if (snap.GpuUsage > 0)
-            x += DrawDialGauge(dc, pal, x, cy, ppd, snap.GpuUsage, gpuC, "G", dialSize, dialFont) + 13;
-        x += DrawDialGauge(dc, pal, x, cy, ppd, snap.DiskUsagePercent, diskC, "D", dialSize, dialFont) + 13;
+            x += DrawDialGauge(dc, pal, x, cy, ppd, snap.GpuUsage, gpuC, "G", dialSize, dialFont) + 16;
+        x += DrawDialGauge(dc, pal, x, cy, ppd, snap.DiskUsagePercent, diskC, "D", dialSize, dialFont) + 16;
 
         // ---- 紧凑网速（↓3.40M ↑420K，彩色箭头 + 白字，BrimDeck 同款密度） ----
         var down = Text(MonitorSnapshot.CompactSpeed(snap.DownloadSpeed), 11, pal.Text, true, ppd);
@@ -347,21 +347,21 @@ public sealed class IslandCanvas : FrameworkElement
         // ① 时间（按样本 "00:00" 预留宽度，分针跳变不推挤右侧读数）
         if (WantCombo("clock"))
         {
-            var clock = Text(DateTime.Now.ToString("HH:mm"), 15, pal.Text, true, ppd);
+            var clock = Text(DateTime.Now.ToString("HH:mm"), 16, pal.Text, true, ppd);
             Baseline(dc, clock, x, Math.Round(cy + 15 * 0.36));
-            x += Math.Ceiling(Text("00:00", 15, pal.Text, true, ppd).WidthIncludingTrailingWhitespace) + 16;
+            x += Math.Ceiling(Text("00:00", 16, pal.Text, true, ppd).WidthIncludingTrailingWhitespace) + 16;
         }
 
         // ② 系统读数表盘（开口环 + 字母）
         if (WantCombo("dials") && snap is not null)
         {
             x += DrawDialGauge(dc, pal, x, cy, ppd, snap.CpuUsage,
-                Color.FromRgb(0x2E, 0x9B, 0xFF), "C", 18, 11.5) + 13;
+                Color.FromRgb(0x2E, 0x9B, 0xFF), "C", 20, 12.5) + 16;
             x += DrawDialGauge(dc, pal, x, cy, ppd, snap.MemoryUsagePercent,
-                Color.FromRgb(0x4F, 0xE3, 0xD7), "M", 18, 11.5) + 13;
+                Color.FromRgb(0x4F, 0xE3, 0xD7), "M", 20, 12.5) + 16;
             if (snap.GpuUsage > 0)
                 x += DrawDialGauge(dc, pal, x, cy, ppd, snap.GpuUsage,
-                    Color.FromRgb(0xF2, 0x72, 0xA8), "G", 18, 11.5) + 13;
+                    Color.FromRgb(0xF2, 0x72, 0xA8), "G", 20, 12.5) + 16;
         }
 
         // ③ 右缘：紧凑网速单行（↓3.40M ↑420K，彩色箭头 + 白粗字，BrimDeck 同款密度）
@@ -385,18 +385,19 @@ public sealed class IslandCanvas : FrameworkElement
         return x - r.X + (netBlock > 0 ? 12 + netBlock : 14);
     }
 
-    /// <summary>读数表盘 + 右侧数字（BrimDeck MonitorStrip.Gauge）：返回占用宽度（数字按最宽样本预留）。</summary>
+    /// <summary>读数表盘 + 右侧数字（BrimDeck MonitorStrip.Gauge）：返回占用宽度（数字按最宽样本预留）。
+    /// 环 20px（比原来大一圈），数字 12.5px 粗体白字，环与数字间距 5px。</summary>
     private double DrawDialGauge(DrawingContext dc, Palette pal, double x, double yc, double ppd,
         double? usage, Color arc, string letter, double dialSize, double font)
     {
-        Dial(dc, new Point(x + dialSize / 2, yc), dialSize, Math.Max(1.4, dialSize * 0.11),
+        Dial(dc, new Point(x + dialSize / 2, yc), dialSize, Math.Max(1.6, dialSize * 0.11),
             usage / 100, pal.Track, arc, pal.Text, letter, ppd);
-        double at = x + dialSize + 4;
+        double at = x + dialSize + 5;
         string figure = usage is { } u ? $"{Math.Round(u)}%" : "—";
         var color = usage is { } u2 ? LevelColor(u2, pal.Text, pal) : pal.TextTertiary;
         Baseline(dc, Text(figure, font, color, true, ppd), at, Math.Round(yc + font * 0.36));
         double slot = Math.Ceiling(Text("100%", font, pal.Text, true, ppd).WidthIncludingTrailingWhitespace);
-        return dialSize + 4 + slot;
+        return dialSize + 5 + slot;
     }
 
     /// <summary>
