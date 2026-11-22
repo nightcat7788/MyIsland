@@ -21,6 +21,8 @@ public sealed record ScreenContext
     public ForegroundKind Kind { get; init; }
     public bool Exclusive { get; init; }
     public string ProcessName { get; init; } = "";
+    /// <summary>前台窗口标题（活动窗口视图用）。</summary>
+    public string Title { get; init; } = "";
     public IntPtr Handle { get; init; }
 
     /// <summary>前台是否处于会被游戏/视频打扰的状态：独占全屏或无边框全屏。</summary>
@@ -43,6 +45,7 @@ public static class ForegroundDetector
 
         ForegroundKind kind = ForegroundKind.Other;
         string proc = "";
+        string title = "";
 
         if (hwnd != IntPtr.Zero)
         {
@@ -69,7 +72,7 @@ public static class ForegroundDetector
                                 frame.Right >= m.Right - 2 && frame.Bottom >= m.Bottom - 2;
 
             bool zoomed = IsZoomed(hwnd);
-            string title = GetTitle(hwnd);
+            title = GetTitle(hwnd);
 
             if (fillsMonitor && !zoomed)
                 kind = HasCaption(hwnd) ? ForegroundKind.Maximized : ForegroundKind.Borderless;
@@ -85,7 +88,7 @@ public static class ForegroundDetector
             kind = ForegroundKind.Fullscreen;
         }
 
-        return ctx with { Kind = kind, Exclusive = exclusive, ProcessName = proc };
+        return ctx with { Kind = kind, Exclusive = exclusive, ProcessName = proc, Title = title ?? "" };
     }
 
     private static string GetTitle(IntPtr hwnd)

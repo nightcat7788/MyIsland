@@ -62,15 +62,15 @@
                                 Width="32" Height="24" Style="{StaticResource FlatBtn}">
                             <TextBlock Text="📈" FontSize="12" Foreground="{DynamicResource FgDim}"/>
                         </Button>
-                        <Button x:Name="btnShelf" Tag="2" Click="OnPage" ToolTip="剪贴板 · 文件"
+                        <Button x:Name="btnShelf" Tag="1" Click="OnPage" ToolTip="剪贴板 · 文件"
                                 Width="32" Height="24" Style="{StaticResource FlatBtn}">
                             <TextBlock Text="⎘" FontSize="12" Foreground="{DynamicResource FgDim}"/>
                         </Button>
-                        <Button x:Name="btnDevices" Tag="3" Click="OnPage" ToolTip="设备电量"
+                        <Button x:Name="btnDevices" Tag="2" Click="OnPage" ToolTip="设备电量"
                                 Width="32" Height="24" Style="{StaticResource FlatBtn}">
                             <TextBlock Text="🔋" FontSize="11" Foreground="{DynamicResource FgDim}"/>
                         </Button>
-                        <Button x:Name="btnControl" Tag="4" Click="OnPage" ToolTip="控制"
+                        <Button x:Name="btnControl" Tag="3" Click="OnPage" ToolTip="控制"
                                 Width="32" Height="24" Style="{StaticResource FlatBtn}">
                             <TextBlock Text="🎛" FontSize="12" Foreground="{DynamicResource FgDim}"/>
                         </Button>
@@ -229,19 +229,37 @@
                             </DockPanel>
                         </Border>
 
-                        <!-- 音量（滑杆 + 静音） -->
+                        <!-- 音量（滑杆 + 静音 + 麦克风） -->
                         <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
                             <DockPanel>
                                 <TextBlock DockPanel.Dock="Left" Text="音量" FontSize="12"
                                            Foreground="{DynamicResource Fg}" VerticalAlignment="Center" Width="60"/>
-                                <Button DockPanel.Dock="Right" Width="66" Height="26" Style="{StaticResource FlatBtn}"
-                                        Foreground="{DynamicResource Fg}" FontSize="11"
-                                        Content="{Binding IsMuted, Converter={StaticResource MuteText}}"
-                                        Click="OnMuteToggle"/>
+                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                    <Button x:Name="btnMic" Width="60" Height="26" Style="{StaticResource FlatBtn}"
+                                            Foreground="{DynamicResource Fg}" FontSize="11" Content="麦克风"
+                                            ToolTip="切换麦克风静音" Click="OnMicToggle" Margin="0,0,6,0"/>
+                                    <Button Width="66" Height="26" Style="{StaticResource FlatBtn}"
+                                            Foreground="{DynamicResource Fg}" FontSize="11"
+                                            Content="{Binding IsMuted, Converter={StaticResource MuteText}}"
+                                            Click="OnMuteToggle"/>
+                                </StackPanel>
                                 <Slider Minimum="0" Maximum="1" TickFrequency="0.05"
                                         Value="{Binding VolumeValue, Mode=OneWay}"
                                         ValueChanged="OnVolumeSlider"
                                         VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- 电源计划（YASB PowerPlan 同款：powercfg 枚举/切换） -->
+                        <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
+                            <DockPanel>
+                                <StackPanel DockPanel.Dock="Left">
+                                    <TextBlock Text="电源计划" FontSize="12" Foreground="{DynamicResource Fg}"/>
+                                    <TextBlock Text="平衡 / 高性能 / 节能（即时切换）" FontSize="10"
+                                               Foreground="{DynamicResource FgDim}"/>
+                                </StackPanel>
+                                <WrapPanel DockPanel.Dock="Right" x:Name="powerPlanHost"
+                                           HorizontalAlignment="Right" VerticalAlignment="Center"/>
                             </DockPanel>
                         </Border>
 

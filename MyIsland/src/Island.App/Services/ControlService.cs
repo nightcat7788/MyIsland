@@ -242,6 +242,50 @@ public static class ControlService
 
     // ---------- 系统设置快捷链接 ----------
     /// <summary>打开指定系统设置页（ms-settings: 协议）。</summary>
+    // ---------- 电源计划（YASB PowerPlan 同款：powercfg 枚举/切换，免管理员） ----------
+
+    /// <summary>所有电源计划（Guid + 名称）+ 当前激活项索引。</summary>
+    public static (List<(string Id, string Name)> Plans, int ActiveIndex) GetPowerPlans()
+    {
+        var plans = new List<(string Id, string Name)>();
+        int active = -1;
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("powercfg.exe", "/LIST")
+            {
+                CreateNoWindow = true, UseShellExecute = false,
+                RedirectStandardOutput = true,
+            };
+            using var p = System.Diagnostics.Process.Start(psi);
+            string output = p?.StandardOutput.ReadToEnd() ?? "";
+            p?.WaitForExit(3000);
+            // 行格式：电源方案 GUID: xxxx  (平衡) *   —— 中英文系统都兼容
+            var re = new System.Text.RegularExpressions.Regex(
+                @"GUID:\s*([0-9a-fA-F-]{36})\s*\(([^)]*)\)\s*(\*)?");
+            foreach (System.Text.RegularExpressions.Match m in re.Matches(output))
+            {
+                plans.Add((m.Groups[1].Value, m.Groups[2].Value.Trim()));
+                if (m.Groups[3].Success && m.Groups[3].Value == "*")
+                    active = plans.Count - 1;
+            }
+        }
+        catch { }
+        return (plans, active);
+    }
+
+    public static bool SetPowerPlan(string guid)
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("powercfg.exe", $"/SETACTIVE {guid}")
+            { CreateNoWindow = true, UseShellExecute = false };
+            using var p = System.Diagnostics.Process.Start(psi);
+            p?.WaitForExit(3000);
+            return p?.ExitCode == 0;
+        }
+        catch { return false; }
+    }
+
     public static void OpenSettings(string page)
     {
         try

@@ -60,6 +60,9 @@ public sealed class IslandCanvas : FrameworkElement
     // 温度（收起态 dash 视图）：宿主注入（最近一次热快照）
     public Services.ThermalSnapshot? Thermal { get; set; }
 
+    /// <summary>前台窗口（进程名 + 标题，宿主每秒注入；活动窗口视图消费）。</summary>
+    public (string Proc, string Title)? ActiveWindow { get; set; }
+
     // 临时活动（音量指示等）：带过期时间，优先级最高
     public ActivityView? Activity { get; set; }
     public double[]? CpuHistory { get; set; }
@@ -218,6 +221,9 @@ public sealed class IslandCanvas : FrameworkElement
                 break;
             case "clipboard":
                 w = DrawClipboardHint(dc, pal, r, cy);
+                break;
+            case "window":
+                w = DrawActiveWindow(dc, pal, r, cy);
                 break;
             default:
                 w = 110;
@@ -524,6 +530,34 @@ public sealed class IslandCanvas : FrameworkElement
             countBlock = n.Width + 14;
         }
         return x - r.X + (countBlock > 0 ? 12 + countBlock : 14);
+    }
+
+    /// <summary>活动窗口视图（YASB ActiveWindow 同款）：主题色圆点 + 进程名 + 窗口标题，超长截断。</summary>
+    private double DrawActiveWindow(DrawingContext dc, Palette pal, Rect r, double cy)
+    {
+        if (r.Width < 40 || r.Height < 20) return 0;
+        double ppd = Ppd;
+        dc.DrawRoundedRectangle(Faint(Color.FromRgb(0x0D, 0x11, 0x17), 0.92), null, r, r.Height / 2, r.Height / 2);
+
+        double x = r.X + 16;
+        // 呼吸圆点（主题色，标识"正在跟随前台窗口"）
+        dc.DrawEllipse(BrushOf(pal.Accent), null, new Point(x + 4, cy), 4, 4);
+        x += 16;
+
+        var (proc, title) = ActiveWindow ?? ("", "");
+        string procText = string.IsNullOrEmpty(proc) ? "桌面" : proc;
+        var p = Text(procText, 11.5, pal.Accent, true, ppd);
+        dc.DrawText(p, new Point(x, cy - p.Height / 2));
+        x += p.Width + 10;
+
+        const double maxTitle = 300;
+        string tt = string.IsNullOrEmpty(title) ? "" : title;
+        var t = Text(string.IsNullOrEmpty(tt) ? "" : tt, 11, pal.TextDim, ppd: ppd);
+        if (t.Width > maxTitle)
+            t = RenderKit.Trimmed(tt, 11, pal.TextDim, maxTitle, false, ppd);
+        if (!string.IsNullOrEmpty(tt))
+            dc.DrawText(t, new Point(x, cy - t.Height / 2));
+        return x - r.X + (string.IsNullOrEmpty(tt) ? 0 : t.Width) + 16;
     }
 
     /// <summary>电量环弧线（从顶部顺时针，fraction=0..1）。</summary>

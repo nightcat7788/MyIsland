@@ -42,6 +42,35 @@ public sealed class VolumeService : IDisposable
     /// <summary>当前是否静音。</summary>
     public bool IsMutedNow => _last?.mute ?? false;
 
+    // ---------- 麦克风（YASB Microphone 同款：默认采集端点静音切换） ----------
+
+    /// <summary>麦克风静音状态；无采集设备为 null。</summary>
+    public bool? MicMuted
+    {
+        get
+        {
+            try
+            {
+                return _enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications)
+                    .AudioEndpointVolume.Mute;
+            }
+            catch { return null; }
+        }
+    }
+
+    /// <summary>切换麦克风静音，返回新状态（无设备返回 false）。</summary>
+    public bool ToggleMicMute()
+    {
+        try
+        {
+            var ep = _enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
+            bool next = !ep.AudioEndpointVolume.Mute;
+            ep.AudioEndpointVolume.Mute = next;
+            return next;
+        }
+        catch { return false; }
+    }
+
     /// <summary>(音量0..1, 是否静音)。后台线程触发。</summary>
     public event Action<float, bool>? Changed;
 

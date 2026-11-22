@@ -71,6 +71,49 @@ public partial class ExpandedPanel : UserControl
         if (DataContext is PanelData pd) pd.ApplyToggleMute();
     }
 
+    private void OnMicToggle(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is not PanelData pd) return;
+        pd.ApplyToggleMicMute();
+        btnMic.Content = pd.MicMuted ? "已静音" : "麦克风";
+    }
+
+    /// <summary>控制页打开时刷新电源计划按钮（powercfg 枚举，高亮当前项）。</summary>
+    private void RefreshPowerPlans()
+    {
+        powerPlanHost.Children.Clear();
+        var (plans, active) = Services.ControlService.GetPowerPlans();
+        var accent = TryFindResource("Accent") as SolidColorBrush;
+        foreach (var (id, name) in plans)
+        {
+            var b = new Button
+            {
+                Content = name,
+                Height = 26,
+                Padding = new Thickness(10, 0, 10, 0),
+                Margin = new Thickness(4, 2, 0, 2),
+                FontSize = 11,
+                Style = (Style)FindResource("FlatBtn"),
+                Foreground = TryFindResource("Fg") as Brush,
+                Tag = id,
+            };
+            if (plans.IndexOf((id, name)) == active && accent is not null)
+                b.Background = new SolidColorBrush(accent.Color) { Opacity = 0.28 };
+            b.Click += (_, _) =>
+            {
+                if (b.Tag is string guid && Services.ControlService.SetPowerPlan(guid))
+                    RefreshPowerPlans();
+            };
+            powerPlanHost.Children.Add(b);
+        }
+        if (plans.Count == 0)
+            powerPlanHost.Children.Add(new TextBlock
+            {
+                Text = "读取失败", FontSize = 10,
+                Foreground = TryFindResource("FgDim") as Brush,
+            });
+    }
+
     private void OnLightThemeToggle(object sender, RoutedEventArgs e)
     {
         if (DataContext is PanelData pd && sender is CheckBox cb)
@@ -97,8 +140,15 @@ public partial class ExpandedPanel : UserControl
     /// <summary>切页：显示目标页，分段胶囊中对应按钮亮起（BrimDeck 同款选中态）。</summary>
     public void SelectPage(int idx)
     {
+        if (idx < 0 || idx >= _pages.Length) return;
         for (int i = 0; i < _pages.Length; i++)
             _pages[i].Visibility = i == idx ? Visibility.Visible : Visibility.Collapsed;
+        if (idx == 3)   // 控制页：刷新电源计划（高亮当前项）
+        {
+            RefreshPowerPlans();
+            if (DataContext is PanelData pd)
+                btnMic.Content = pd.MicMuted ? "已静音" : "麦克风";
+        }
         var accent = TryFindResource("Accent") as SolidColorBrush;
         for (int i = 0; i < _pageBtns.Length; i++)
         {

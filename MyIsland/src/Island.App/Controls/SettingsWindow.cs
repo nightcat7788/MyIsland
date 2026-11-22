@@ -62,7 +62,7 @@ public sealed class SettingsWindow : Window
     private static readonly (string Id, string Label)[] Views =
     {
         ("dash", "仪表盘"), ("clock", "时间+天气"), ("combo", "信息胶囊"), ("monitor", "系统读数"),
-        ("devices", "设备电量"), ("clipboard", "剪贴板"), ("pet", "小形象"),
+        ("devices", "设备电量"), ("clipboard", "剪贴板"), ("pet", "小形象"), ("window", "活动窗口"),
     };
     private static readonly (string Id, string Label)[] PetStyles =
         { ("classic", "经典双眼"), ("mono", "独眼"), ("cat", "猫咪"), ("robot", "机器人"), ("pixel", "像素") };

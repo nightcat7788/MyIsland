@@ -633,6 +633,12 @@ public partial class IslandWindow : Window
         // 音量 / 深色模式回调与初值
         pd.OnSetVolume = v => _volume.SetVolume((float)v);
         pd.OnToggleMute = () => _volume.SetMute(!_volume.IsMutedNow);
+        pd.OnToggleMicMute = () =>
+        {
+            _volume.ToggleMicMute();
+            pd.MicMuted = _volume.MicMuted ?? false;
+        };
+        pd.MicMuted = _volume.MicMuted ?? false;
         pd.OnSetLightTheme = light => Services.ControlService.SetSystemLightTheme(light);
         pd.OnSetNightLight = on =>
         {
@@ -696,6 +702,7 @@ public partial class IslandWindow : Window
         "combo" => (440, 44),   // 信息胶囊：配额环 + 时间 + 系统读数表盘 + 网速
         "monitor" => (384, 64), // 核心柱 + C/M/G/D 四个表盘 + 网速
         "dash" => (660, 69),    // LiteMonitor 同款全读数行（含硬盘/SSD 温度/电池）
+        "window" => (360, 44),  // 活动窗口（YASB ActiveWindow 同款：进程名 + 标题）
         "devices" => (300, 64),
         "clipboard" => (240, 44),
         _ => (110, 44),
@@ -708,6 +715,7 @@ public partial class IslandWindow : Window
         {
             Visibility = Visibility.Visible;
             SetIndicator(false);
+            InjectActiveWindow();
             return;
         }
         var ctx = ForegroundDetector.Detect();
@@ -720,6 +728,14 @@ public partial class IslandWindow : Window
         Visibility = Visibility.Visible;
         // 前台窗口最大化时缩成指示条（BrimDeck 同款）；展开中不缩
         SetIndicator(_settings.IndicatorOnMaximize && !_expanded && ctx.Kind == ForegroundKind.Maximized);
+        islandCanvas.ActiveWindow = (ctx.ProcessName, ctx.Title);
+    }
+
+    /// <summary>长期显示模式下也要注入前台窗口（UpdateFullscreenHidden 提前 return 的分支）。</summary>
+    private void InjectActiveWindow()
+    {
+        var ctx = ForegroundDetector.Detect();
+        islandCanvas.ActiveWindow = (ctx.ProcessName, ctx.Title);
     }
 
     // ---------- 指示条模式（最大化时：本体缩成 44×6 小条，只留呼吸底） ----------
@@ -894,7 +910,7 @@ public partial class IslandWindow : Window
     private void OnMouseWheel(object sender, MouseWheelEventArgs e)
     {
         if (_expanded) return;
-        string[] views = { "clock", "dash", "pet", "combo", "monitor", "devices", "clipboard" };
+        string[] views = { "clock", "dash", "pet", "combo", "monitor", "devices", "clipboard", "window" };
         int i = Array.IndexOf(views, islandCanvas.CompactView);
         i = (i + (e.Delta > 0 ? -1 : 1) + views.Length) % views.Length;
         islandCanvas.CompactView = views[i];

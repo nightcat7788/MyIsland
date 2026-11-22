@@ -113,6 +113,12 @@ public sealed class PanelData : INotifyPropertyChanged
     public void ApplyVolume(double v) { VolumeValue = v; OnSetVolume?.Invoke(v); }
     public void ApplyToggleMute() { IsMuted = !IsMuted; OnToggleMute?.Invoke(); }
 
+    // 麦克风静音（YASB Microphone 同款）
+    private bool _micMuted;
+    public bool MicMuted { get => _micMuted; set => Set(ref _micMuted, value); }
+    public Action? OnToggleMicMute;
+    public void ApplyToggleMicMute() => OnToggleMicMute?.Invoke();
+
     private bool _isLightTheme;
     public bool IsLightTheme { get => _isLightTheme; set => Set(ref _isLightTheme, value); }
     public Action<bool>? OnSetLightTheme;
