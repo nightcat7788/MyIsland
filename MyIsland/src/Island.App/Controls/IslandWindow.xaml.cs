@@ -147,6 +147,10 @@ public partial class IslandWindow : Window
             Directory.CreateDirectory(dir);
             System.IO.File.AppendAllText(Path.Combine(dir, "run.log"),
                 $"[{DateTime.Now:HH:mm:ss}] island-up pid={Environment.ProcessId} edge={_settings.Edge}\n");
+            // 定位诊断：排查 DPI/多屏下的位置漂移
+            System.IO.File.AppendAllText(Path.Combine(dir, "run.log"),
+                $"  pos: sw={SystemParameters.PrimaryScreenWidth} sh={SystemParameters.PrimaryScreenHeight} " +
+                $"win=({Left:F0},{Top:F0},{Width:F0}x{Height:F0}) dpi={DpiScale:F2} pos_t={_settings.PosAlongEdge}\n");
         }
         catch { }
 
@@ -288,8 +292,9 @@ public partial class IslandWindow : Window
     private Rect ComputeBodyRect(double bodyW, double bodyH)
     {
         double t = Easing.Clamp(_settings.PosAlongEdge, 0.02, 0.98);
-        double sw = SystemParameters.PrimaryScreenWidth;
-        double sh = SystemParameters.PrimaryScreenHeight;
+        // 屏宽用监视器物理像素 ÷ DpiScale：SystemParameters 在本机（200% 缩放）实测
+        // 返回物理像素 3072，导致岛心被放到可见区右缘（2 倍未换算）
+        GetScreenSizeDip(out double sw, out double sh);
         return _settings.Edge switch
         {
             "bottom" => new Rect(sw * t - bodyW / 2, sh - bodyH, bodyW, bodyH),
@@ -297,6 +302,30 @@ public partial class IslandWindow : Window
             "right"  => new Rect(sw - bodyW, sh * t - bodyH / 2, bodyW, bodyH),
             _        => new Rect(sw * t - bodyW / 2, 0, bodyW, bodyH),
         };
+    }
+
+    /// <summary>屏幕 DIP 尺寸：监视器物理矩形 ÷ 窗口 DPI 缩放（任何感知模式下都正确）。</summary>
+    private void GetScreenSizeDip(out double sw, out double sh)
+    {
+        try
+        {
+            IntPtr hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+            IntPtr mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            var mi = new MONITORINFO { cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<MONITORINFO>() };
+            if (mon != IntPtr.Zero && GetMonitorInfo(mon, ref mi))
+            {
+                double scale = DpiScale;
+                if (scale > 0.1)
+                {
+                    sw = (mi.rcMonitor.Right - mi.rcMonitor.Left) / scale;
+                    sh = (mi.rcMonitor.Bottom - mi.rcMonitor.Top) / scale;
+                    return;
+                }
+            }
+        }
+        catch { }
+        sw = SystemParameters.PrimaryScreenWidth;
+        sh = SystemParameters.PrimaryScreenHeight;
     }
 
     private Point BodyCenter => new(_bodyRect.X + _bodyRect.Width / 2, _bodyRect.Y + _bodyRect.Height / 2);

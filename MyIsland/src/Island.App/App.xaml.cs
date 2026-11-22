@@ -74,7 +74,11 @@ public partial class App : Application
         _mutex = new Mutex(true, "Local\\MyIsland.Instance", out bool createdNew);
         if (!createdNew)
         {
-            System.Windows.MessageBox.Show("Island 已在运行", "Island");
+            // MessageBox 置顶：分层窗口应用没有任务栏入口，普通提示框可能埋在窗口堆后面
+            System.Windows.MessageBox.Show(
+                "Island 已在运行（托盘图标可管理）。", "Island",
+                System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information,
+                System.Windows.MessageBoxResult.OK, System.Windows.MessageBoxOptions.DefaultDesktopOnly);
             Shutdown();
             return;
         }
