@@ -348,11 +348,12 @@ public sealed class IslandCanvas : FrameworkElement
         dc.DrawRoundedRectangle(Faint(Color.FromRgb(0x0D, 0x11, 0x17), 0.92), null, r, 16, 16);
 
         double x = r.X + 14;
+        // 温度分级：≤70° 绿 / 71–85° 橙 / >85° 红（与监控页一致）
         Color TempColor(double? t) => t switch
         {
             null => Color.FromRgb(0x90, 0xA8, 0xF0),
-            <= 60 => Color.FromRgb(0x60, 0xC0, 0x78),
-            <= 75 => pal.Warning,
+            <= 70 => Color.FromRgb(0x60, 0xC0, 0x78),
+            <= 85 => pal.Warning,
             _ => pal.Up,
         };
 

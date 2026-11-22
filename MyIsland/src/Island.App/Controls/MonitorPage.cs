@@ -44,8 +44,9 @@ public sealed class MonitorPage : FrameworkElement
         return $"{d.Name} {F(d.UsedGB)} / {F(d.TotalGB)}";
     }
 
+    /// <summary>温度分级：≤70° 绿 / 71–85° 橙 / >85° 红。</summary>
     private static Color TempColor(double t, Palette pal)
-        => t <= 60 ? Color.FromRgb(0x60, 0xC0, 0x78) : t <= 75 ? pal.Warning : pal.Up;
+        => t <= 70 ? Color.FromRgb(0x60, 0xC0, 0x78) : t <= 85 ? pal.Warning : pal.Up;
 
     protected override void OnRender(DrawingContext dc)
     {

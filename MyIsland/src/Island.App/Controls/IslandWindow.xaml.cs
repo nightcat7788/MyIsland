@@ -307,10 +307,11 @@ public partial class IslandWindow : Window
 
     // ---------- 悬停展开 / 收起 ----------
     /// <summary>非管理员运行时为 true：监控页温度位显示"需管理员"提示。</summary>
+    private bool _tempNeedAdmin;
     public bool MonitorTempNeedAdmin
     {
         get => expandedPanel.Monitor.TempNeedAdmin;
-        set => expandedPanel.Monitor.TempNeedAdmin = value;
+        set { _tempNeedAdmin = value; expandedPanel.Monitor.TempNeedAdmin = value; }
     }
 
     /// <summary>展开方式：hover=悬停展开 always=常驻展开 never=长关（不自动展开）。</summary>
@@ -447,6 +448,7 @@ public partial class IslandWindow : Window
             mon.NetHistory = netSeq;
             mon.Thermal = _thermal.Current;
             mon.InvalidateVisual();
+            UpdateTempTooltip(_thermal.Current);
 
             CheckAlerts();
 
@@ -457,6 +459,83 @@ public partial class IslandWindow : Window
                 pd.UpdateFiles();       // 文件中转
             }
         });
+    }
+
+    // ---------- 温度 tooltip（悬停收起岛体 / 监控页：分级配色 + 状态词 + 权限提示） ----------
+    private string? _tempTipKey;
+
+    private void UpdateTempTooltip(Services.ThermalSnapshot? t)
+    {
+        string F(double? v) => v is { } x ? $"{Math.Round(x)}" : "--";
+        string key = $"{F(t?.CpuTemp)}|{F(t?.GpuTemp)}|{F(t?.SsdTemp)}|{F(t?.MotherboardTemp)}|{_tempNeedAdmin}";
+        if (key == _tempTipKey) return;   // 读数没变不重建（1s 一跳，避免抖动）
+        _tempTipKey = key;
+
+        var tip = BuildTempTip(t);
+        islandCanvas.ToolTip = tip;
+        expandedPanel.Monitor.ToolTip = tip;
+    }
+
+    private UIElement BuildTempTip(Services.ThermalSnapshot? t)
+    {
+        var pal = _palette;
+        (Color C, string Word) Grade(double? v) => v switch
+        {
+            null => (pal.TextTertiary, _tempNeedAdmin ? "需管理员" : "读不到"),
+            <= 70 => (Color.FromRgb(0x60, 0xC0, 0x78), "正常"),
+            <= 85 => (pal.Warning, "偏高"),
+            _ => (pal.Up, "过热"),
+        };
+
+        var panel = new System.Windows.Controls.StackPanel();
+        panel.Children.Add(new System.Windows.Controls.TextBlock
+        {
+            Text = "温度监控", FontSize = 12, FontWeight = FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(pal.Accent), Margin = new Thickness(0, 0, 0, 6),
+        });
+
+        void Row(string label, double? v, string? note = null)
+        {
+            var g = Grade(v);
+            var row = new System.Windows.Controls.StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal, Margin = new Thickness(0, 1, 0, 1) };
+            row.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = label, Width = 52, FontSize = 11,
+                Foreground = new SolidColorBrush(pal.TextDim),
+                VerticalAlignment = System.Windows.VerticalAlignment.Center,
+            });
+            row.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = v is { } x ? $"{Math.Round(x)}°  {g.Word}" : note ?? g.Word,
+                FontSize = 11, FontWeight = FontWeights.SemiBold,
+                Foreground = new SolidColorBrush(v is null && _tempNeedAdmin ? pal.Warning : g.C),
+                VerticalAlignment = System.Windows.VerticalAlignment.Center,
+            });
+            panel.Children.Add(row);
+        }
+
+        Row("CPU", t?.CpuTemp);
+        Row("GPU", t?.GpuTemp, t?.GpuTemp is null && !_tempNeedAdmin ? "核显无接口" : null);
+        Row("SSD", t?.SsdTemp, "传感器已禁用");
+        Row("主板", t?.MotherboardTemp);
+
+        if (_tempNeedAdmin)
+            panel.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = "托盘 → 以管理员重启 可读取 CPU/GPU 温度",
+                FontSize = 10, Foreground = new SolidColorBrush(pal.TextTertiary),
+                Margin = new Thickness(0, 6, 0, 0),
+            });
+
+        return new System.Windows.Controls.Border
+        {
+            Background = new SolidColorBrush(pal.Surface),
+            BorderBrush = new SolidColorBrush(pal.Track),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(12, 9, 12, 9),
+            Child = panel,
+        };
     }
 
     // ---------- 高温告警（BrimDeck compact-alert 同款思路：超阈值在收起态弹 4 秒浮条） ----------
