@@ -1,6 +1,6 @@
 ; MyIsland 安装包脚本（Inno Setup 7，当前用户安装免管理员）
 #define AppName "MyIsland"
-#define AppVersion "1.0.0"
+#define AppVersion "1.0.1"
 #define AppPublisher "YQ"
 #define AppExe "Island.App.exe"
 #define SrcDir "D:\YQDESK\MyIsland-src\MyIsland\publish\win-x64"
@@ -25,6 +25,7 @@ CloseApplications=yes
 CloseApplicationsFilter=*.exe
 RestartApplications=no
 UninstallDisplayIcon={app}\{#AppExe}
+SetupIconFile=D:\YQDESK\MyIsland-src\MyIsland\src\Island.App\app.ico
 
 [Languages]
 Name: "chs"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
