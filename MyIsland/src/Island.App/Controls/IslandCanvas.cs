@@ -114,8 +114,9 @@ public sealed class IslandCanvas : FrameworkElement
         double squeezed = r.Height * Easing.Clamp(Squash, 0.5, 1.2);
         r = new Rect(r.X, r.Y + (r.Height - squeezed) / 2, r.Width, squeezed);
 
-        // 胶囊形态：圆角 = 高度一半（体育场形），方角主题下保持小圆角
-        double corner = pal.SquareCorners ? Math.Min(3, r.Height / 2) : r.Height / 2;
+        // 形态：收起=全胶囊（圆角=高度一半）；展开=26px 连续圆角面板（wisland 玻璃面板同款）
+        double corner = pal.SquareCorners ? Math.Min(3, r.Height / 2)
+            : IsExpanded ? 26 : r.Height / 2;
         double fillet = 13;
 
         // 贴边侧圆角随液桥强度收缩（液桥在场时贴边侧偏方，与液桥平滑衔接）
@@ -151,8 +152,8 @@ public sealed class IslandCanvas : FrameworkElement
         // ① 毛玻璃纹理底（壁纸模糊采样）
         if (BackdropBrush is not null)
             dc.DrawGeometry(BackdropBrush, null, geo);
-        // ② 主题色压层：降到 0.58（收起）让模糊底透出来；展开 0.9 保可读性
-        dc.DrawGeometry(Faint(pal.Surface, IsExpanded ? 0.90 : 0.58), PenOf(pal.Rim, 1.0, 0.5), geo);
+        // ② 主题色压层：降到 0.58（收起）让模糊底透出来；展开 0.74（玻璃面板感，卡片保可读）
+        dc.DrawGeometry(Faint(pal.Surface, IsExpanded ? 0.74 : 0.58), PenOf(pal.Rim, 1.0, 0.5), geo);
         // ③ 顶部 sheen 高光带：白 12% → 45% 高度处消隐（液态玻璃的顶部反光）
         if (!pal.SquareCorners && !IsIndicator && r.Width > 24 && r.Height > 16)
         {

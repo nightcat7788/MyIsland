@@ -46,7 +46,7 @@
     </UserControl.Resources>
 
     <!-- 面板整体：BrimDeck 式近黑深底 + 大圆角 -->
-    <Border Background="{DynamicResource PanelBg}" CornerRadius="20" Padding="2">
+    <Border Background="Transparent" CornerRadius="26" Padding="2">
         <Grid Margin="14,10,14,12">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>

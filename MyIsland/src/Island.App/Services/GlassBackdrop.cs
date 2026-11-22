@@ -158,7 +158,8 @@ public sealed class GlassBackdrop : IDisposable
             byte[] buf = new byte[bytes];
             Marshal.Copy(bits, buf, 0, bytes);
 
-            // 两次 3x3 平均模糊（叠加以 1/k 透明度，结果恰为均值，不变亮）
+            // 三次 3x3 平均模糊（叠加以 1/k 透明度，结果恰为均值，不变亮；三次更"磨砂"）
+            buf = BoxBlur(buf, tw, th);
             buf = BoxBlur(buf, tw, th);
             buf = BoxBlur(buf, tw, th);
 
