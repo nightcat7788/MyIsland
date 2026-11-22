@@ -32,6 +32,8 @@ public sealed record MonitorSnapshot
 
     /// <summary>CPU 占用最高的进程 Top5（3 秒一采；首采为空数组）。</summary>
     public TopProcess[]? TopProcesses { get; init; }
+    /// <summary>内存占用最高的进程 Top5（BrimDeck 进程榜的内存档）。</summary>
+    public TopProcess[]? TopProcessesByMem { get; init; }
 
     /// <summary>本机电池电量 %（无电池/台式机为 null，30 秒一采）。</summary>
     public double? BatteryPercent { get; init; }
@@ -118,10 +120,12 @@ public sealed record DiskStat
     public double TotalGB { get; init; }
 }
 
-/// <summary>一个高占用进程（CPU% 全机口径 + 内存 MB）。</summary>
+/// <summary>一个高占用进程（CPU% 全机口径 + 内存 MB + 可执行文件路径）。</summary>
 public sealed record TopProcess
 {
     public string Name { get; init; } = "";
     public double CpuPercent { get; init; }       // 0..100（已按核心数归一）
     public double MemoryMB { get; init; }
+    /// <summary>可执行文件路径（图标提取用；无权限时为空）。</summary>
+    public string ExePath { get; init; } = "";
 }

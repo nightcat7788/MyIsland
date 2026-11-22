@@ -19,7 +19,14 @@ public sealed class MonitorPage : FrameworkElement
     public ThermalSnapshot? Thermal { get; set; }
     public double[]? CpuHistory { get; set; }
     public double[]? NetHistory { get; set; }
+    /// <summary>下行/上行各自的历史（网速行左右两条填充曲线）。</summary>
+    public double[]? DownHistory { get; set; }
+    public double[]? UpHistory { get; set; }
     public Palette? Palette { get; set; }
+
+    /// <summary>进程榜排序："cpu"（默认）或 "mem"（BrimDeck 右上角分段开关）。</summary>
+    public string TopSort { get; private set; } = "cpu";
+    private Rect _sortToggleRect;
 
     // 显示项过滤（null = 全部；宿主由 Settings.MonitorItems 注入）
     public HashSet<string>? Items { get; set; }
@@ -47,6 +54,28 @@ public sealed class MonitorPage : FrameworkElement
     /// <summary>温度分级：≤70° 绿 / 71–85° 橙 / >85° 红。</summary>
     private static Color TempColor(double t, Palette pal)
         => t <= 70 ? Color.FromRgb(0x60, 0xC0, 0x78) : t <= 85 ? pal.Warning : pal.Up;
+
+    /// <summary>横向渐变条（BrimDeck 容量条同款：蓝→青渐变，圆头）。</summary>
+    private static void GradientBar(DrawingContext dc, Rect r, double frac, Color from, Color to, Palette pal)
+    {
+        dc.DrawRoundedRectangle(RenderKit.BrushOf(pal.Track), null, r, r.Height / 2, r.Height / 2);
+        double w = Math.Clamp(frac, 0, 1) * r.Width;
+        if (w < 4) return;
+        var grad = new LinearGradientBrush(from, to, 0);
+        grad.Freeze();
+        dc.DrawRoundedRectangle(grad, null, new Rect(r.X, r.Y, w, r.Height), r.Height / 2, r.Height / 2);
+    }
+
+    /// <summary>分段开关点击（进程榜 CPU/内存）。</summary>
+    protected override void OnMouseLeftButtonUp(System.Windows.Input.MouseButtonEventArgs e)
+    {
+        base.OnMouseLeftButtonUp(e);
+        if (_sortToggleRect.Contains(e.GetPosition(this)))
+        {
+            TopSort = TopSort == "cpu" ? "mem" : "cpu";
+            InvalidateVisual();
+        }
+    }
 
     protected override void OnRender(DrawingContext dc)
     {
@@ -136,11 +165,9 @@ public sealed class MonitorPage : FrameworkElement
             }
             y += 30;
             double memFrac = s is null ? 0 : Math.Clamp(s.MemoryUsagePercent / 100, 0, 1);
-            dc.DrawRoundedRectangle(RenderKit.BrushOf(pal.Track), null, new Rect(x0, y, w, 5), 2.5, 2.5);
-            if (memFrac > 0.002)
-                dc.DrawRoundedRectangle(RenderKit.BrushOf(MemC), null,
-                    new Rect(x0, y, Math.Max(4, w * memFrac), 5), 2.5, 2.5);
-            y += 14;
+            // BrimDeck 同款渐变容量条（蓝→青，圆头，略加粗到 6px）
+            GradientBar(dc, new Rect(x0, y, w, 6), memFrac, CpuC, MemC, pal);
+            y += 15;
         }
 
         // ---------- GPU 行：表盘 + 读数 + 温度 + 右侧显卡名 ----------
@@ -188,6 +215,7 @@ public sealed class MonitorPage : FrameworkElement
                     UsedGB = s.DriveUsedGB, TotalGB = s.DriveTotalGB,
                 });
 
+            int rowIdx = 0;
             foreach (var d in rows.Take(3))   // 版面最多 3 行（面板高度固定，C/D/E 全覆盖）
             {
                 // 表盘字母 = 盘符首字符（C/D/E…），一眼认盘
@@ -216,35 +244,49 @@ public sealed class MonitorPage : FrameworkElement
                     RenderKit.Baseline(dc, drv, lw - 6 - drv.WidthIncludingTrailingWhitespace, bl);
                 }
                 y += 32;
+                // 系统盘（首行）下方加容量渐变条（BrimDeck 磁盘行同款）
+                if (rowIdx == 0 && d.TotalGB > 0.1)
+                {
+                    GradientBar(dc, new Rect(x0 + dial + 10, y - 7, w - dial - 10, 5),
+                        d.UsedGB / d.TotalGB, MemC, DiskC, pal);
+                    y += 8;
+                }
+                rowIdx++;
             }
         }
 
-        // ---------- 网速行：↓ 读数 + 平滑曲线 ｜ ↑ 读数 ----------
+        // ---------- 网速行（BrimDeck 同款：左右两条填充曲线，↓ 绿 / ↑ 橙） ----------
         if (Want("net") && s is not null)
         {
-            double bl = Math.Round(y + 14);
-            var di = RenderKit.Text("↓", 13, DownC, true, ppd);
-            RenderKit.Baseline(dc, di, x0, bl);
-            var dr = RenderKit.Text(MonitorSnapshot.FormatSpeed(s.DownloadSpeed), 13, pal.Text, true, ppd);
-            RenderKit.Baseline(dc, dr, x0 + 16, bl);
-            double sparkX = x0 + 16 + dr.WidthIncludingTrailingWhitespace + 12;
-            double sparkW = x0 + w / 2 - sparkX - 10;
-            if (sparkW > 30)
-                RenderKit.DrawSpark(dc, new Rect(sparkX, y, sparkW, 16), NetHistory, DownC, 36);
+            double half = (w - 16) / 2;
+            // 左：下行
+            var di = RenderKit.Text("↓", 12, DownC, true, ppd);
+            RenderKit.Baseline(dc, di, x0, Math.Round(y + 13));
+            var dr = RenderKit.Text(MonitorSnapshot.FormatSpeed(s.DownloadSpeed), 12, pal.Text, true, ppd);
+            RenderKit.Baseline(dc, dr, x0 + 14, Math.Round(y + 13));
+            double sparkX = x0 + 14 + dr.WidthIncludingTrailingWhitespace + 8;
+            if (half - (sparkX - x0) > 30)
+                RenderKit.DrawSpark(dc, new Rect(sparkX, y + 2, half - (sparkX - x0), 15), DownHistory ?? NetHistory, DownC, 36);
 
-            double x2 = x0 + w / 2 + 8;
-            var ui = RenderKit.Text("↑", 13, UpC, true, ppd);
-            RenderKit.Baseline(dc, ui, x2, bl);
-            var ur = RenderKit.Text(MonitorSnapshot.FormatSpeed(s.UploadSpeed), 13, pal.Text, true, ppd);
-            RenderKit.Baseline(dc, ur, x2 + 16, bl);
-            // ping（L4 Hardware 同款：延迟分级配色 ≤50 绿 / ≤120 橙 / 更高红）
+            // 右：上行
+            double x2 = x0 + half + 16;
+            var ui = RenderKit.Text("↑", 12, UpC, true, ppd);
+            RenderKit.Baseline(dc, ui, x2, Math.Round(y + 13));
+            var ur = RenderKit.Text(MonitorSnapshot.FormatSpeed(s.UploadSpeed), 12, pal.Text, true, ppd);
+            RenderKit.Baseline(dc, ur, x2 + 14, Math.Round(y + 13));
+            double sparkX2 = x2 + 14 + ur.WidthIncludingTrailingWhitespace + 8;
+            // ping 在右缘，曲线到 ping 为止
+            double rightReserve = 0;
             if (s.PingMs >= 0)
             {
                 var pc = s.PingMs <= 50 ? DownC : s.PingMs <= 120 ? pal.Warning : pal.Up;
                 var ping = RenderKit.Text($"ping {s.PingMs}ms", 10, pc, ppd: ppd);
-                RenderKit.Baseline(dc, ping, lw - 6 - ping.WidthIncludingTrailingWhitespace, bl);
+                RenderKit.Baseline(dc, ping, lw - 6 - ping.WidthIncludingTrailingWhitespace, Math.Round(y + 13));
+                rightReserve = ping.WidthIncludingTrailingWhitespace + 10;
             }
-            y += 26;
+            if (x0 + w - rightReserve - sparkX2 > 30)
+                RenderKit.DrawSpark(dc, new Rect(sparkX2, y + 2, x0 + w - rightReserve - sparkX2, 15), UpHistory ?? NetHistory, UpC, 36);
+            y += 28;
         }
 
         // ---------- 功耗/风扇行 + 右侧流量累计 ----------
@@ -275,7 +317,17 @@ public sealed class MonitorPage : FrameworkElement
             if (s is not null && s.UptimeHours > 0)
             {
                 var up = RenderKit.Text($"运行 {FormatUptime(s.UptimeHours)}", 10, pal.TextDim, ppd: ppd);
-                RenderKit.Baseline(dc, up, x, bl);
+                RenderKit.Baseline(dc, up, x, bl); x += up.WidthIncludingTrailingWhitespace + 14;
+            }
+            // 本机电池（BrimDeck 底行同款：分级色百分比 + 充电闪电）
+            var bat = DeviceService.Snapshot.FirstOrDefault(d => d.Kind == "battery");
+            if (bat is not null)
+            {
+                var bc = bat.Charging ? Color.FromRgb(0x3F, 0xC1, 0x5E)
+                       : bat.Percent <= 20 ? pal.Up
+                       : bat.Percent <= 40 ? pal.Warning : pal.Text;
+                var bt = RenderKit.Text($"{(bat.Charging ? "⚡" : "")}电池 {bat.Percent}%", 10, bc, true, ppd);
+                RenderKit.Baseline(dc, bt, x, bl);
             }
             if (s is not null)
             {
@@ -295,8 +347,8 @@ public sealed class MonitorPage : FrameworkElement
         return $"{hours / 24:F1} 天";
     }
 
-    /// <summary>右栏：占用最高进程 Top5（BrimDeck 监控页右侧栏同款）。</summary>
-    private static void DrawTopProcesses(DrawingContext dc, Palette pal, MonitorSnapshot? s,
+    /// <summary>右栏：进程榜（BrimDeck 同款：CPU/内存分段开关 + 真实应用图标 + 分级配色读数）。</summary>
+    private void DrawTopProcesses(DrawingContext dc, Palette pal, MonitorSnapshot? s,
         double W, double H, double lw, double ppd)
     {
         double rx0 = lw + 14, rw = W - 6 - rx0;
@@ -304,20 +356,29 @@ public sealed class MonitorPage : FrameworkElement
         // 分栏发丝线
         dc.DrawLine(RenderKit.PenOf(pal.Track, 1, 0.7), new Point(lw + 4, 6), new Point(lw + 4, H - 8));
 
-        double ry = 6;
-        var head = RenderKit.Text("进程占用 Top 5", 9.5, pal.TextTertiary, ppd: ppd);
-        RenderKit.Baseline(dc, head, rx0, Math.Round(ry + 9));
-        ry += 18;
+        // ---- 分段开关：CPU | 内存（胶囊两段，选中段主题色浅底） ----
+        const double segW = 74;
+        _sortToggleRect = new Rect(W - 6 - segW, 4, segW, 20);
+        dc.DrawRoundedRectangle(RenderKit.BrushOf(pal.Track), null, _sortToggleRect, 10, 10);
+        double halfW = segW / 2;
+        var selRect = new Rect(_sortToggleRect.X + (TopSort == "cpu" ? 1 : halfW), 5, halfW - 1, 18);
+        dc.DrawRoundedRectangle(new SolidColorBrush(pal.Accent) { Opacity = 0.28 }, null, selRect, 9, 9);
+        var cpuT = RenderKit.Text("CPU", 9.5, TopSort == "cpu" ? pal.Text : pal.TextTertiary, TopSort == "cpu", ppd);
+        var memT = RenderKit.Text("内存", 9.5, TopSort == "mem" ? pal.Text : pal.TextTertiary, TopSort == "mem", ppd);
+        dc.DrawText(cpuT, new Point(_sortToggleRect.X + halfW / 2 - cpuT.Width / 2, 6 + (18 - cpuT.Height) / 2 + 1));
+        dc.DrawText(memT, new Point(_sortToggleRect.X + halfW + halfW / 2 - memT.Width / 2, 6 + (18 - memT.Height) / 2 + 1));
+
+        double ry = 28;
         // 进程/线程总量（PDH System 计数器，免管理员）
         if (s is not null && s.ProcessCount > 0)
         {
             var counts = RenderKit.Text(
                 $"共 {s.ProcessCount} 进程 · {s.ThreadCount} 线程", 9, pal.TextTertiary, ppd: ppd);
             RenderKit.Baseline(dc, counts, rx0, Math.Round(ry + 8));
-            ry += 15;
+            ry += 16;
         }
 
-        var tops = s?.TopProcesses;
+        var tops = TopSort == "mem" ? s?.TopProcessesByMem : s?.TopProcesses;
         if (tops is null || tops.Length == 0)
         {
             var wait = RenderKit.Text("采样中…", 9.5, pal.TextTertiary, ppd: ppd);
@@ -326,18 +387,39 @@ public sealed class MonitorPage : FrameworkElement
         }
         foreach (var p in tops.Take(5))
         {
-            double bl = Math.Round(ry + 11);
-            var pct = RenderKit.Text($"{p.CpuPercent:F1}%", 11,
-                RenderKit.LevelColor(p.CpuPercent, pal.Text, pal), true, ppd);
-            var mem = RenderKit.Text(p.MemoryMB >= 1024
-                ? $"{p.MemoryMB / 1024:F1} GB" : $"{p.MemoryMB:F0} MB", 9.5, pal.TextTertiary, ppd: ppd);
-            double pctSlot = Math.Max(pct.WidthIncludingTrailingWhitespace, 42);
+            double rowCy = ry + 8;
+            // 真实应用图标（SHGetFileInfo 缓存；取不到画首字母圆）
+            var icon = RenderKit.AppIcon(p.ExePath);
+            if (icon is not null)
+            {
+                dc.DrawImage(icon, new Rect(rx0, rowCy - 7, 14, 14));
+            }
+            else
+            {
+                dc.DrawEllipse(RenderKit.BrushOf(pal.Track), null, new Point(rx0 + 7, rowCy), 7, 7);
+                var ini = RenderKit.Text(p.Name.Length > 0 ? p.Name[..1].ToUpper() : "?", 8, pal.TextDim, true, ppd);
+                dc.DrawText(ini, new Point(rx0 + 7 - ini.Width / 2, rowCy - ini.Height / 2));
+            }
+
+            // 主读数（按排序档：CPU% 分级配色 / 内存 MB）
+            string mainText; Color mainColor;
+            if (TopSort == "mem")
+            {
+                mainText = p.MemoryMB >= 1024 ? $"{p.MemoryMB / 1024:F1} GB" : $"{p.MemoryMB:F0} MB";
+                mainColor = pal.Text;
+            }
+            else
+            {
+                mainText = $"{p.CpuPercent:F1}%";
+                mainColor = RenderKit.LevelColor(p.CpuPercent, pal.Text, pal);
+            }
+            var main = RenderKit.Text(mainText, 11, mainColor, true, ppd);
+            double bl = Math.Round(ry + 15);
+            RenderKit.Baseline(dc, main, W - 6 - main.WidthIncludingTrailingWhitespace, bl);
             var name = RenderKit.Trimmed(p.Name, 11, pal.Text,
-                rw - pctSlot - mem.WidthIncludingTrailingWhitespace - 14, false, ppd);
-            RenderKit.Baseline(dc, name, rx0, bl);
-            RenderKit.Baseline(dc, mem, rx0 + name.WidthIncludingTrailingWhitespace + 7, bl);
-            RenderKit.Baseline(dc, pct, W - 6 - pct.WidthIncludingTrailingWhitespace, bl);
-            ry += 22;
+                rw - 22 - main.WidthIncludingTrailingWhitespace - 8, false, ppd);
+            RenderKit.Baseline(dc, name, rx0 + 20, bl);
+            ry += 23;
         }
     }
 }

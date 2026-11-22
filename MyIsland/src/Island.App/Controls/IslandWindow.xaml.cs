@@ -224,6 +224,8 @@ public partial class IslandWindow : Window
     // 历史环形缓冲（走势图）：36 点
     private readonly double[] _cpuHist = new double[36];
     private readonly double[] _netHist = new double[36];
+    private readonly double[] _downHist = new double[36];
+    private readonly double[] _upHist = new double[36];
     private int _histIdx;
     private double _netMax = 1; // 网速自归一化的滑动峰值
 
@@ -493,13 +495,19 @@ public partial class IslandWindow : Window
             _netMax = Math.Max(_netMax * 0.97, Math.Max(net, 1024)); // 滑动峰值，最小 1KB
             _cpuHist[_histIdx % _cpuHist.Length] = Easing.Clamp(s.CpuUsage / 100, 0, 1);
             _netHist[_histIdx % _netHist.Length] = Easing.Clamp(net / _netMax, 0, 1);
+            _downHist[_histIdx % _downHist.Length] = Easing.Clamp(s.DownloadSpeed / _netMax, 0, 1);
+            _upHist[_histIdx % _upHist.Length] = Easing.Clamp(s.UploadSpeed / _netMax, 0, 1);
             _histIdx++;
             var cpuSeq = new double[_cpuHist.Length];
             var netSeq = new double[_netHist.Length];
+            var downSeq = new double[_downHist.Length];
+            var upSeq = new double[_upHist.Length];
             for (int i = 0; i < _cpuHist.Length; i++)
             {
                 cpuSeq[i] = _cpuHist[(_histIdx + i) % _cpuHist.Length];
                 netSeq[i] = _netHist[(_histIdx + i) % _netHist.Length];
+                downSeq[i] = _downHist[(_histIdx + i) % _downHist.Length];
+                upSeq[i] = _upHist[(_histIdx + i) % _upHist.Length];
             }
             islandCanvas.CpuHistory = cpuSeq;
             islandCanvas.NetHistory = netSeq;
@@ -509,6 +517,8 @@ public partial class IslandWindow : Window
             mon.Snapshot = s;
             mon.CpuHistory = cpuSeq;
             mon.NetHistory = netSeq;
+            mon.DownHistory = downSeq;
+            mon.UpHistory = upSeq;
             mon.Thermal = _thermal.Current;
             mon.InvalidateVisual();
             UpdateTempTooltip(_thermal.Current);

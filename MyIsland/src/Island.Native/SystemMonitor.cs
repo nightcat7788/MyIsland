@@ -225,6 +225,7 @@ public sealed class SystemMonitor : IDisposable
     private DateTime _procChecked = DateTime.MinValue;
     private Dictionary<int, (string Name, TimeSpan Cpu)> _procPrev = new();
     private TopProcess[] _topProcesses = Array.Empty<TopProcess>();
+    private TopProcess[] _topProcessesByMem = Array.Empty<TopProcess>();
 
     private void SampleTopProcesses()
     {
@@ -237,6 +238,7 @@ public sealed class SystemMonitor : IDisposable
         var prev = _procPrev;
         var next = new Dictionary<int, (string, TimeSpan)>(256);
         var tops = new List<TopProcess>(64);
+        var mems = new List<TopProcess>(64);
         int coresN = Math.Max(1, Environment.ProcessorCount);
 
         foreach (var p in Process.GetProcesses())
@@ -249,16 +251,27 @@ public sealed class SystemMonitor : IDisposable
                 long ws = 0;
                 try { ws = p.WorkingSet64; } catch { /* 权限不足：内存显示 0 */ }
                 next[p.Id] = (name, cpu);
+                string exePath = "";
                 if (wall > 0.5 && prev.TryGetValue(p.Id, out var old))
                 {
                     double pct = (cpu - old.Cpu).TotalSeconds / wall / coresN * 100;
                     if (pct >= 0.05)
+                    {
+                        try { exePath = p.MainModule?.FileName ?? ""; } catch { }
                         tops.Add(new TopProcess
                         {
                             Name = name,
                             CpuPercent = Math.Min(pct, 100),
                             MemoryMB = ws / 1048576.0,
+                            ExePath = exePath,
                         });
+                    }
+                }
+                // 内存榜：独立采集（与 CPU 无关，工作集前 5）
+                if (ws > 200 * 1048576)   // 200MB 门槛，过滤小进程
+                {
+                    if (exePath.Length == 0) { try { exePath = p.MainModule?.FileName ?? ""; } catch { } }
+                    mems.Add(new TopProcess { Name = name, MemoryMB = ws / 1048576.0, ExePath = exePath });
                 }
             }
             catch { /* 进程已退出/无权限：跳过 */ }
@@ -267,6 +280,8 @@ public sealed class SystemMonitor : IDisposable
         _procPrev = next;
         if (tops.Count > 0)
             _topProcesses = tops.OrderByDescending(t => t.CpuPercent).Take(5).ToArray();
+        if (mems.Count > 0)
+            _topProcessesByMem = mems.OrderByDescending(t => t.MemoryMB).Take(5).ToArray();
     }
 
     /// <summary>当前 CPU 平均实际频率 GHz（PDH % Performance × 基频）。</summary>
@@ -325,6 +340,7 @@ public sealed class SystemMonitor : IDisposable
             DriveName = sysRoot,
             Disks = disks,
             TopProcesses = _topProcesses,
+            TopProcessesByMem = _topProcessesByMem,
             DownloadSpeed = down,
             UploadSpeed = up,
             SessionDownload = _sessionDown,

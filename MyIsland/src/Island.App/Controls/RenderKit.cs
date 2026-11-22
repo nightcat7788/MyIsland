@@ -232,4 +232,52 @@ internal static class RenderKit
         }
         if (closed) ctx.LineTo(new Point(p[^1].X, bottom), false, false);
     }
+
+    // ---------- 应用图标（SHGetFileInfo 小图标 + 缓存；进程榜用） ----------
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, ImageSource?> _icons = new();
+
+    /// <summary>按可执行文件路径取 16px 图标（失败缓存 null，不重试）。</summary>
+    public static ImageSource? AppIcon(string? path)
+    {
+        if (string.IsNullOrEmpty(path)) return null;
+        return _icons.GetOrAdd(path, LoadIcon);
+    }
+
+    private static ImageSource? LoadIcon(string path)
+    {
+        try
+        {
+            var fi = new SHFILEINFO();
+            IntPtr r = SHGetFileInfo(path, 0, ref fi, (uint)System.Runtime.InteropServices.Marshal.SizeOf<SHFILEINFO>(),
+                SHGFI_ICON | SHGFI_SMALLICON);
+            if (r == IntPtr.Zero || fi.hIcon == IntPtr.Zero) return null;
+            var src = System.Windows.Interop.Imaging.CreateBitmapSourceFromHIcon(
+                fi.hIcon, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
+            src.Freeze();
+            DestroyIcon(fi.hIcon);
+            return src;
+        }
+        catch { return null; }
+    }
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private struct SHFILEINFO
+    {
+        public IntPtr hIcon;
+        public int iIcon;
+        public uint dwAttributes;
+        [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.ByValTStr, SizeConst = 260)]
+        public string szDisplayName;
+        [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.ByValTStr, SizeConst = 80)]
+        public string szTypeName;
+    }
+
+    [System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern IntPtr SHGetFileInfo(string pszPath, uint dwFileAttributes, ref SHFILEINFO psfi,
+        uint cbFileInfo, uint uFlags);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool DestroyIcon(IntPtr hIcon);
+
+    private const uint SHGFI_ICON = 0x100, SHGFI_SMALLICON = 0x1;
 }
