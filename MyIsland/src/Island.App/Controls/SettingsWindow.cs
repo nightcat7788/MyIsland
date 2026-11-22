@@ -106,23 +106,18 @@ public sealed class SettingsWindow : Window
                 Margin = new Thickness(0, 2, 0, 6),
             };
             root.Children.Add(hint);
-            var admin = new Button
-            {
-                Content = "以管理员重启（获取温度读数）",
-                Height = 32, Margin = new Thickness(0, 0, 0, 4),
-                HorizontalAlignment = HorizontalAlignment.Left,
-                Padding = new Thickness(14, 0, 14, 0),
-            };
+            var admin = DarkButton("以管理员重启（获取温度读数）", 32);
+            admin.HorizontalAlignment = HorizontalAlignment.Left;
+            admin.Margin = new Thickness(0, 0, 0, 4);
             admin.Click += (_, _) => { _host.RestartAsAdmin(); Close(); };
             root.Children.Add(admin);
         }
 
-        var close = new Button
-        {
-            Content = "完成", Width = 84, Height = 32, IsDefault = true,
-            HorizontalAlignment = HorizontalAlignment.Right,
-            Margin = new Thickness(0, 14, 0, 0),
-        };
+        var close = DarkButton("完成", 32);
+        close.Width = 84;
+        close.IsDefault = true;
+        close.HorizontalAlignment = HorizontalAlignment.Right;
+        close.Margin = new Thickness(0, 14, 0, 0);
         close.Click += (_, _) => Close();
         root.Children.Add(close);
 
@@ -155,13 +150,7 @@ public sealed class SettingsWindow : Window
 
     private ComboBox Combo((string Id, string Label)[] items, string current, Action<string> apply)
     {
-        var cb = new ComboBox
-        {
-            MinWidth = 180,
-            Background = new SolidColorBrush(_palette.SurfaceAlt),
-            Foreground = new SolidColorBrush(_palette.Text),
-            Padding = new Thickness(8, 3, 8, 3),
-        };
+        var cb = DarkCombo();
         int selected = 0;
         for (int i = 0; i < items.Length; i++)
         {
@@ -173,6 +162,30 @@ public sealed class SettingsWindow : Window
         {
             if (_ready && cb.SelectedItem is ComboBoxItem { Tag: string id }) apply(id);
         };
+        return cb;
+    }
+
+    /// <summary>深色下拉框：折叠态文字与弹出项强制用主题色（默认黑字在深底上不可读）。</summary>
+    private ComboBox DarkCombo()
+    {
+        var cb = new ComboBox
+        {
+            MinWidth = 180,
+            Background = new SolidColorBrush(_palette.SurfaceAlt),
+            Foreground = new SolidColorBrush(_palette.Text),
+            Padding = new Thickness(8, 3, 8, 3),
+        };
+        // 弹出项容器：深色底 + 主题文字色；悬停高亮用主题 Accent
+        var itemStyle = new Style(typeof(ComboBoxItem));
+        itemStyle.Setters.Add(new Setter(Control.ForegroundProperty, new SolidColorBrush(_palette.Text)));
+        itemStyle.Setters.Add(new Setter(Control.BackgroundProperty, new SolidColorBrush(_palette.SurfaceAlt)));
+        itemStyle.Setters.Add(new Setter(Control.PaddingProperty, new Thickness(10, 5, 10, 5)));
+        var hoverTrigger = new Trigger { Property = ComboBoxItem.IsHighlightedProperty, Value = true };
+        hoverTrigger.Setters.Add(new Setter(Control.BackgroundProperty,
+            new SolidColorBrush(_palette.Accent) { Opacity = 0.25 }));
+        hoverTrigger.Setters.Add(new Setter(Control.ForegroundProperty, new SolidColorBrush(_palette.Text)));
+        itemStyle.Triggers.Add(hoverTrigger);
+        cb.ItemContainerStyle = itemStyle;
         return cb;
     }
 
@@ -191,24 +204,31 @@ public sealed class SettingsWindow : Window
 
     private Button Link(string text, Action open)
     {
+        var b = DarkButton(text, 28);
+        b.Click += (_, _) => { open(); };
+        return b;
+    }
+
+    /// <summary>深色按钮：SurfaceAlt 底 + 主题文字色（默认灰按钮在深色窗口里突兀）。</summary>
+    private Button DarkButton(string text, double height)
+    {
         var b = new Button
         {
-            Content = text, Height = 28, Padding = new Thickness(12, 0, 12, 0),
-            HorizontalAlignment = HorizontalAlignment.Left,
+            Content = text,
+            Height = height,
+            Padding = new Thickness(12, 0, 12, 0),
+            Background = new SolidColorBrush(_palette.SurfaceAlt),
+            Foreground = new SolidColorBrush(_palette.Text),
+            BorderBrush = new SolidColorBrush(_palette.Track),
+            BorderThickness = new Thickness(1),
+            Cursor = System.Windows.Input.Cursors.Hand,
         };
-        b.Click += (_, _) => { open(); };
         return b;
     }
 
     private ComboBox CityCombo()
     {
-        var cb = new ComboBox
-        {
-            MinWidth = 180,
-            Background = new SolidColorBrush(_palette.SurfaceAlt),
-            Foreground = new SolidColorBrush(_palette.Text),
-            Padding = new Thickness(8, 3, 8, 3),
-        };
+        var cb = DarkCombo();
         cb.Items.Add(new ComboBoxItem { Content = "自动定位（IP）", Tag = "" });
         foreach (var c in Cities)
             cb.Items.Add(new ComboBoxItem { Content = c, Tag = c });
