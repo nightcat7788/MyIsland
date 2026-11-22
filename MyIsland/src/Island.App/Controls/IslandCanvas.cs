@@ -143,12 +143,7 @@ public sealed class IslandCanvas : FrameworkElement
 
         // 高光边缘（Liquid Glass 式 rim light）：顶部 1px 渐隐白边，深主题下给胶囊玻璃厚度
         if (pal.IsDark && !pal.SquareCorners)
-        {
-            var hl = new LinearGradientBrush(Color.FromArgb(70, 255, 255, 255), Colors.Transparent,
-                new Point(0, 0), new Point(0, 1));
-            hl.Freeze();
-            dc.DrawGeometry(null, new Pen(hl, 1.1), geo);
-        }
+            dc.DrawGeometry(null, RenderKit.RimLightPen, geo);
 
         if (IsExpanded || IsIndicator) return;   // 展开面板由 XAML 画；指示条只留呼吸底
 

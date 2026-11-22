@@ -208,6 +208,26 @@ internal static class RenderKit
         catch { return null; }
     }
 
+    // ---------- 高光边缘（缓存：渐变画笔冻结一份，每帧零分配） ----------
+    private static Pen? _rimLightPen;
+
+    /// <summary>顶部 1px 渐隐白边（Liquid Glass 式 rim light），深主题用。</summary>
+    public static Pen RimLightPen
+    {
+        get
+        {
+            if (_rimLightPen is null)
+            {
+                var hl = new LinearGradientBrush(Color.FromArgb(70, 255, 255, 255), Colors.Transparent,
+                    new Point(0, 0), new Point(0, 1));
+                hl.Freeze();
+                _rimLightPen = new Pen(hl, 1.1);
+                _rimLightPen.Freeze();
+            }
+            return _rimLightPen;
+        }
+    }
+
     // ---------- 平滑走势图（Catmull-Rom + 16% 填充，右缘最新） ----------
     public static void DrawSpark(DrawingContext dc, Rect area, double[]? data, Color color, int n = 36)
     {
