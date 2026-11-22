@@ -66,6 +66,17 @@ public sealed record MonitorSnapshot
     /// <summary>当前活跃连接类型：wifi / ethernet / ""。</summary>
     public string LinkType { get; init; } = "";
 
+    /// <summary>系统运行时长（小时，TickCount64）。</summary>
+    public double UptimeHours { get; init; }
+    /// <summary>进程数（PDH System\Processes）。</summary>
+    public int ProcessCount { get; init; }
+    /// <summary>线程数（PDH System\Threads）。</summary>
+    public int ThreadCount { get; init; }
+    /// <summary>已提交内存 GB（commit charge，pagefile 口径）。</summary>
+    public double CommitGB { get; init; }
+    /// <summary>提交上限 GB。</summary>
+    public double CommitLimitGB { get; init; }
+
     public string SessionText =>
         $"今日 ↓{FormatBytes(TodayDownload)} ↑{FormatBytes(TodayUpload)} · 会话 ↓{FormatBytes(SessionDownload)} ↑{FormatBytes(SessionUpload)}";
 

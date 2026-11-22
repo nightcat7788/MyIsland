@@ -38,13 +38,25 @@ public sealed class SystemMonitor : IDisposable
     /// <summary>每次采样完成触发，参数是不可变快照。</summary>
     public event Action<MonitorSnapshot>? Snapshot;
 
+    private PerformanceCounter? _procCounter, _threadCounter;
+
     public SystemMonitor(int intervalMs = 1000)
     {
         InitCpu();
         InitDisk();
+        try
+        {
+            _procCounter = new PerformanceCounter("System", "Processes", true);
+            _threadCounter = new PerformanceCounter("System", "Threads", true);
+            _procCounter.NextValue(); _threadCounter.NextValue();
+        }
+        catch { _procCounter = _threadCounter = null; }
         _timer = new System.Timers.Timer(intervalMs);
         _timer.Elapsed += OnTick;
     }
+
+    /// <summary>运行时调整采样间隔（设置中心"监控刷新率"）。</summary>
+    public void SetInterval(int intervalMs) => _timer.Interval = Math.Clamp(intervalMs, 250, 10000);
 
     public void Start()
     {
@@ -282,6 +294,7 @@ public sealed class SystemMonitor : IDisposable
         double cpu = SampleCpu();
         double[]? cores = SampleCores();
         var mem = ReadMemory();
+        var commit = ReadCommit();
         ReadNetwork(out double down, out double up);
         double gpu = _gpuCache.ReadGpuUsage();
         string gpuName = _gpuCache.Name;
@@ -318,6 +331,11 @@ public sealed class SystemMonitor : IDisposable
             TodayDownload = _todayDown,
             TodayUpload = _todayUp,
             LinkType = DetectLinkType(),
+            UptimeHours = Environment.TickCount64 / 3600000.0,
+            ProcessCount = SafeCount(_procCounter),
+            ThreadCount = SafeCount(_threadCounter),
+            CommitGB = commit.used,
+            CommitLimitGB = commit.total,
         };
         lock (_gate) Current = snap;
         Snapshot?.Invoke(snap);
@@ -354,6 +372,22 @@ public sealed class SystemMonitor : IDisposable
             return (pct, usedGB, totalGB);
         }
         return (0, 0, 0);
+    }
+
+    /// <summary>提交内存（commit）：limit = pagefile 总量，used = 总量 - 可用。</summary>
+    private static (double used, double total) ReadCommit()
+    {
+        var m = new MEMORYSTATUSEX { dwLength = (uint)Marshal.SizeOf<MEMORYSTATUSEX>() };
+        if (GlobalMemoryStatusEx(ref m) && m.ullTotalPageFile > 0)
+            return ((m.ullTotalPageFile - m.ullAvailPageFile) / 1073741824.0,
+                    m.ullTotalPageFile / 1073741824.0);
+        return (0, 0);
+    }
+
+    private static int SafeCount(PerformanceCounter? c)
+    {
+        try { return c is null ? 0 : (int)c.NextValue(); }
+        catch { return 0; }
     }
 
     private void ReadNetwork(out double down, out double up)

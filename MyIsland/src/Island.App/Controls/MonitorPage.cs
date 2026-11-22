@@ -121,7 +121,15 @@ public sealed class MonitorPage : FrameworkElement
                 var used = RenderKit.Text($"{s.MemoryUsedGB:F1}", 15, pal.Text, true, ppd);
                 var tot = RenderKit.Text($" / {s.MemoryTotalGB:F0} GB", 11, pal.TextDim, ppd: ppd);
                 RenderKit.Baseline(dc, used, x, bl); x += used.WidthIncludingTrailingWhitespace;
-                RenderKit.Baseline(dc, tot, x, bl);
+                RenderKit.Baseline(dc, tot, x, bl); x += tot.WidthIncludingTrailingWhitespace + 10;
+                // 提交内存（commit charge，pagefile 口径）
+                if (s.CommitLimitGB > 0.1)
+                {
+                    double cpct = s.CommitGB / s.CommitLimitGB * 100;
+                    var cm = RenderKit.Text($"提交 {s.CommitGB:F0}/{s.CommitLimitGB:F0} GB", 10,
+                        RenderKit.LevelColor(cpct, pal.TextTertiary, pal), ppd: ppd);
+                    RenderKit.Baseline(dc, cm, x, bl);
+                }
                 var mp = RenderKit.Text($"{Math.Round(s.MemoryUsagePercent)}%", 11,
                     RenderKit.LevelColor(s.MemoryUsagePercent, pal.TextDim, pal), true, ppd);
                 RenderKit.Baseline(dc, mp, lw - 6 - mp.WidthIncludingTrailingWhitespace, bl);
@@ -254,7 +262,13 @@ public sealed class MonitorPage : FrameworkElement
             if (th?.MotherboardTemp is { } mb)
             {
                 var mbT = RenderKit.Text($"主板 {Math.Round(mb)}°", 10, TempColor(mb, pal), ppd: ppd);
-                RenderKit.Baseline(dc, mbT, x, bl);
+                RenderKit.Baseline(dc, mbT, x, bl); x += mbT.WidthIncludingTrailingWhitespace + 14;
+            }
+            // 系统运行时长（免管理员）
+            if (s is not null && s.UptimeHours > 0)
+            {
+                var up = RenderKit.Text($"运行 {FormatUptime(s.UptimeHours)}", 10, pal.TextDim, ppd: ppd);
+                RenderKit.Baseline(dc, up, x, bl);
             }
             if (s is not null)
             {
@@ -264,6 +278,14 @@ public sealed class MonitorPage : FrameworkElement
         }
 
         if (Want("topproc")) DrawTopProcesses(dc, pal, s, W, H, lw, ppd);
+    }
+
+    /// <summary>运行时长人性化：&lt;1h 显示分钟，&lt;48h 显示 x.x h，否则 x 天。</summary>
+    private static string FormatUptime(double hours)
+    {
+        if (hours < 1) return $"{(int)(hours * 60)} 分钟";
+        if (hours < 48) return $"{hours:F1} h";
+        return $"{hours / 24:F1} 天";
     }
 
     /// <summary>右栏：占用最高进程 Top5（BrimDeck 监控页右侧栏同款）。</summary>
@@ -279,6 +301,14 @@ public sealed class MonitorPage : FrameworkElement
         var head = RenderKit.Text("进程占用 Top 5", 9.5, pal.TextTertiary, ppd: ppd);
         RenderKit.Baseline(dc, head, rx0, Math.Round(ry + 9));
         ry += 18;
+        // 进程/线程总量（PDH System 计数器，免管理员）
+        if (s is not null && s.ProcessCount > 0)
+        {
+            var counts = RenderKit.Text(
+                $"共 {s.ProcessCount} 进程 · {s.ThreadCount} 线程", 9, pal.TextTertiary, ppd: ppd);
+            RenderKit.Baseline(dc, counts, rx0, Math.Round(ry + 8));
+            ry += 15;
+        }
 
         var tops = s?.TopProcesses;
         if (tops is null || tops.Length == 0)

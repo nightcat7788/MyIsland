@@ -27,6 +27,10 @@ public sealed class Settings
     /// <summary>鼠标穿透模式：岛体只显示不拦截点击（适合游戏；BrimDeck 兼容模式同款）。</summary>
     public bool ClickThrough { get; set; } = false;
     public int MonitorIntervalMs { get; set; } = 1000;
+    /// <summary>高温告警开关（收起态超阈值弹浮条提醒）。</summary>
+    public bool TempAlertEnabled { get; set; } = true;
+    /// <summary>高温告警阈值（°C）。</summary>
+    public int TempAlertThreshold { get; set; } = 88;
     public int QuotaIntervalMin { get; set; } = 10;
     public string City { get; set; } = "";             // 天气城市（空=IP 定位）
 

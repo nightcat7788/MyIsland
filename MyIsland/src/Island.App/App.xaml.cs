@@ -176,6 +176,7 @@ public partial class App : Application
             ShowMonitorSettings = () => _island.ShowMonitorSettings(),
             RestartAsAdmin = RestartAsAdmin,
             SetClickThrough = on => _island.SetClickThrough(on),
+            SetMonitorInterval = ms => _island.SetMonitorInterval(ms),
             PromptCity = PromptCity,
             IsElevated = IsElevated(),
         });

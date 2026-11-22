@@ -74,6 +74,15 @@ public partial class IslandWindow : Window
 
         expandedPanel.CloseRequested += () => SetExpanded(false);   // 顶栏 ✕
 
+        // 果冻物理：悬停微拉伸，按压缩扁回弹（仅收起态；展开面板不动）
+        MouseEnter += (_, _) => { if (!_expanded) _squash.To(1.07, 240, 0.55); };
+        MouseLeave += (_, _) => { if (!_expanded) _squash.To(1, 240, 0.6); };
+        PreviewMouseLeftButtonDown += (_, _) =>
+        { if (!_expanded) { _squash.Snap(0.88); _squash.To(1, 300, 0.5); } };
+
+        // 监控刷新率（设置中心可调，立即生效并持久化）
+        // 见 SetMonitorInterval()
+
         _frame = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(16) };
         _frame.Tick += Frame_Tick;
 
@@ -306,6 +315,14 @@ public partial class IslandWindow : Window
     }
 
     // ---------- 悬停展开 / 收起 ----------
+    /// <summary>监控刷新率（设置中心调用）：立即生效并持久化。</summary>
+    public void SetMonitorInterval(int ms)
+    {
+        _settings.MonitorIntervalMs = ms;
+        _settings.Save();
+        _monitor.SetInterval(ms);
+    }
+
     /// <summary>非管理员运行时为 true：监控页温度位显示"需管理员"提示。</summary>
     private bool _tempNeedAdmin;
     public bool MonitorTempNeedAdmin
@@ -545,10 +562,12 @@ public partial class IslandWindow : Window
     private void CheckAlerts()
     {
         if (_expanded) return;
+        if (!_settings.TempAlertEnabled) return;
         var t = _thermal.Current;
         if (t is null) return;
-        double? hot = t.CpuTemp is { } c && c >= 88 ? c
-                    : t.GpuTemp is { } g && g >= 88 ? g : null;
+        double th = _settings.TempAlertThreshold;
+        double? hot = t.CpuTemp is { } c && c >= th ? c
+                    : t.GpuTemp is { } g && g >= th ? g : null;
         if (hot is null) return;
         if ((DateTime.Now - _lastTempAlert).TotalSeconds < 60) return;   // 每分钟最多提醒一次
         _lastTempAlert = DateTime.Now;

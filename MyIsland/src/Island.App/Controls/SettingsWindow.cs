@@ -33,6 +33,7 @@ public sealed class SettingsWindow : Window
         public Action ShowMonitorSettings = () => { };
         public Action RestartAsAdmin = () => { };
         public Action<bool> SetClickThrough = _ => { };
+        public Action<int> SetMonitorInterval = _ => { };
         public Func<string?> PromptCity = () => null;
         public bool IsElevated = true;
     }
@@ -390,6 +391,20 @@ public sealed class SettingsWindow : Window
         behavior.Add(ToggleRow("长期显示灵动岛（全屏/最大化也不隐藏）", _settings.AlwaysVisible,
             v => { _settings.AlwaysVisible = v; _settings.Save(); }, last: true));
         panel.Children.Add(behavior);
+
+        // 监控：刷新率 + 高温告警（阈值可调）
+        var monitor = Card("监控");
+        monitor.Add(Row("数据刷新率", Combo(
+            new[] { ("500", "0.5 秒（流畅）"), ("1000", "1 秒（推荐）"), ("2000", "2 秒（省电）"), ("5000", "5 秒（最省）") },
+            _settings.MonitorIntervalMs.ToString(),
+            v => _host.SetMonitorInterval(int.Parse(v)))));
+        monitor.Add(ToggleRow("高温告警（超阈值弹浮条提醒）", _settings.TempAlertEnabled,
+            v => { _settings.TempAlertEnabled = v; _settings.Save(); }));
+        monitor.Add(Row("告警阈值", Combo(
+            new[] { ("80", "80°（敏感）"), ("85", "85°"), ("88", "88°（默认）"), ("92", "92°"), ("95", "95°（宽松）") },
+            _settings.TempAlertThreshold.ToString(),
+            v => { _settings.TempAlertThreshold = int.Parse(v); _settings.Save(); }), last: true));
+        panel.Children.Add(monitor);
         return panel;
     }
 
