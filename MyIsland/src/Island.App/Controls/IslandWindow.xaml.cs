@@ -126,7 +126,7 @@ public partial class IslandWindow : Window
 
     private IntPtr OnWndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        if (msg == WM_DPICHANGED) _dpiScale = 0;
+        if (msg == WM_DPICHANGED) { _dpiScale = 0; PositionOnEdge(); }   // DPI 变化后重定位（防级联位置残留）
         else if (msg == WM_SETTINGCHANGE && _settings.Theme == "Auto") ApplyTheme();   // 壁纸/深浅切换跟随
         else if (msg == WM_HOTKEY && wParam.ToInt32() == HotkeyToggleId)
         {
@@ -147,15 +147,14 @@ public partial class IslandWindow : Window
             Directory.CreateDirectory(dir);
             System.IO.File.AppendAllText(Path.Combine(dir, "run.log"),
                 $"[{DateTime.Now:HH:mm:ss}] island-up pid={Environment.ProcessId} edge={_settings.Edge}\n");
-            // 定位诊断：排查 DPI/多屏下的位置漂移
-            System.IO.File.AppendAllText(Path.Combine(dir, "run.log"),
-                $"  pos: sw={SystemParameters.PrimaryScreenWidth} sh={SystemParameters.PrimaryScreenHeight} " +
-                $"win=({Left:F0},{Top:F0},{Width:F0}x{Height:F0}) dpi={DpiScale:F2} pos_t={_settings.PosAlongEdge}\n");
         }
         catch { }
 
         _monitor.Snapshot += OnMonitorSnapshot;
         _monitor.Start();
+        // PMv2 建窗时的 WM_DPICHANGED 会把窗口挪到级联位置，盖掉 SourceInitialized 里的定位；
+        // Loaded 后窗口矩形已定，重新定位一次（实测本机 200% 缩放必现）
+        PositionOnEdge();
 
         // 设备电量：30s 轮询（BLE/HID/WMI），收起态 devices 视图消费
         Services.DeviceService.Start();
