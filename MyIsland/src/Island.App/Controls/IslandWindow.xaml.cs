@@ -162,7 +162,6 @@ public partial class IslandWindow : Window
             islandCanvas.Thermal = t;
             expandedPanel.Monitor.Thermal = t;
             expandedPanel.Monitor.InvalidateVisual();
-            if (expandedPanel.DataContext is PanelData pd) pd.UpdateThermal(t);
         });
         // 启动 5s 后采一次温度做诊断（一次性；此前写法每 5s 空跑一次，违背按需采样设计）
         var prime = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(5) };
@@ -452,9 +451,6 @@ public partial class IslandWindow : Window
 
             if (expandedPanel.DataContext is PanelData pd)
             {
-                pd.Update(s);
-                pd.CpuSpark = PanelData.ToSpark(cpuSeq, 150, 34);
-                pd.NetSpark = PanelData.ToSpark(netSeq, 150, 34);
                 pd.UpdateDevices();     // 设备电量（内部 5s 节流）
                 pd.UpdateClipboard();   // 剪贴板（内部 2s 节流）
                 pd.UpdateFiles();       // 文件中转
@@ -531,7 +527,6 @@ public partial class IslandWindow : Window
     private PanelData BuildPanelData()
     {
         var pd = new PanelData();
-        pd.Update(_snapshot ?? new MonitorSnapshot());
         pd.UpdateQuota(_quota.Refresh());
         // 控制页命令绑定（亮度步进 10%；执行后立即回读刷新显示）
         pd.BindControls(

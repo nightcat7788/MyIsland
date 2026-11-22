@@ -77,6 +77,7 @@ public sealed class IslandCanvas : Control
         if (View == "pet")
         {
             Pet.DiskActive = Snapshot?.DiskUsagePercent ?? 0;   // 情境（晕眩）
+            Pet.SurfaceColor = pal.Surface;                     // 眼睑遮罩跟随主题
             Pet.Draw(dc, r.X + r.Width / 2, cy, 1.0, 1, LookPoint, PointerNear);
         }
         else if (View == "clock") DrawClock(dc, pal, r, cy);

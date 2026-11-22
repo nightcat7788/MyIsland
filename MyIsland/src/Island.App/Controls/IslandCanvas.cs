@@ -191,6 +191,7 @@ public sealed class IslandCanvas : FrameworkElement
         switch (CompactView)
         {
             case "pet":
+                _pet.SurfaceColor = pal.Surface;   // 眼睑遮罩跟随主题
                 _pet.Draw(dc, cx, cy, 1.0, 1, LookPoint, PointerNear);
                 break;
             case "clock":
@@ -469,7 +470,7 @@ public sealed class IslandCanvas : FrameworkElement
                       : Color.FromRgb(0x60, 0xC0, 0x78);
             // 电量环
             double cr = 10;
-            dc.DrawEllipse(null, PenOf(Color.FromRgb(0x30, 0x36, 0x40), 2.6), new Point(x + cr, cy), cr, cr);
+            dc.DrawEllipse(null, PenOf(pal.Track, 2.6), new Point(x + cr, cy), cr, cr);
             var arc = ArcGeometry(x + cr, cy, cr - 1.4, d.Percent / 100.0);
             dc.DrawGeometry(null, PenOf(color, 2.6), arc);
             // 图标字

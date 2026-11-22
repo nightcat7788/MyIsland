@@ -36,6 +36,8 @@ public sealed class PetFaceAv
     // 情境（宿主每秒注入）
     public double? CpuTemp { get; set; }
     public double DiskActive { get; set; }
+    /// <summary>眼睑遮罩色 = 本体表面色（宿主每帧注入，跟随主题）。</summary>
+    public Color SurfaceColor { get; set; } = Color.FromRgb(16, 18, 24);
 
     private static double Now => Environment.TickCount64 / 1000.0;
 
@@ -217,11 +219,11 @@ public sealed class PetFaceAv
             }
             dc.DrawGeometry(new SolidColorBrush(eyeColor), null, eye);
 
-            // 困倦眼睑（上沿压下半圆）
+            // 困倦眼睑（上沿压下半圆，颜色 = 本体表面色）
             if (tired > 0.01)
             {
                 double lidH = eyeRect.Height * 0.5 * tired;
-                dc.DrawRectangle(new SolidColorBrush(Color.FromArgb((byte)(235 * alpha), 16, 18, 24)), null,
+                dc.DrawRectangle(new SolidColorBrush(Color.FromArgb((byte)(235 * alpha), SurfaceColor.R, SurfaceColor.G, SurfaceColor.B)), null,
                     new RoundedRect(new Rect(eyeRect.X - 1, eyeRect.Y - 1, w + 2, lidH + 1), 2));
             }
             if (m == "star" && eyeRect.Height > 6 * s)

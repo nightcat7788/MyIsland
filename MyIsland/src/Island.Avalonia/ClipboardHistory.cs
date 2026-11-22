@@ -27,7 +27,9 @@ public sealed class ClipboardHistory : IDisposable
         {
             try
             {
-                string? text = await top.Clipboard.GetTextAsync();
+                var clip = top.Clipboard;
+                if (clip is null) return;
+                string? text = await clip.GetTextAsync();
                 if (string.IsNullOrWhiteSpace(text) || text == _last) return;
                 _last = text;
                 string preview = text.Replace("\r", "").Replace("\n", " ");

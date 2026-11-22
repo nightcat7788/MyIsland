@@ -40,6 +40,8 @@ public sealed class PetFace
     public double? CpuTemp { get; set; }
     /// <summary>磁盘活动时间 %（≥95 晕眩）。</summary>
     public double DiskActive { get; set; }
+    /// <summary>眼睑遮罩色 = 本体表面色（宿主每帧注入，跟随主题）。</summary>
+    public Color SurfaceColor { get; set; } = Color.FromRgb(16, 18, 24);
 
     /// <summary>当前心情：惊讶 > 互动 > 情境（高温/晕眩/深夜困倦）> 默认。</summary>
     private string CurrentMood(double now, bool near)
@@ -221,27 +223,17 @@ public sealed class PetFace
                 ctx.LineTo(new Point(eyeRect.X, eyeRect.Y + rad), true, false);
                 ctx.ArcTo(new Point(eyeRect.X + rad, eyeRect.Y), new Size(rad, rad), 0, false, SweepDirection.Clockwise, true, false);
             }
+            dc.DrawGeometry(new SolidColorBrush(eyeColor), null, eye);
+
+            // 眼睑（困倦/开心月牙）：上沿压一块本体色遮罩——此前这块只构建了几何但从没画出来
             double happy = side < 0 ? _lh.Value : _rh.Value;
             if (tired > 0.01 || happy > 0.01)
             {
-                var cut = new StreamGeometry();
-                using (var ctx = cut.Open())
-                {
-                    double lidH = eyeRect.Height * 0.5 * tired;
-                    ctx.BeginFigure(new Point(eyeRect.X - 2, eyeRect.Y - 2), true, true);
-                    ctx.LineTo(new Point(eyeRect.Right + 2, eyeRect.Y - 2), true, false);
-                    ctx.LineTo(new Point(eyeRect.Right + 2, eyeRect.Y + 2 + lidH), true, false);
-                    ctx.LineTo(new Point(eyeRect.X - 2, eyeRect.Y + 2 + lidH), true, false);
-                    if (happy > 0.01)
-                    {
-                        double cr = w * 0.9;
-                        double ccx = eyeRect.X + w / 2, ccy = eyeRect.Bottom + cr - eyeRect.Height * 0.62 * happy;
-                        ctx.LineTo(new Point(ccx + cr, ccy), true, false);
-                    }
-                }
-                // 差分太复杂，这里用简单裁剪替代：直接画眼睛后叠加"眼睑色"遮罩
+                double lidH = eyeRect.Height * (0.5 * tired + 0.35 * happy);
+                if (lidH > 0.5)
+                    dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromArgb(235, SurfaceColor.R, SurfaceColor.G, SurfaceColor.B)), null,
+                        new Rect(eyeRect.X - 1, eyeRect.Y - 1, w + 2, lidH + 1), 2, 2);
             }
-            dc.DrawGeometry(new SolidColorBrush(eyeColor), null, eye);
             if (m == "star" && eyeRect.Height > 6 * s)
             {
                 dc.DrawGeometry(new SolidColorBrush(Color.FromArgb((byte)(220 * alpha), 20, 20, 26)), null,
