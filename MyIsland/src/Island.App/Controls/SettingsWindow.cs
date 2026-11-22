@@ -25,6 +25,7 @@ public sealed class SettingsWindow : Window
         public Action ShowComboSettings = () => { };
         public Action ShowMonitorSettings = () => { };
         public Action RestartAsAdmin = () => { };
+        public Action<bool> SetClickThrough = _ => { };
         public Func<string?> PromptCity = () => null;
         public bool IsElevated = true;
     }
@@ -84,6 +85,8 @@ public sealed class SettingsWindow : Window
             v => { settings.HideFullscreen = v; settings.Save(); }));
         root.Children.Add(Check("小形象 ⇄ 信息胶囊 自动轮换", settings.PetAutoCycle,
             v => { settings.PetAutoCycle = v; settings.Save(); }));
+        root.Children.Add(Check("鼠标穿透（只显示不拦截，游戏适用）", settings.ClickThrough,
+            v => _host.SetClickThrough(v)));
 
         root.Children.Add(Title2("内容"));
         root.Children.Add(Row("天气城市", CityCombo()));

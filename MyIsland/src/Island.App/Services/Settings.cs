@@ -22,6 +22,8 @@ public sealed class Settings
     public string ComboItems { get; set; } = "";
     /// <summary>监控页显示项（cpu,cores,mem,gpu,disk,net,power,topproc；空=全部）。</summary>
     public string MonitorItems { get; set; } = "";
+    /// <summary>鼠标穿透模式：岛体只显示不拦截点击（适合游戏；BrimDeck 兼容模式同款）。</summary>
+    public bool ClickThrough { get; set; } = false;
     public int MonitorIntervalMs { get; set; } = 1000;
     public int QuotaIntervalMin { get; set; } = 10;
     public string City { get; set; } = "";             // 天气城市（空=IP 定位）

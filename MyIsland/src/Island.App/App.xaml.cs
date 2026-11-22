@@ -173,6 +173,7 @@ public partial class App : Application
             ShowComboSettings = () => _island.ShowComboSettings(),
             ShowMonitorSettings = () => _island.ShowMonitorSettings(),
             RestartAsAdmin = RestartAsAdmin,
+            SetClickThrough = on => _island.SetClickThrough(on),
             PromptCity = PromptCity,
             IsElevated = IsElevated(),
         });

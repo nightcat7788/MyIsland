@@ -274,6 +274,20 @@
                             </DockPanel>
                         </Border>
 
+                        <!-- 鼠标穿透（只显示不拦截，游戏适用） -->
+                        <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
+                            <DockPanel>
+                                <StackPanel DockPanel.Dock="Left">
+                                    <TextBlock Text="鼠标穿透" FontSize="12" Foreground="{DynamicResource Fg}"/>
+                                    <TextBlock Text="岛体只显示不拦截点击；悬停不展开，适合游戏" FontSize="10"
+                                               Foreground="{DynamicResource FgDim}"/>
+                                </StackPanel>
+                                <CheckBox DockPanel.Dock="Right" IsChecked="{Binding ClickThrough}"
+                                          Checked="OnClickThroughToggle" Unchecked="OnClickThroughToggle"
+                                          VerticalAlignment="Center" HorizontalAlignment="Right"/>
+                            </DockPanel>
+                        </Border>
+
                         <!-- 锁屏 / 睡眠 -->
                         <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
                             <DockPanel>

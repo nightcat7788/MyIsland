@@ -125,6 +125,12 @@ public sealed class PanelData : INotifyPropertyChanged
     public Action<bool>? OnSetNightLight;
     public void ApplyNightLight(bool on) { NightLightOn = on; OnSetNightLight?.Invoke(on); }
 
+    // 鼠标穿透
+    private bool _clickThrough;
+    public bool ClickThrough { get => _clickThrough; set => Set(ref _clickThrough, value); }
+    public Action<bool>? OnSetClickThrough;
+    public void ApplyClickThrough(bool on) { ClickThrough = on; OnSetClickThrough?.Invoke(on); }
+
     public System.Windows.Input.ICommand BrightnessUp { get; private set; } = null!;
     public System.Windows.Input.ICommand BrightnessDown { get; private set; } = null!;
     public System.Windows.Input.ICommand ToggleWlan { get; private set; } = null!;

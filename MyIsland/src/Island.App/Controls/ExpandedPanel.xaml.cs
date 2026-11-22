@@ -83,6 +83,12 @@ public partial class ExpandedPanel : UserControl
             pd.ApplyNightLight(cb.IsChecked == true);
     }
 
+    private void OnClickThroughToggle(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is PanelData pd && sender is CheckBox cb)
+            pd.ApplyClickThrough(cb.IsChecked == true);
+    }
+
     private void OnPage(object sender, RoutedEventArgs e)
     {
         if (sender is Button b && int.TryParse(b.Tag?.ToString(), out int i)) SelectPage(i);

@@ -163,6 +163,7 @@ public partial class IslandWindow : Window
         _frame.Start();
         _pointerTrack.Start();
         _fullscreenCheck.Start();
+        if (_settings.ClickThrough) SetClickThrough(true);   // 恢复上次的穿透状态
         islandCanvas.Pet.Style = _settings.PetStyle;
         expandedPanel.Monitor.Palette = _palette;   // 监控页主题（ApplyTheme 在 Loaded 前跳过）
         ApplyItemFilters();                          // dash/combo/监控页 显示项注入
@@ -335,6 +336,7 @@ public partial class IslandWindow : Window
 
     private void PointerTrack_Tick(object? sender, EventArgs e)
     {
+        if (_settings.ClickThrough) return;   // 穿透模式：悬停不展开（BrimDeck 兼容模式）
         if (_settings.ExpandMode == "always")
         {
             if (!_expanded) SetExpanded(true);
@@ -532,8 +534,10 @@ public partial class IslandWindow : Window
             if (!Services.ControlService.SetNightLight(on))
                 Services.ControlService.OpenSettings("nightlight");
         };
+        pd.OnSetClickThrough = on => SetClickThrough(on);
         if (_volume.Current is { } vc) { pd.VolumeValue = vc.vol; pd.IsMuted = vc.mute; }
         pd.IsLightTheme = Services.ControlService.IsSystemLightTheme();
+        pd.ClickThrough = _settings.ClickThrough;
         if (Services.ControlService.GetNightLightOn() is { } nl)
         {
             pd.HasNightLight = true;
@@ -905,6 +909,19 @@ public partial class IslandWindow : Window
         islandCanvas.Pet.Style = style;
         islandCanvas.Pet.React("surprise");   // 换款式给个小反应作反馈
         islandCanvas.InvalidateVisual();
+    }
+
+    /// <summary>鼠标穿透模式：WS_EX_TRANSPARENT 动态切换；开启时强制收起面板。</summary>
+    public void SetClickThrough(bool on)
+    {
+        _settings.ClickThrough = on;
+        _settings.Save();
+        IntPtr hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        IntPtr ex = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+        long style = ex.ToInt64();
+        style = on ? style | WS_EX_TRANSPARENT : style & ~WS_EX_TRANSPARENT;
+        SetWindowLongPtr(hwnd, GWL_EXSTYLE, new IntPtr(style));
+        if (on) SetExpanded(false);
     }
 
     /// <summary>当前本体屏幕矩形（DIP），供毛玻璃等模块定位截屏区域。</summary>
