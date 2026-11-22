@@ -250,9 +250,8 @@ public sealed class IslandCanvas : FrameworkElement
     }
 
     /// <summary>
-    /// monitor 视图（BrimDeck MonitorStrip 式单行读数带）：
-    /// 上行 = 核心柱 + CPU/MEM/GPU 表盘（270° 环 + 字母 + 读数，读数按最宽样本预留，跳数不动布局）；
-    /// 下行 = 平滑网速曲线 + 上下行速率。GitHub Dark 底。
+    /// monitor 视图（BrimDeck compact-monitor 同款单排高密度读数带）：
+    /// 细核心柱群（≤16 核）+ C/M/G/D 表盘读数 + 紧凑网速（↓3.40M ↑420K）。GitHub Dark 底。
     /// </summary>
     private double DrawMonitor(DrawingContext dc, Palette pal, Rect r, double cy,
         MonitorSnapshot? snap, double[]? netHistory)
@@ -267,55 +266,47 @@ public sealed class IslandCanvas : FrameworkElement
         var gpuC = Color.FromRgb(0xF2, 0x72, 0xA8);
         var diskC = Color.FromRgb(0x8F, 0xA8, 0xF0);
 
-        // ---- 行1：核心柱 + 表盘 ----
-        double y1 = r.Y + r.Height * 0.30;
-        double x = r.X + 16;
+        double x = r.X + 14;
 
+        // ---- 细核心柱群（BrimDeck 同款：2.6px 细柱、2px 间距、最多 16 核，垂直居中） ----
         var cores = snap.CoreUsages;
         if (cores is not null && cores.Length > 0)
         {
-            int n = Math.Min(8, cores.Length);
-            double bw = 3.2, gap = 2.8, maxH = 14;
-            double baseY = y1 + maxH / 2;
+            int n = Math.Min(16, cores.Length);
+            double bw = 2.6, gap = 2, maxH = Math.Min(24, r.Height - 18);
             for (int i = 0; i < n; i++)
             {
                 double v = Easing.Clamp(cores[i] / 100.0, 0, 1);
-                // 轨道 + 填充（BrimDeck Columns：空载也见轮廓）
                 dc.DrawRoundedRectangle(BrushOf(pal.Track), null,
-                    new Rect(x + i * (bw + gap), baseY - maxH, bw, maxH + 2), 1.4, 1.4);
-                double h = 2 + v * maxH;
-                var c = LevelColor(v * 100, v > 0.6 ? cpuC : memC, pal);
+                    new Rect(x + i * (bw + gap), cy - maxH / 2, bw, maxH), 1.2, 1.2);
+                double h = 1.6 + v * (maxH - 1.6);
+                var c = LevelColor(v * 100, cpuC, pal);
                 dc.DrawRoundedRectangle(BrushOf(c), null,
-                    new Rect(x + i * (bw + gap), baseY - h, bw, h), 1.4, 1.4);
+                    new Rect(x + i * (bw + gap), cy + maxH / 2 - h, bw, h), 1.2, 1.2);
             }
             x += n * (bw + gap) + 14;
         }
 
-        // 表盘 + 读数：数字宽度按 "100%" 预留，读数变化时整行不动（BrimDeck 最宽样本手法）
+        // ---- 表盘读数（数字按 "100%" 预留，跳数不动布局） ----
         const double dialSize = 18, dialFont = 11.5;
-        x += DrawDialGauge(dc, pal, x, y1, ppd, snap.CpuUsage, cpuC, "C", dialSize, dialFont) + 14;
-        x += DrawDialGauge(dc, pal, x, y1, ppd, snap.MemoryUsagePercent, memC, "M", dialSize, dialFont) + 14;
+        x += DrawDialGauge(dc, pal, x, cy, ppd, snap.CpuUsage, cpuC, "C", dialSize, dialFont) + 13;
+        x += DrawDialGauge(dc, pal, x, cy, ppd, snap.MemoryUsagePercent, memC, "M", dialSize, dialFont) + 13;
         if (snap.GpuUsage > 0)
-            x += DrawDialGauge(dc, pal, x, y1, ppd, snap.GpuUsage, gpuC, "G", dialSize, dialFont) + 14;
-        x += DrawDialGauge(dc, pal, x, y1, ppd, snap.DiskUsagePercent, diskC, "D", dialSize, dialFont) + 14;
+            x += DrawDialGauge(dc, pal, x, cy, ppd, snap.GpuUsage, gpuC, "G", dialSize, dialFont) + 13;
+        x += DrawDialGauge(dc, pal, x, cy, ppd, snap.DiskUsagePercent, diskC, "D", dialSize, dialFont) + 13;
 
-        // ---- 行2：平滑网速曲线 + 当前速率 ----
-        double y2 = r.Y + r.Height * 0.74;
-        var sparkRect = new Rect(r.X + 16, y2 - 7, r.Width - 90, 14);
-        DrawSpark(dc, sparkRect, netHistory, pal.Accent, 60);
-        var down = Text("↓" + MonitorSnapshot.FormatSpeed(snap.DownloadSpeed), 10,
-            Color.FromRgb(0x60, 0xC0, 0x78), ppd: ppd);
-        var up = Text("↑" + MonitorSnapshot.FormatSpeed(snap.UploadSpeed), 10,
-            Color.FromRgb(0xD8, 0x90, 0x78), ppd: ppd);
-        double rx = r.Right - 14;
-        dc.DrawText(up, new Point(rx - up.Width, y2 - up.Height - 1));
-        dc.DrawText(down, new Point(rx - down.Width, y2 + 1));
+        // ---- 紧凑网速（↓3.40M ↑420K，彩色箭头 + 白字，BrimDeck 同款密度） ----
+        var down = Text(MonitorSnapshot.CompactSpeed(snap.DownloadSpeed), 11, pal.Text, true, ppd);
+        var up = Text(MonitorSnapshot.CompactSpeed(snap.UploadSpeed), 11, pal.Text, true, ppd);
+        var di = Text("↓", 11, Color.FromRgb(0x60, 0xC0, 0x78), true, ppd);
+        var ui = Text("↑", 11, Color.FromRgb(0xD8, 0x90, 0x78), true, ppd);
+        double bl = Math.Round(cy + 11 * 0.38);
+        Baseline(dc, di, x, bl); x += di.Width + 3;
+        Baseline(dc, down, x, bl); x += down.WidthIncludingTrailingWhitespace + 10;
+        Baseline(dc, ui, x, bl); x += ui.Width + 3;
+        Baseline(dc, up, x, bl); x += up.WidthIncludingTrailingWhitespace;
 
-        // 内容实测宽 = max(表盘行, 曲线最短 60 + 网速块) + 右留白
-        double netBlock = Math.Max(up.Width, down.Width) + 14;
-        double row1 = x - r.X + 14;
-        double row2 = 16 + 60 + 6 + netBlock;
-        return Math.Max(row1, row2);
+        return x - r.X + 14;
     }
 
     /// <summary>

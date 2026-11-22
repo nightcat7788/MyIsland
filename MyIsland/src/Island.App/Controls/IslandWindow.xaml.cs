@@ -758,7 +758,7 @@ public partial class IslandWindow : Window
     {
         "clock" => (230, 44),   // 时间 + 天气 + 网速（参考 BrimDeck compact-clock 的信息密度）
         "combo" => (440, 44),   // 信息胶囊：配额环 + 时间 + 系统读数表盘 + 网速
-        "monitor" => (384, 64), // 核心柱 + C/M/G/D 四个表盘 + 网速
+        "monitor" => (460, 44), // 单排高密度读数带（BrimDeck compact-monitor 同款）
         "dash" => (660, 69),    // LiteMonitor 同款全读数行（含硬盘/SSD 温度/电池）
         "window" => (360, 44),  // 活动窗口（YASB ActiveWindow 同款：进程名 + 标题）
         "devices" => (300, 64),

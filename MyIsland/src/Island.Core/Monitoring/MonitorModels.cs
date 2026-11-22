@@ -107,6 +107,14 @@ public sealed record MonitorSnapshot
         while (v >= 1024 && i < units.Length - 1) { v /= 1024; i++; }
         return $"{v:F1} {units[i]}";
     }
+
+    /// <summary>紧凑网速（BrimDeck 刘海同款）：3.40M / 420K / 123B。</summary>
+    public static string CompactSpeed(double bytesPerSec)
+    {
+        if (bytesPerSec >= 1024 * 1024) return $"{bytesPerSec / 1048576:F2}M";
+        if (bytesPerSec >= 1024) return $"{bytesPerSec / 1024:F0}K";
+        return $"{bytesPerSec:F0}B";
+    }
 }
 
 /// <summary>一块物理盘的读数快照（活动% + 读/写速度 + 空间）。</summary>
