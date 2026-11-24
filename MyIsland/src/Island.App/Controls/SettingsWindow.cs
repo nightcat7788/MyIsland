@@ -453,6 +453,8 @@ public sealed class SettingsWindow : Window
         _settings.EnableSmnDirectRead = false;   // 高风险：必须归零，否则下次提权启动仍会装驱动
         _settings.TempAlertEnabled = true;
         _settings.TempAlertThreshold = 88;
+        _settings.BatteryAlertEnabled = true;      // 2026-11-25：低电量提醒回到出厂值
+        _settings.BatteryAlertThreshold = 20;      //（SmnAutoDone 故意不重置：不会把高风险开关重新打开）
         _settings.MonitorIntervalMs = 1000;
         _settings.PreferredNetwork = "";
         _settings.ClipboardExcludedProcesses = "";
@@ -520,7 +522,7 @@ public sealed class SettingsWindow : Window
             Field("展开方式", Combo(ExpandModes, _settings.ExpandMode,
                 v => { _settings.ExpandMode = v; _settings.RequestSave(); _host.SetExpandMode(v); }), last: true)));
 
-        // 监控：刷新率 + 高温告警（阈值可调）
+        // 监控：刷新率 + 高温告警（阈值可调）+ 低电量提醒
         left.Children.Add(Card("监控",
             Field("数据刷新率", Combo(
                 new[] { ("500", "0.5 秒（流畅）"), ("1000", "1 秒（推荐）"), ("2000", "2 秒（省电）"), ("5000", "5 秒（最省）") },
@@ -537,7 +539,13 @@ public sealed class SettingsWindow : Window
             Field("告警阈值", Combo(
                 new[] { ("80", "80°（敏感）"), ("85", "85°"), ("88", "88°（默认）"), ("92", "92°"), ("95", "95°（宽松）") },
                 _settings.TempAlertThreshold.ToString(),
-                v => { _settings.TempAlertThreshold = int.Parse(v); _settings.RequestSave(); }), last: true)));
+                v => { _settings.TempAlertThreshold = int.Parse(v); _settings.RequestSave(); })),
+            ToggleRow("低电量提醒（外设/电池低于阈值弹浮条）", _settings.BatteryAlertEnabled,
+                v => { _settings.BatteryAlertEnabled = v; _settings.RequestSave(); }),
+            Field("电量提醒阈值", Combo(
+                new[] { ("10", "10%"), ("15", "15%"), ("20", "20%（默认）"), ("25", "25%"), ("30", "30%") },
+                _settings.BatteryAlertThreshold.ToString(),
+                v => { _settings.BatteryAlertThreshold = int.Parse(v); _settings.RequestSave(); }), last: true)));
 
         right.Children.Add(Card("行为开关",
             ToggleRow("最大化时缩成指示条", _settings.IndicatorOnMaximize,

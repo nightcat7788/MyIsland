@@ -28,13 +28,14 @@ public sealed class DevicesPage : FrameworkElement
 
     private static string StatusText(DeviceInfo d) =>
         d.Charging ? "充电中" :
+        d.Kind == "gamepad" ? (d.LevelText == "有线" ? "有线" : "无线") :
         d.Percent <= 20 ? "电量低" :
         d.Percent <= 40 ? "电量偏低" : KindLabel(d.Kind);
 
     private static string KindLabel(string kind) => kind switch
     {
         "mouse" => "鼠标", "keyboard" => "键盘", "headset" => "耳机",
-        "gamepad" => "手柄", "battery" => "本机电池", _ => kind,
+        "gamepad" => "手柄", "ble" => "蓝牙设备", "battery" => "本机电池", _ => kind,
     };
 
     protected override void OnRender(DrawingContext dc)
@@ -88,13 +89,23 @@ public sealed class DevicesPage : FrameworkElement
             }
             y += ringR * 2 + 14;
 
-            // ---- 大号百分比：数字 20px 粗 + % 11px（BrimDeck 同款字重对比） ----
-            var num = RenderKit.Text($"{d.Percent}", 20, color, true, ppd);
-            var pct = RenderKit.Text("%", 11, color, ppd: ppd);
-            double numW = num.WidthIncludingTrailingWhitespace + pct.WidthIncludingTrailingWhitespace;
-            RenderKit.Baseline(dc, num, cx - numW / 2, Math.Round(y + 20 * 0.8));
-            RenderKit.Baseline(dc, pct, cx - numW / 2 + num.WidthIncludingTrailingWhitespace + 1,
-                Math.Round(y + 20 * 0.8));
+            // ---- 大号读数：档位设备显示"空/低/中/满"（系统只给档位，换算成百分比就是伪装）；
+            //      百分比设备显示 数字 20px 粗 + % 11px（BrimDeck 同款字重对比） ----
+            if (d.LevelText is { } levelText)
+            {
+                var level = RenderKit.Text(levelText, 20, color, true, ppd);
+                RenderKit.Baseline(dc, level, cx - level.WidthIncludingTrailingWhitespace / 2,
+                    Math.Round(y + 20 * 0.8));
+            }
+            else
+            {
+                var num = RenderKit.Text($"{d.Percent}", 20, color, true, ppd);
+                var pct = RenderKit.Text("%", 11, color, ppd: ppd);
+                double numW = num.WidthIncludingTrailingWhitespace + pct.WidthIncludingTrailingWhitespace;
+                RenderKit.Baseline(dc, num, cx - numW / 2, Math.Round(y + 20 * 0.8));
+                RenderKit.Baseline(dc, pct, cx - numW / 2 + num.WidthIncludingTrailingWhitespace + 1,
+                    Math.Round(y + 20 * 0.8));
+            }
             y += 30;
 
             // ---- 设备名（超长截断） ----
@@ -102,7 +113,7 @@ public sealed class DevicesPage : FrameworkElement
             dc.DrawText(name, new Point(cx - name.Width / 2, y));
             y += 18;
 
-            // ---- 状态行（按状态配色） ----
+            // ---- 状态行（按状态配色；档位设备的百分比颜色已按档位取好） ----
             var statusColor = d.Charging || d.Percent <= 40 ? color : pal.TextDim;
             var status = RenderKit.Text(StatusText(d), 9.5, statusColor, ppd: ppd);
             dc.DrawText(status, new Point(cx - status.Width / 2, y));

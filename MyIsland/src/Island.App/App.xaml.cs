@@ -291,8 +291,34 @@ public partial class App : Application
     private void OpenTrayMenu()
     {
         if (_menu is null) return;
+        RefreshDeviceMenu();
         if (_island is { } island) _menu.PlacementTarget = island;
         _menu.IsOpen = true;
+    }
+
+    // 设备电量子菜单（BuildContextMenu 里挂好，打开时刷新内容）
+    private System.Windows.Controls.MenuItem? _devicesMenu;
+
+    /// <summary>把当前设备电量读数刷进"设备电量"子菜单（纯展示行，不可点）。</summary>
+    private void RefreshDeviceMenu()
+    {
+        if (_devicesMenu is null) return;
+        Services.DeviceService.Poke();   // 定时器停着时也补一拍：下次打开就是新值
+        _devicesMenu.Items.Clear();
+        var devices = Services.DeviceService.Snapshot;
+        if (devices.Count == 0)
+        {
+            _devicesMenu.Items.Add(new System.Windows.Controls.MenuItem
+            { Header = "（暂无设备读数）", IsEnabled = false });
+            return;
+        }
+        foreach (var d in devices)
+        {
+            // 档位设备（手柄）显示"空/低/中/满"，百分比设备显示数字；充电态跟一句说明
+            string value = d.LevelText ?? $"{d.Percent}%";
+            string row = $"{d.Name}  {value}{(d.Charging ? "（充电中）" : "")}";
+            _devicesMenu.Items.Add(new System.Windows.Controls.MenuItem { Header = row, IsEnabled = false });
+        }
     }
 
     /// <summary>主题色板：设置中心按它上色；解析不出就用上次解析成功的那份。</summary>
@@ -336,6 +362,9 @@ public partial class App : Application
 
         menu.Items.Add(MenuItem("展开 / 收起", (_, _) => _island?.ToggleExpand()));
         menu.Items.Add(MenuItem("设置中心…", (_, _) => ShowSettingsWindow()));
+        // 设备电量（2026-11-25）：菜单是启动时建好的单例，内容在打开时刷新（RefreshDeviceMenu）
+        _devicesMenu = new System.Windows.Controls.MenuItem { Header = "设备电量" };
+        menu.Items.Add(_devicesMenu);
         menu.Items.Add(new System.Windows.Controls.Separator());
 
         // 工具：剪贴板/文件中转

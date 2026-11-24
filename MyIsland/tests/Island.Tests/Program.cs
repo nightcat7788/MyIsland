@@ -29,6 +29,7 @@ try
     AnimationGuardTests.Run(Check);
     ThermalChannelTests.Run(Check);
     SmnChannelTests.Run(Check);
+    DeviceBatteryTests.Run(Check);  // 2026-11-25 设备电量增强：档位语义 / 提醒设置
     ThemeTests.Run(Check);
     DesignSystemTests.Run(Check);   // 2026-11-24 视觉重做：等宽数字 / 对比度 / 坏数值防线
     MonitorModelTests.Run(Check);

@@ -471,8 +471,8 @@ public sealed class IslandCanvas : FrameworkElement
     {
         double ppd = Ppd;
         double cy = r.Y + r.Height / 2;
-        // 图标圆（音量=主题色，告警=告警红）
-        var tint = act.Kind == "temp" ? pal.Up : pal.Accent;
+        // 图标圆（音量=主题色，高温/低电量告警=告警红）
+        var tint = act.Kind is "temp" or "battery" ? pal.Up : pal.Accent;
         string label = act.Kind == "volume" ? (act.Muted ? "静音" : "音量") : act.Label;
         dc.DrawEllipse(Faint(tint, 0.25), null, new Point(r.X + 22, cy), 13, 13);
         var glyph = Text(label, 9, pal.Text, ppd: ppd);
@@ -790,11 +790,19 @@ public sealed class IslandCanvas : FrameworkElement
                       : d.Percent <= 20 ? pal.Up
                       : d.Percent <= 40 ? pal.Warning
                       : pal.Text;
-            // 设备图标（次要文字色）+ 大号百分比（分级色，粗体，数字等宽）
+            // 设备图标（次要文字色）+ 大号读数：档位设备显示"空/低/中/满"（系统只给档位，
+            // 换算成百分比就是伪装），百分比设备显示分级配色粗体等宽数字
             var glyph = Text(DeviceService.Glyph(d.Kind), 11, pal.TextDim, true, ppd);
             dc.DrawText(glyph, new Point(x, cy - glyph.Height / 2));
             x += glyph.Width + 5;
-            x = Num(dc, $"{d.Percent}%", x, Math.Round(cy + 13 * 0.36), 13, color, true, ppd);
+            if (d.LevelText is { } levelText)
+            {
+                var level = Text(levelText, 12.5, color, true, ppd);
+                dc.DrawText(level, new Point(x, cy - level.Height / 2));
+                x += level.Width;
+            }
+            else
+                x = Num(dc, $"{d.Percent}%", x, Math.Round(cy + 13 * 0.36), 13, color, true, ppd);
             // 充电小闪电（矢量图标）：颜色之外再给一个形状线索，不只靠绿色区分"充电中"
             if (d.Charging)
             {

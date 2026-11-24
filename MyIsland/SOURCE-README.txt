@@ -20,7 +20,9 @@ MyIsland/
 │   │   │                          IntelComputePolicy(只有核显时拦下库的 Intel GCL 初始化)
 │   │   │                          MemoryReclaim(用完即还: 面板/设置窗口关闭后压缩回收)
 │   │   │                          WeatherService(Open-Meteo) ControlService(亮度/WLAN/蓝牙)
-│   │   │                          DeviceService(设备电量WMI) ClipboardService FileTrayService
+│   │   │                          DeviceService(设备电量: WMI 电池 + BLE GATT + XInput 档位)
+│   │   │                          BleBatteryService(BLE GATT 电量直读) XInputService(手柄档位)
+│   │   │                          ClipboardService FileTrayService
 │   │   │                          VolumeService(音量浮条) GlassBackdrop(毛玻璃) TrayIcon Settings
 │   │   │                          ThermalSnapshot(温度快照; 独立文件, 被三个工程链接)
 │   │   ├── Animation/             Spring(阻尼弹簧) PetFace(小形象: 4款式+情境反应)
@@ -164,6 +166,24 @@ D:\YQDESK\MyIsland-改进记录.md 第十节。规则只有下面这几条，别
   新增面板资源要在这里登记，浅色主题（IsDark = false）要有对应的取值。
 - 验证界面改动的方法：用真实控件离屏渲染（每套主题 × 收起态各视图 × 面板各页），对比改前改后，
   再单独看三种边界状态（高负载告警 / 非管理员 / 没有 GPU 读数）会不会叠字或溢出。
+
+【设备电量链路（2026-11-25 增强，改这里前先读）】
+- 数据源四条，DeviceService.Sample 合并：① Win32_Battery（笔记本电池，多块取最低）
+  ② MSBatteryClass（Windows 主动上报电量的蓝牙设备）③ BLE GATT 直读（BleBatteryService：
+  Battery Service 0x180F / 0x2A19，补 ② 不上报的设备 —— 本机的 ThinkBook Bluetooth Mouse
+  就只有这条能读到）④ XInput 手柄档位（XInputService：空/低/中/满）。
+- **不伪装原则**（学自 ai-periph-monitor）：读不到的设备不进列表；回包超出 0..100 不显示；
+  手柄只有档位，**不换算百分比**（DeviceInfo.LevelText，界面画文字）；缓存的读数过期
+  （30 分钟）就从列表消失，宁可消失也不显示旧值。
+- GATT 读数节流：一台设备读成功后 10 分钟内不重读；FindAllAsync 带额外属性（父设备名）
+  在部分 Windows 版本会抛 COMException 0x80070490 —— 已退化为失败即回落不带属性的查询，
+  改这里的兼容逻辑时两种路径都要能走通。
+- 低电量提醒（IslandWindow.CheckBatteryAlert）：阈值设置里可调（默认 20%），同一台设备
+  60 分钟最多一次，复用高温告警的活动浮条。**提醒开着时设备采样退到 5 分钟一轮的慢轮询**
+  （DeviceService.BackgroundWatch）—— 设备采样本来是"谁要看才跑"的按需模型，别把它改回常开。
+- 厂商自定义 HID 协议（2.4G 接收器：罗技 HID++ / ROG / 雷蛇等）**没有做**：每条都要按
+  VID/PID+接口+报文适配并实机回包验证，没有对应硬件前不写（ai-periph-monitor 的规矩）。
+- 设备类型是按名字关键词猜的（猜不出显示"蓝牙设备"，图标"电"），不伪装成已知类型。
 
 【Mac 版】
 src/Island.Avalonia/ —— Avalonia 11 跨平台实现，详见 README-Mac.md

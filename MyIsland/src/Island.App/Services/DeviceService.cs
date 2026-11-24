@@ -6,16 +6,19 @@ using System.Windows;
 
 namespace Island.App.Services;
 
-/// <summary>一台无线设备的电量读数。</summary>
-public sealed record DeviceInfo(string Name, string Kind, int Percent, bool Charging);
-
 /// <summary>
-/// 无线设备电量（鼠标/键盘/耳机/手柄）。
-/// 数据源（零驱动，实际只有 WMI 这两条）：
+/// 无线设备电量（鼠标/键盘/耳机/手柄）+ 笔记本电池。
+/// 数据源（零驱动）：
 ///  ① WMI root\CIMV2 Win32_Battery —— 笔记本内置电池（多电池聚合成一条）
-///  ② WMI root\WMI MSBatteryClass —— 蓝牙/BLE 设备（不是每个实例都有电量属性）
-/// ⚠️ 本工程没有 Windows.Devices.Power / BLE GATT / HID 电量特性这几条数据源，别再按它们写代码。
-/// 采样线程 30s 一轮，失败静默（列表为空 UI 显示"未检测到"），失败原因写 thermal-diag.log。
+///  ② WMI root\WMI MSBatteryClass —— Windows 主动上报电量的蓝牙设备
+///  ③ BLE GATT 直读（Services/BleBatteryService.cs，2026-11-25）—— MSBatteryClass 不上报的
+///     蓝牙设备（如本机的联想 BLE HID 设备）；缓存 30 分钟，过期即消失，不伪装
+///  ④ XInput 手柄档位（Services/XInputService.cs，2026-11-25）—— 空/低/中/满，不换算百分比
+/// ⚠️ 仍然没有的数据源：厂商自定义 HID 协议（2.4G 接收器，罗技 HID++ / ROG / 雷蛇等）——
+///     每条都要按 VID/PID+接口+报文适配并实机回包验证（ai-periph-monitor 的做法），
+///     没有对应硬件前不写。标准 HID 电池字段（Usage Page 0x85）同样没有，别按它们写代码。
+/// 采样线程 30s 一轮（低电量提醒开着且没人看设备页时 5 分钟一轮，见 BackgroundWatch），
+/// 失败静默（列表为空 UI 显示"未检测到"），失败原因写 thermal-diag.log。
 /// Win32_Battery 查询失败后冷却 5 分钟（冷却期里沿用最近的读数），见 SampleWmiBattery。
 ///
 /// ⚠️ 宿主接线（留给主代理，本文件不碰 IslandWindow.xaml.cs）：
@@ -31,19 +34,49 @@ public static class DeviceService
     private static Timer? _timer;
     private static bool _wanted;
 
+    /// <summary>
+    /// 低电量提醒的后台慢轮询（2026-11-25）：设备视图没人看时也按 5 分钟一轮采样，
+    /// 否则提醒功能永远没有新数据可看（本来是"谁要看才跑"的纯按需模型）。
+    /// 与 SetWanted(true) 并存：视图在看就用正常的 30s 节拍，这个标志只是兜底。
+    /// 由宿主按设置同步（IslandWindow 每次监控快照时写一次，值没变是空操作）。
+    /// </summary>
+    private static bool _backgroundWatch;
+
+    public static bool BackgroundWatch
+    {
+        get { lock (_gate) return _backgroundWatch; }
+        set
+        {
+            lock (_gate)
+            {
+                if (_backgroundWatch == value) return;
+                _backgroundWatch = value;
+                RetuneTimer();
+            }
+        }
+    }
+
     /// <summary>当前设备电量快照（UI 线程直接读）。</summary>
     public static List<DeviceInfo> Snapshot { get { lock (_gate) return _devices.ToList(); } }
 
     /// <summary>是否正在轮询（诊断用）。</summary>
     public static bool Running { get { lock (_gate) return _timer is not null; } }
 
-    private static void EnsureTimer()
+    /// <summary>
+    /// 定时器节拍：视图要看 → 30s；只剩低电量提醒兜底 → 300s；谁都不要 → 停表。
+    /// 以前 Start/SetWanted 里各写一份"建表 / 拆表"，现在收拢到这一处。
+    /// </summary>
+    private static void RetuneTimer()
     {
-        lock (_gate)
+        if (!_wanted && !_backgroundWatch)
         {
-            if (_timer is not null) return;
-            _timer = new Timer(_ => Sample(), null, 0, 30_000);
+            _timer?.Dispose();
+            _timer = null;
+            return;
         }
+        int period = _wanted ? 30_000 : 300_000;
+        if (_timer is null) _timer = new Timer(_ => Sample(), null, 0, period);
+        else _timer.Change(0, period);
     }
 
     /// <summary>
@@ -53,22 +86,19 @@ public static class DeviceService
     /// </summary>
     public static void Start()
     {
-        lock (_gate) { _wanted = true; }
-        EnsureTimer();
+        lock (_gate) { _wanted = true; RetuneTimer(); }
     }
 
     /// <summary>
-    /// 停止轮询：释放定时器。
-    /// 以前这个类只有 Start()，没有停止路径 —— 窗口关了也照样每 30 秒两次 WMI 搜索，
-    /// 持续唤醒 WMI provider host 白烧电。停止后 <see cref="Start"/> 仍可重新拉起。
+    /// 停止轮询（视图消费者消失）。低电量提醒开着时退到 5 分钟慢轮询而不是全停。
+    /// 停止后 <see cref="Start"/> 仍可重新拉起。
     /// </summary>
     public static void Stop()
     {
         lock (_gate)
         {
             _wanted = false;
-            _timer?.Dispose();
-            _timer = null;
+            RetuneTimer();
         }
     }
 
@@ -84,17 +114,31 @@ public static class DeviceService
         {
             if (_wanted == wanted) return;
             _wanted = wanted;
-            if (!wanted)
-            {
-                _timer?.Dispose();
-                _timer = null;
-                return;
-            }
+            RetuneTimer();   // 节拍随消费者变化；两个消费者都消失时在 RetuneTimer 里停表
         }
-        EnsureTimer();
     }
 
-    /// <summary>设备类型单字图标（省空间）。</summary>
+    /// <summary>
+    /// 手动补一拍（托盘菜单打开时调用）：定时器停着的时候也能拿到一次新鲜读数；
+    /// 定时器在跑就直接返回（等下一拍即可）。采样在后台线程，菜单先显示缓存值。
+    /// </summary>
+    private static bool _poking;
+
+    public static void Poke()
+    {
+        lock (_gate)
+        {
+            if (_timer is not null || _poking) return;
+            _poking = true;
+        }
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            try { Sample(); }
+            finally { lock (_gate) _poking = false; }
+        });
+    }
+
+    /// <summary>设备类型单字图标（省空间）。"ble" = GATT 直读、类型没认出来的蓝牙设备。</summary>
     public static string Glyph(string kind) => kind switch
     {
         "mouse" => "鼠",
@@ -102,6 +146,7 @@ public static class DeviceService
         "headset" => "耳",
         "gamepad" => "柄",
         "battery" => "电",
+        "ble" => "电",
         _ => "?",
     };
 
@@ -110,7 +155,11 @@ public static class DeviceService
         var list = new List<DeviceInfo>();
         try { list.AddRange(SampleWmiBattery()); } catch { }
         try { list.AddRange(SampleBluetoothBattery()); } catch { }
-
+        // BLE GATT 直读（2026-11-25）：补 MSBatteryClass 不上报的蓝牙设备。扫描在后台异步跑，
+        // 这里只触发并取缓存里已验证的读数（读不到的设备不进列表，不伪装）。
+        try { BleBatteryService.Warm(); list.AddRange(BleBatteryService.Snapshot()); } catch { }
+        // XInput 手柄档位（空/低/中/满）：没有手柄 / 没有 xinput dll 时是空列表，UI 自然不显示。
+        try { list.AddRange(XInputService.Snapshot()); } catch { }
         lock (_gate) _devices = list;
     }
 
@@ -350,6 +399,25 @@ public static class DeviceService
 
     /// <summary>诊断日志上限（约 1MB）：超过就删掉旧文件重开一份（同 ThermalService 的做法）。</summary>
     private const long DiagLogLimit = 1_048_576;
+
+    /// <summary>给兄弟服务（BLE GATT）用的日志入口：同一个文件，设备电量的链路问题查在一处。</summary>
+    internal static void LogLine(string text) => Log(text);
+
+    // 节流日志的状态（BLE 扫描每 25s 一轮，持续失败时同一句话会刷屏）
+    private static readonly object _throttleGate = new();
+    private static readonly Dictionary<string, DateTime> _throttledAt = new();
+
+    /// <summary>同一句话在 cooldown 内只写一次日志；超量的旧条目整表清掉（句子的总数很小）。</summary>
+    internal static void LogLineThrottled(string text, TimeSpan cooldown)
+    {
+        lock (_throttleGate)
+        {
+            if (_throttledAt.TryGetValue(text, out var at) && DateTime.Now - at < cooldown) return;
+            if (_throttledAt.Count > 64) _throttledAt.Clear();
+            _throttledAt[text] = DateTime.Now;
+        }
+        Log(text);
+    }
 
     /// <summary>
     /// 诊断日志（%LOCALAPPDATA%\MyIsland\thermal-diag.log）：WMI 查询失败时留痕，

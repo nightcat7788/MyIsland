@@ -46,6 +46,14 @@ public sealed class Settings
     public bool TempAlertEnabled { get; set; } = true;
     /// <summary>高温告警阈值（°C）。</summary>
     public int TempAlertThreshold { get; set; } = 88;
+    /// <summary>
+    /// 低电量提醒（2026-11-25）：外设/电池电量低于阈值时弹一次浮条（同一台设备 60 分钟最多一次）。
+    /// 只对有百分比的设备生效；XInput 手柄只报档位（空/低/中/满），没有百分比，不参与 —— 换算就是伪装。
+    /// 提醒开着时设备采样退到 5 分钟一轮的慢轮询兜底（DeviceService.BackgroundWatch）。
+    /// </summary>
+    public bool BatteryAlertEnabled { get; set; } = true;
+    /// <summary>低电量提醒阈值（%），夹到 5..50。</summary>
+    public int BatteryAlertThreshold { get; set; } = 20;
     public string City { get; set; } = "";             // 天气城市（空=IP 定位）
     /// <summary>
     /// 允许 AMD SMN 直读 CPU 温度。默认关闭；2026-11-25 起在 **AMD 机器上首次启动自动置为开**
@@ -83,12 +91,15 @@ public sealed class Settings
     private const int TempAlertMinC = 30;
     /// <summary>高温告警阈值上限（°C）。</summary>
     private const int TempAlertMaxC = 120;
+    /// <summary>低电量提醒阈值的合法范围（%）。</summary>
+    private const int BatteryAlertMinPct = 5, BatteryAlertMaxPct = 50;
 
     /// <summary>把数值字段夹到合法范围（就地修正）。</summary>
     public void ClampValues()
     {
         MonitorIntervalMs = Math.Clamp(MonitorIntervalMs, MonitorIntervalMinMs, MonitorIntervalMaxMs);
         TempAlertThreshold = Math.Clamp(TempAlertThreshold, TempAlertMinC, TempAlertMaxC);
+        BatteryAlertThreshold = Math.Clamp(BatteryAlertThreshold, BatteryAlertMinPct, BatteryAlertMaxPct);
         // PosAlongEdge 是 0..1 的比例；NaN/Infinity 要单独处理（Math.Clamp 对 NaN 不生效）
         if (double.IsNaN(PosAlongEdge) || double.IsInfinity(PosAlongEdge)) PosAlongEdge = 0.5;
         else PosAlongEdge = Math.Clamp(PosAlongEdge, 0.0, 1.0);

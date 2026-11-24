@@ -40,6 +40,10 @@
          两个文件都没有 WPF 依赖 -->
     <Compile Include="..\..\src\Island.App\Services\ThermalSnapshot.cs" Link="Merged\App\ThermalSnapshot.cs" />
     <Compile Include="..\..\src\Island.App\Controls\ThermalDisplay.cs" Link="Merged\App\ThermalDisplay.cs" />
+    <!-- 设备电量的纯规则（2026-11-25 设备电量增强）：DeviceInfo（档位语义）+ XInputService（档位→文字/环比例）。
+         DeviceService / BleBatteryService 本体带 System.Management / WinRT 依赖，不能链进零包测试工程 -->
+    <Compile Include="..\..\src\Island.App\Services\DeviceInfo.cs" Link="Merged\App\DeviceInfo.cs" />
+    <Compile Include="..\..\src\Island.App\Services\XInputService.cs" Link="Merged\App\XInputService.cs" />
     <!-- 毛玻璃变化检测（2026-11-24：静止桌面上的重复截图不该触发重绘）；依赖 RenderKit.SafeRect -->
     <Compile Include="..\..\src\Island.App\Services\GlassBackdrop.cs" Link="Merged\App\GlassBackdrop.cs" />
     <!-- "用完即还"（2026-11-24：挂机几小时后工作集涨到 276 MB）：面板/设置窗口释放后的延迟压缩回收；

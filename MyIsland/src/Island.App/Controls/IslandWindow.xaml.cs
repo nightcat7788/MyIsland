@@ -467,9 +467,10 @@ public partial class IslandWindow : Window
         if (thermalWanted)
             islandCanvas.Thermal = _thermal.Current;
 
-        // 设备电量按需轮询（devices 视图或面板展开时才跑）
+        // 设备电量按需轮询（devices 视图或面板展开时才跑）；低电量提醒开着时退到 5 分钟慢轮询兜底
         Services.DeviceService.SetWanted(
             (!_expanded && islandCanvas.CompactView == "devices") || _expanded);
+        Services.DeviceService.BackgroundWatch = _settings.BatteryAlertEnabled;
 
         // 毛玻璃刷新：展开时 8fps，收起且静止时 2fps（省 CPU）
         if (Visibility == Visibility.Visible)
@@ -935,6 +936,12 @@ public partial class IslandWindow : Window
 
     private void CheckAlerts()
     {
+        CheckTempAlert();
+        CheckBatteryAlert();
+    }
+
+    private void CheckTempAlert()
+    {
         if (_expanded) return;
         if (!_settings.TempAlertEnabled) return;
         var t = _thermal.Current;
@@ -951,6 +958,34 @@ public partial class IslandWindow : Window
             Label = "高温",
             Value = Math.Min(1, hot.Value / 110),
             RightText = $"{Math.Round(hot.Value)}°",
+            Until = DateTime.Now.AddSeconds(4),
+        };
+        islandCanvas.Pet.React("surprise");
+        islandCanvas.InvalidateVisual();
+    }
+
+    // 低电量提醒（2026-11-25）：外设/电池电量低于阈值时弹一次浮条。
+    private DateTime _lastBatteryAlert;
+    private string? _lastBatteryAlertKey;
+
+    private void CheckBatteryAlert()
+    {
+        if (_expanded || !_settings.BatteryAlertEnabled) return;
+        // 只提醒带百分比的设备；手柄档位（LevelText 非 null）没有百分比，不参与 —— 换算就是伪装
+        var low = DeviceService.Snapshot
+            .Where(d => !d.Charging && d.LevelText is null && d.Percent >= 0 && d.Percent < _settings.BatteryAlertThreshold)
+            .OrderBy(d => d.Percent).FirstOrDefault();
+        if (low is null) return;
+        // 同一台设备 60 分钟最多提醒一次（充电/换电之后 Percent 回升，自动解除）
+        if (low.Name == _lastBatteryAlertKey && (DateTime.Now - _lastBatteryAlert).TotalMinutes < 60) return;
+        _lastBatteryAlertKey = low.Name;
+        _lastBatteryAlert = DateTime.Now;
+        islandCanvas.Activity = new ActivityView
+        {
+            Kind = "battery",
+            Label = "电量",
+            Value = Math.Min(1, low.Percent / 100.0),
+            RightText = $"{low.Percent}%",
             Until = DateTime.Now.AddSeconds(4),
         };
         islandCanvas.Pet.React("surprise");
