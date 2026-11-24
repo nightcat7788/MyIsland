@@ -66,6 +66,15 @@ public sealed class SmnChannel : IDisposable
         }
     }
 
+    /// <summary>
+    /// 首次启动的自动开启策略（2026-11-25）：**只有 AMD 机器**自动打开 SMN 直读，其余保持关闭。
+    /// 纯函数，可单测；决策的执行点在 App.OnStartup（落定 Settings.EnableSmnDirectRead 一次）。
+    /// 为什么只在 AMD 上开：SMN 是 AMD 专有寄存器，Intel 上这条路零收益、纯风险（2026-11-23
+    /// 三次 0x1EA 蓝屏）；而 AMD 上 LHM 读不到温度的机型（Family 0x10–0x16）只有它能出读数。
+    /// 为什么"首次"：用户之后在设置里关掉就是关掉，自动逻辑不再回头改（见 Settings.SmnAutoDone）。
+    /// </summary>
+    public static bool AutoEnableOnFirstRun(bool isAmdCpu) => isAmdCpu;
+
     /// <summary>通道状态文本（诊断日志用）。</summary>
     public string Status
     {

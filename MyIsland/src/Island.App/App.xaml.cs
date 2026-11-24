@@ -83,6 +83,13 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        // 软件渲染（2026-11-25，产品拍板）：本应用只有 AllowsTransparency 的分层窗口，永远用不上
+        // 硬件加速 —— WPF 却为它创建 D3D 设备，把 Intel 显卡驱动的两百多兆拉进进程（实测工作集省约 57 MB）。
+        // 必须在创建任何窗口之前设置。代价（已接受，见改进记录十一节）：文字抗锯齿的亚像素差异
+        //（约 1% 像素，放大 5 倍肉眼才看出）、不透明对话框从 ClearType 变灰度、栅格化落到 UI 线程
+        //（实测收起态/展开态 CPU 无可见回退）。要回硬件渲染：删掉这一行。
+        System.Windows.Media.RenderOptions.ProcessRenderMode = System.Windows.Interop.RenderMode.SoftwareOnly;
+
         // 启动按步走，每步单独兜住异常（Step）。
         // 以前是一整段顺序执行：中途抛异常就把后面全跳过 —— 岛体窗口一失败，
         // 托盘图标、右键菜单、设置中心全都没有，用户既进不去设置也退不出进程。
@@ -177,6 +184,25 @@ public partial class App : Application
         //（ThermalService 的自愈），这里不需要、也不应该去等它。
         // 非管理员：不起任务（装驱动要管理员；这里也从不拉 UAC，提权与否由用户从托盘菜单决定）。
         Step("温度驱动", StartDriverInstall);
+
+        // SMN 直读的自动开启（2026-11-25，只做一次）：CPU 是 AMD 的机器上，首次启动把高风险开关自动
+        // 置为开 —— AMD 上 LHM 读不到温度的机型（Family 0x10–0x16）只有这条路能出读数，让用户去设置
+        // 深处找一个"高风险实验功能"开关不现实。安全边界不变：真正闸门在 SmnChannel.Ensure（未开启 ⇒
+        // 不创建服务）与 InpOutSmnService 的厂商门控（非 AMD ⇒ LoadLibrary 之前就返回），而且温度服务
+        // 只在常规路径读不到时才尝试它（cpuTemp is null 才走 SMN）。Intel 机器保持关闭 —— 本机（Intel）
+        // 设置里遗留的"已开启"也由这一次自动纠正。只做一次（Settings.SmnAutoDone）：之后用户关掉就是关掉。
+        // 放在岛体窗口创建之前：IslandWindow 构造时会读 EnableSmnDirectRead 交给温度服务。
+        Step("SMN 自动开启", () =>
+        {
+            if (_settings.SmnAutoDone) return;
+            bool amd = Services.InpOutSmnService.IsAmdCpu();
+            bool before = _settings.EnableSmnDirectRead;
+            _settings.EnableSmnDirectRead = Services.SmnChannel.AutoEnableOnFirstRun(amd);
+            _settings.SmnAutoDone = true;
+            _settings.Save();
+            WriteLog($"[{DateTime.Now}] SMN 自动开启（只此一次）：CPU={(amd ? "AMD" : "非 AMD")}，" +
+                     $"EnableSmnDirectRead {before} → {_settings.EnableSmnDirectRead}\n");
+        });
 
         // 显卡探测（2026-11-24）：在后台先问清楚"机器上的 Intel 显卡是不是全是核显"（约 55ms，
         // 走开源库自己的 D3D 探测），结果缓存；温度服务创建第一个 Computer 时直接用，不在 UI 线程上现探。

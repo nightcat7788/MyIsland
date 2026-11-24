@@ -48,11 +48,22 @@ public sealed class Settings
     public int TempAlertThreshold { get; set; } = 88;
     public string City { get; set; } = "";             // 天气城市（空=IP 定位）
     /// <summary>
-    /// 允许 AMD SMN 直读 CPU 温度（默认关闭）。
+    /// 允许 AMD SMN 直读 CPU 温度。默认关闭；2026-11-25 起在 **AMD 机器上首次启动自动置为开**
+    ///（只做一次，见 <see cref="SmnAutoDone"/>）—— AMD 上 LHM 读不到温度的机型（Family 0x10–0x16）
+    /// 只有这条路能出读数。安全边界不变：真正的闸门在 SmnChannel.Ensure（未开启 ⇒ 不创建服务）
+    /// 与 InpOutSmnService 的厂商门控（非 AMD ⇒ 加载驱动之前就返回），而且温度服务只在
+    /// 常规路径读不到时才尝试它。
     /// ⚠️ 这条通道会加载未签名的 inpoutx64 内核驱动并映射 PCIe 物理内存，
-    /// 2026-11-23 在本机引发过三次 0x1EA 蓝屏；只在明确知道风险、且 CPU 确实是 AMD 时才开。
+    /// 2026-11-23 在本机引发过三次 0x1EA 蓝屏。
     /// </summary>
     public bool EnableSmnDirectRead { get; set; } = false;
+    /// <summary>
+    /// "AMD 机器首启自动开启 SMN 直读"只做一次的标记（2026-11-25）。首次启动检测 CPU 厂商并
+    /// 按结果落定 <see cref="EnableSmnDirectRead"/>，此后**不再自动改** —— 用户在设置里的选择
+    /// （包括在 AMD 机器上关掉）一律尊重。「全部重置」也不重置它：重置后再自动打开，等于替用户
+    /// 做一次他可能刚刚拒绝过的决定。
+    /// </summary>
+    public bool SmnAutoDone { get; set; } = false;
     /// <summary>手动选择网卡 Id（空=自动聚合；LiteMonitor PreferredNetwork 同款）。</summary>
     public string PreferredNetwork { get; set; } = "";
     /// <summary>剪贴板"排除来源进程"列表（逗号分隔的进程名，如 "keepass,1password"；空=全部记录）。</summary>

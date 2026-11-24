@@ -625,7 +625,8 @@ public sealed class SettingsWindow : Window
         };
         right.Children.Add(Card("高风险实验功能",
             Hint("AMD SMN 直读 CPU 温度：会安装未签名的 inpoutx64.sys 内核驱动，并映射 PCIe ECAM 物理内存。"
-                + "2026-11-23 在本机（Intel）曾三次 0x1EA 蓝屏。默认关闭；仅当 CPU 确为 AMD 且你清楚风险时开启。"),
+                + "2026-11-23 在本机（Intel）曾三次 0x1EA 蓝屏。AMD 机器上首次启动会自动开启（只此一次）；"
+                + "在这里关掉之后不会再自动打开，而且只有温度走常规路径读不到时才会真正用它。"),
             Row("启用 AMD SMN 直读（高风险）", smnToggle, last: true)));
         return g;
     }

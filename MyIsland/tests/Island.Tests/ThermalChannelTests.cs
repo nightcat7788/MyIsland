@@ -36,6 +36,11 @@ internal static class ThermalChannelTests
         if (registrySaysAmd is { } truth)
             check("SMN 厂商判定与注册表一致（AuthenticAMD/GenuineIntel）", serviceSaysAmd == truth);
 
+        // 首启自动开启（2026-11-25）：只有 AMD 机器自动打开，Intel 保持关闭 —— 本机（Intel）设置里
+        // 遗留的"已开启"靠这一次自动纠正。钉住这条规则，别让将来有人把它改成"无条件开"。
+        check("SMN 首启自动开启策略：Intel 机器不自动开", !SmnChannel.AutoEnableOnFirstRun(isAmdCpu: false));
+        check("SMN 首启自动开启策略：AMD 机器自动开", SmnChannel.AutoEnableOnFirstRun(isAmdCpu: true));
+
         if (serviceSaysAmd)
         {
             // AMD 机器：只验证判定，不去真的加载驱动/映射物理内存（那正是会蓝屏的动作）
