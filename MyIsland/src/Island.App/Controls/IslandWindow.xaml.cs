@@ -81,6 +81,9 @@ public partial class IslandWindow : Window
     /// </summary>
     private ExpandedPanel? Panel => _panel;
 
+    /// <summary>岛体窗口的宿主事件（App 订阅）：面板顶栏的设置齿轮被点（2026-11-25 UI 对齐 BrimDeck）。</summary>
+    public event Action? SettingsRequested;
+
     /// <summary>
     /// 确保展开面板存在（不存在就创建并挂上）。
     ///
@@ -103,6 +106,7 @@ public partial class IslandWindow : Window
             Margin = new Thickness(0)
         };
         p.CloseRequested += () => SetExpanded(false);
+        p.SettingsRequested += () => SettingsRequested?.Invoke();
         _panel = p;
         Root.Children.Add(p);
         p.Monitor.Palette = _palette;

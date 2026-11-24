@@ -459,13 +459,16 @@ public sealed class MonitorPage : FrameworkElement
         const double tabW = 40;
         double tx = right - tabW * 2;
         _sortToggleRect = RenderKit.SafeRect(tx, 4, tabW * 2, 22);
+        // BrimDeck 同款分段控件：整条药丸底 + 选中段浮起的浅药丸（原来是文字 + 强调色下划线）
+        dc.DrawRoundedRectangle(RenderKit.Faint(pal.Text, 0.06), null, _sortToggleRect, 11, 11);
         foreach (var (label, on) in new[] { ("CPU", TopSort == "cpu"), ("内存", TopSort == "mem") })
         {
-            var t = label == "CPU" ? RenderKit.Mono(label, 11.5, on ? pal.Text : pal.TextTertiary, on, ppd)
-                                   : RenderKit.Text(label, 11.5, on ? pal.Text : pal.TextTertiary, on, ppd);
-            RenderKit.Baseline(dc, t, tx + (tabW - t.WidthIncludingTrailingWhitespace) / 2, 15);
             if (on)
-                dc.DrawLine(RenderKit.PenOf(pal.Accent, 2), new Point(tx + 9, 22), new Point(tx + tabW - 9, 22));
+                dc.DrawRoundedRectangle(RenderKit.Faint(pal.Text, 0.14), null,
+                    RenderKit.SafeRect(tx + 2, 6, tabW - 4, 18), 9, 9);
+            var t = label == "CPU" ? RenderKit.Mono(label, 11, on ? pal.Text : pal.TextTertiary, on, ppd)
+                                   : RenderKit.Text(label, 11, on ? pal.Text : pal.TextTertiary, on, ppd);
+            RenderKit.Baseline(dc, t, tx + (tabW - t.WidthIncludingTrailingWhitespace) / 2, 19);
             tx += tabW;
         }
 

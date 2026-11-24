@@ -13,7 +13,7 @@ MyIsland/
 │   │   │                          ExpandedPanel(展开面板XAML) PanelStyles(面板控件样式: 按钮/开关/滑杆/滚动条)
 │   │   │                          MonitorPage(监控页自绘) ThermalDisplay(温度更新: 画面变没变的判断)
 │   │   │                          RenderKit(共享渲染层: 缓存/等宽数据字体/发光)
-│   │   │                          Glyphs(矢量图标) ModuleSettingsWindow(显示项设置) PanelData(ViewModel)
+│   │   │                          Glyphs(矢量图标: 页签/设备剪影/齿轮等, Glyphs.IconOf 设备类型→图标) ModuleSettingsWindow(显示项设置) PanelData(ViewModel)
 │   │   │                          DevicesPage(设备电量自绘) SettingsWindow(设置中心: 与面板共用控件样式的两栏卡片)
 │   │   ├── Services/              ThermalService(CPU/GPU/SSD温度: LHM+inpoutx64/SMN)
 │   │   │                          PawnIoInstaller(温度驱动 PawnIO 自举: 内嵌安装器校验+静默安装)
@@ -155,6 +155,10 @@ D:\YQDESK\MyIsland-改进记录.md 第十节。规则只有下面这几条，别
 - 面板字号只用四档：36（主读数）/ 17（行读数）/ 12（标签与说明）/ 11（页脚与计数）。
 - 面板里的控件必须用 PanelStyles.xaml 的样式（QuietBtn / AccentBtn / TabBtn / ToggleSwitch / ThinSlider /
   ThinProgress），不要放默认模板的 WPF 控件；图标用 Glyphs.cs 的矢量图标，不要用 emoji。
+- 设备图标统一走 `Glyphs.IconOf(kind)`（鼠标/键盘/耳机/手柄剪影，认不出给电池轮廓），设备页电量环与收起态
+  设备行共用；不要再写单字"鼠/键/耳/柄"。
+- 展开页顶栏 = 左页签 + 中时钟 + 右齿轮(设置中心, btnSettings) + ✕。整体 UI/UE 的参照是 BrimDeck
+  （官方截图在 brimdeck-ref；进程榜排序的分段药丸、顶栏齿轮、设备剪影图标都是 2026-11-25 对齐它的）。
 - 设置窗口（SettingsWindow）与面板共用同一套：构造时合并 PanelStyles.xaml，令牌由 ExpandedPanel.ApplyTheme 写进
   窗口资源（SettingsWindow.Res<T>("Fg") 取用）。给设置窗口加控件先找 PanelStyles 里有没有；面板按钮的尺寸是按
   小面板定的，设置窗口里用 SettingsWindow.WindowButton 放大一号。别的窗口要跟主题走也照这个做，不要各写一套颜色。

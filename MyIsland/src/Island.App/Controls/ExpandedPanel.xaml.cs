@@ -91,6 +91,9 @@ public partial class ExpandedPanel : UserControl
     /// <summary>请求收起面板（顶栏 ✕）。</summary>
     public event Action? CloseRequested;
 
+    /// <summary>请求打开设置中心（顶栏齿轮，2026-11-25 UI 对齐 BrimDeck）。</summary>
+    public event Action? SettingsRequested;
+
     /// <summary>
     /// 绑定回写抑制标志：DataContext 换新实例时，绑定会把源上的值推回 CheckBox，
     /// 触发 Checked/Unchecked —— 那不是用户操作。
@@ -129,6 +132,8 @@ public partial class ExpandedPanel : UserControl
     private void TickClock() => clockText.Text = DateTime.Now.ToString("HH:mm");
 
     private void OnClose(object sender, RoutedEventArgs e) => CloseRequested?.Invoke();
+
+    private void OnSettings(object sender, RoutedEventArgs e) => SettingsRequested?.Invoke();
 
     // 音量滑杆 / 静音 / 系统浅色模式：走 PanelData 回调（面板不直接持有服务引用）
     private void OnVolumeSlider(object sender, RoutedPropertyChangedEventArgs<double> e)

@@ -61,7 +61,7 @@
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
-        <!-- 顶栏：左 页签（矢量图标）｜ 中 时间 ｜ 右 收起 -->
+        <!-- 顶栏：左 页签（矢量图标）｜ 中 时间 ｜ 右 设置齿轮 + 收起 -->
         <Grid Grid.Row="0" Margin="-8,0,-8,10">
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center">
                 <Button x:Name="btnMonitor" Tag="0" Click="OnPage" ToolTip="系统监控" Style="{StaticResource TabBtn}">
@@ -79,10 +79,15 @@
             </StackPanel>
             <TextBlock x:Name="clockText" HorizontalAlignment="Center" VerticalAlignment="Center" Style="{StaticResource DataText}"
                        FontSize="12.5" FontWeight="Bold" Foreground="{DynamicResource FgDim}"/>
-            <Button x:Name="btnClose" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0"
-                    Click="OnClose" ToolTip="收起" Style="{StaticResource TabBtn}">
-                <local:GlyphIcon Kind="Close" Width="14" Height="14"/>
-            </Button>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                <!-- 设置齿轮（BrimDeck 顶栏同款：右端齿轮直达设置中心，不用退到托盘） -->
+                <Button x:Name="btnSettings" Click="OnSettings" ToolTip="设置中心" Style="{StaticResource TabBtn}" Margin="0,0,2,0">
+                    <local:GlyphIcon Kind="Gear" Width="15" Height="15"/>
+                </Button>
+                <Button x:Name="btnClose" Click="OnClose" ToolTip="收起" Style="{StaticResource TabBtn}">
+                    <local:GlyphIcon Kind="Close" Width="14" Height="14"/>
+                </Button>
+            </StackPanel>
         </Grid>
 
         <!-- 页面容器：一次只显示一页 -->

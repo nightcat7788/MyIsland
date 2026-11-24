@@ -790,11 +790,10 @@ public sealed class IslandCanvas : FrameworkElement
                       : d.Percent <= 20 ? pal.Up
                       : d.Percent <= 40 ? pal.Warning
                       : pal.Text;
-            // 设备图标（次要文字色）+ 大号读数：档位设备显示"空/低/中/满"（系统只给档位，
+            // 设备图标（矢量剪影）+ 大号读数：档位设备显示"空/低/中/满"（系统只给档位，
             // 换算成百分比就是伪装），百分比设备显示分级配色粗体等宽数字
-            var glyph = Text(DeviceService.Glyph(d.Kind), 11, pal.TextDim, true, ppd);
-            dc.DrawText(glyph, new Point(x, cy - glyph.Height / 2));
-            x += glyph.Width + 5;
+            Glyphs.Draw(dc, Glyphs.IconOf(d.Kind), RenderKit.SafeRect(x, cy - 5.5, 11, 11), pal.TextDim);
+            x += 15;
             if (d.LevelText is { } levelText)
             {
                 var level = Text(levelText, 12.5, color, true, ppd);

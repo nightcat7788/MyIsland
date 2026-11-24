@@ -6,7 +6,11 @@ using System.Windows.Media;
 namespace Island.App.Controls;
 
 /// <summary>界面图标的种类（见 <see cref="Glyphs"/>）。</summary>
-public enum GlyphKind { Monitor, Clipboard, Battery, Sliders, Close, Bolt, File, Image, Swatch, Grid, Gear }
+public enum GlyphKind
+{
+    Monitor, Clipboard, Battery, Sliders, Close, Bolt, File, Image, Swatch, Grid, Gear,
+    Mouse, Keyboard, Headset, Gamepad,
+}
 
 /// <summary>
 /// 界面用的矢量图标（2026-11-24 视觉重做）。以前页签 / 剪贴板 / 充电用的是 emoji（📈 ⎘ 🔋 🎛 ⚡）：
@@ -114,8 +118,54 @@ internal static class Glyphs
                     Line(8.0 + 4.6 * Math.Cos(a), 8.0 + 4.6 * Math.Sin(a), 8.0 + 6.9 * Math.Cos(a), 8.0 + 6.9 * Math.Sin(a));
                 }
                 break;
+            // 设备图标（2026-11-25 UI 对齐 BrimDeck：设备电量环里的剪影图标，换掉单字"鼠/键/耳/柄"）
+            case GlyphKind.Mouse:
+                // 鼠标：圆角机身 + 顶部滚轮
+                Box(4.6, 2.6, 6.8, 10.8, 3.2);
+                Line(8.0, 4.6, 8.0, 6.8);
+                break;
+            case GlyphKind.Keyboard:
+                // 键盘：圆角面板 + 四颗键点 + 空格条
+                Box(1.8, 5.2, 12.4, 6.6, 1.6);
+                dc.DrawEllipse(brush, null, P(4.4, 7.6), 0.6 * s, 0.6 * s);
+                dc.DrawEllipse(brush, null, P(6.8, 7.6), 0.6 * s, 0.6 * s);
+                dc.DrawEllipse(brush, null, P(9.2, 7.6), 0.6 * s, 0.6 * s);
+                dc.DrawEllipse(brush, null, P(11.6, 7.6), 0.6 * s, 0.6 * s);
+                Line(5.2, 10.0, 10.8, 10.0);
+                break;
+            case GlyphKind.Headset:
+                // 耳机：头梁弧 + 两只耳罩
+                var headband = new StreamGeometry();
+                using (var ctx = headband.Open())
+                {
+                    ctx.BeginFigure(P(2.4, 10.0), false, false);
+                    ctx.ArcTo(P(13.6, 10.0), new Size(5.6 * s, 5.6 * s), 0, false, SweepDirection.Clockwise, true, false);
+                }
+                headband.Freeze();
+                dc.DrawGeometry(null, pen, headband);
+                Box(2.2, 8.6, 2.6, 4.6, 1.2);
+                Box(11.2, 8.6, 2.6, 4.6, 1.2);
+                break;
+            case GlyphKind.Gamepad:
+                // 手柄：圆角机身 + 左十字键 + 右两颗键
+                Box(2.0, 5.2, 12.0, 6.4, 3.0);
+                Line(4.6, 8.4, 6.6, 8.4);
+                Line(5.6, 7.4, 5.6, 9.4);
+                dc.DrawEllipse(brush, null, P(10.0, 7.6), 0.7 * s, 0.7 * s);
+                dc.DrawEllipse(brush, null, P(11.2, 9.2), 0.7 * s, 0.7 * s);
+                break;
         }
     }
+
+    /// <summary>设备类型（DeviceService 的 kind）→ 设备图标。认不出给电池轮廓，不硬安。</summary>
+    public static GlyphKind IconOf(string kind) => kind switch
+    {
+        "mouse" => GlyphKind.Mouse,
+        "keyboard" => GlyphKind.Keyboard,
+        "headset" => GlyphKind.Headset,
+        "gamepad" => GlyphKind.Gamepad,
+        _ => GlyphKind.Battery,
+    };
 }
 
 /// <summary>

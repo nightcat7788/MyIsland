@@ -221,6 +221,8 @@ public partial class App : Application
         Step("创建并显示岛体窗口", () =>
         {
             _island = new IslandWindow(_settings);
+            // 面板顶栏的设置齿轮 → 设置中心（2026-11-25 UI 对齐 BrimDeck；齿轮在面板上，弹出的设置窗口置顶）
+            _island.SettingsRequested += () => ShowSettingsWindow();
             // 非管理员运行时，监控页温度位显示"需管理员"提示（温度链路需管理员 + PawnIO）
             _island.MonitorTempNeedAdmin = !IsElevated();
             // 管理员运行、但温度驱动还没到位（正在后台装，或装失败了）：显示"缺驱动"。

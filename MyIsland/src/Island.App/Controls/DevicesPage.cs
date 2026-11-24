@@ -76,9 +76,8 @@ public sealed class DevicesPage : FrameworkElement
             dc.DrawGeometry(null, RenderKit.PenOf(color, stroke),
                 Arc(cx, ringCy, ringR, d.Percent / 100.0));
 
-            // 环内设备图标（白色，居中）
-            var glyph = RenderKit.Text(DeviceService.Glyph(d.Kind), 15, pal.Text, true, ppd);
-            dc.DrawText(glyph, new Point(cx - glyph.Width / 2, ringCy - glyph.Height / 2));
+            // 环内设备图标（矢量剪影，BrimDeck 设备页同款；认不出的类型给电池轮廓）
+            Glyphs.Draw(dc, Glyphs.IconOf(d.Kind), RenderKit.SafeRect(cx - 8, ringCy - 8, 16, 16), pal.Text);
 
             // 充电角标：绿色圆 + 矢量闪电（不用 emoji：线粗和配色跟主题走）
             if (d.Charging)
