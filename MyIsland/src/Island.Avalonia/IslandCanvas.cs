@@ -14,6 +14,17 @@ namespace Island.Avalonia;
 /// </summary>
 public sealed class IslandCanvas : Control
 {
+    /// <summary>矩形夹紧：非有限值→0，负宽高→0。
+    /// Avalonia 的 Rect 构造器对负宽高直接抛 ArgumentException，
+    /// 而渲染链路上任何一处坏值（弹簧值、快照值、窗口尺寸）都会让整窗崩掉。
+    /// 与 Windows 端 RenderKit.SafeRect 同款。</summary>
+    internal static Rect SafeRect(double x, double y, double w, double h)
+        => new(Fin(x), Fin(y), Size(w), Size(h));
+
+    private static double Fin(double v) => double.IsFinite(v) ? v : 0;
+
+    private static double Size(double v) => double.IsFinite(v) ? (v < 0 ? 0 : v) : 0;
+
     public Rect BodyRect { get; set; }          // 窗口 DIP 坐标
     public bool IsExpanded { get; set; }
     public string View { get; set; } = "dash";  // dash / clock / pet
@@ -137,7 +148,7 @@ public sealed class IslandCanvas : Control
         void Tab(string label, string page, ref Rect rect)
         {
             var t = RenderKit.Text(label, 12, Page == page ? pal.Text : pal.TextDim, Page == page);
-            rect = new Rect(tabX - 6, tabY - 4, t.Width + 12, t.Height + 8);
+            rect = SafeRect(tabX - 6, tabY - 4, t.Width + 12, t.Height + 8);
             if (Page == page)
                 dc.DrawRectangle(RenderKit.Faint(pal.Accent, 0.22), null, new RoundedRect(rect, 7));
             dc.DrawText(t, new Point(tabX, tabY));
@@ -201,7 +212,7 @@ public sealed class IslandCanvas : Control
                 s.CpuTemp is { } t3 ? TempColor(t3, pal) : pal.TextTertiary, true);
             RenderKit.Baseline(dc, dt, x, baseline);
         }
-        RenderKit.DrawSpark(dc, new Rect(x0 + w * 0.52, y, w - w * 0.52, 26), null, CpuC, 36);
+        RenderKit.DrawSpark(dc, SafeRect(x0 + w * 0.52, y, w - w * 0.52, 26), null, CpuC, 36);
         y += 34;
 
         // ---------- 核心柱 ----------
@@ -214,11 +225,11 @@ public sealed class IslandCanvas : Control
             {
                 double v = Math.Clamp(cores[i] / 100.0, 0, 1);
                 double bx = x0 + i * (bw + gap);
-                dc.DrawRectangle(RenderKit.BrushOf(pal.Track), null, new RoundedRect(new Rect(bx, y, bw, bh), 3));
+                dc.DrawRectangle(RenderKit.BrushOf(pal.Track), null, new RoundedRect(SafeRect(bx, y, bw, bh), 3));
                 double fill = Math.Max(2, v * bh);
                 dc.DrawRectangle(
                     RenderKit.BrushOf(RenderKit.LevelColor(v * 100, v > 0.6 ? CpuC : MemC, pal)), null,
-                    new RoundedRect(new Rect(bx, y + bh - fill, bw, fill), 3));
+                    new RoundedRect(SafeRect(bx, y + bh - fill, bw, fill), 3));
             }
         }
         y += 50;
@@ -240,10 +251,10 @@ public sealed class IslandCanvas : Control
         }
         y += 30;
         double memFrac = s is null ? 0 : Math.Clamp(s.MemoryUsagePercent / 100, 0, 1);
-        dc.DrawRectangle(RenderKit.BrushOf(pal.Track), null, new RoundedRect(new Rect(x0, y, w - 6, 5), 2.5));
+        dc.DrawRectangle(RenderKit.BrushOf(pal.Track), null, new RoundedRect(SafeRect(x0, y, w - 6, 5), 2.5));
         if (memFrac > 0.002)
             dc.DrawRectangle(RenderKit.BrushOf(MemC), null,
-                new RoundedRect(new Rect(x0, y, Math.Max(4, (w - 6) * memFrac), 5), 2.5));
+                new RoundedRect(SafeRect(x0, y, Math.Max(4, (w - 6) * memFrac), 5), 2.5));
         y += 14;
 
         // ---------- GPU 行（有读数才画） ----------
@@ -332,7 +343,7 @@ public sealed class IslandCanvas : Control
             double sparkX = x0 + 16 + dr.WidthIncludingTrailingWhitespace + 12;
             double sparkW = x0 + w / 2 - sparkX - 10;
             if (sparkW > 30)
-                RenderKit.DrawSpark(dc, new Rect(sparkX, y, sparkW, 16), NetHistory, DownC, 36);
+                RenderKit.DrawSpark(dc, SafeRect(sparkX, y, sparkW, 16), NetHistory, DownC, 36);
 
             double x2 = x0 + w / 2 + 8;
             var ui = RenderKit.Text("↑", 13, UpC, true);
@@ -403,11 +414,11 @@ public sealed class IslandCanvas : Control
             {
                 double v = Easing.Clamp(cores[i] / 100.0, 0, 1);
                 dc.DrawRectangle(RenderKit.BrushOf(pal.Track), null,
-                    new RoundedRect(new Rect(x + i * (bw + gap), baseY - maxH, bw, maxH), 1.6));
+                    new RoundedRect(SafeRect(x + i * (bw + gap), baseY - maxH, bw, maxH), 1.6));
                 double h = 2 + v * maxH;
                 dc.DrawRectangle(
                     RenderKit.BrushOf(RenderKit.LevelColor(v * 100, Color.FromRgb(0x60, 0xA8, 0xF0), pal)), null,
-                    new RoundedRect(new Rect(x + i * (bw + gap), baseY - h, bw, h), 1.6));
+                    new RoundedRect(SafeRect(x + i * (bw + gap), baseY - h, bw, h), 1.6));
             }
             x += n * (bw + gap) + 26;
         }

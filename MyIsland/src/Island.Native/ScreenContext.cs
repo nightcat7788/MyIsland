@@ -39,9 +39,11 @@ public static class ForegroundDetector
         var ctx = new ScreenContext { Handle = hwnd };
 
         // 系统独占（D3D 全屏 / 演示模式）
+        // QUNS_BUSY = 2，微软官方定义："A full-screen application is running **or** Presentation Settings are applied"
+        //   —— 全屏应用在跑**或**开了演示模式都算独占，漏掉它 ⇒ 演示模式/全屏下窗口不隐藏。
         bool exclusive = false;
         if (SHQueryUserNotificationState(out int qns) == 0)
-            exclusive = qns is QUNS_RUNNING_D3D_FULL_SCREEN or QUNS_PRESENTATION_MODE;
+            exclusive = qns is QUNS_BUSY or QUNS_RUNNING_D3D_FULL_SCREEN or QUNS_PRESENTATION_MODE;
 
         ForegroundKind kind = ForegroundKind.Other;
         string proc = "";

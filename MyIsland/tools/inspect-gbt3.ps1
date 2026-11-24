@@ -1,4 +1,4 @@
-$lib = "C:\Program Files\Gigabyte\Control Center\Lib\MBEasyTune\Gigabyte.HardwareMonitor.dll"
+﻿$lib = "C:\Program Files\Gigabyte\Control Center\Lib\MBEasyTune\Gigabyte.HardwareMonitor.dll"
 $asm = [System.Reflection.Assembly]::LoadFrom($lib)
 $base = $asm.GetType("Gigabyte.HardwareMonitor.Hardware.Processor.AmdCPUHardwareMonitor")
 "目标抽象类: $($base.FullName) (abstract=$($base.IsAbstract))"

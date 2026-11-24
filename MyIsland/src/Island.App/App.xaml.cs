@@ -11,10 +11,28 @@ namespace Island.App;
 /// <summary>应用入口：单实例、Per-Monitor DPI、托盘图标、右键菜单、主窗口生命周期。</summary>
 public partial class App : Application
 {
+    // 单实例互斥体与二次启动唤起事件。
+    // 用 Local\ 前缀（按会话隔离）：不同用户登录在不同会话，各自的 Local 命名空间天然独立，
+    // 不需要再拼用户名——拼了反而会让安装包的 AppMutex 匹配不上（升级时关不掉旧实例）。
+    private static string MutexName => @"Local\MyIsland.Instance";
+    private static string RelaunchEventName => @"Local\MyIsland.Relaunch";
+
+    /// <summary>崩溃日志上限（约 1MB）：超过就删掉旧文件重开一份，免得日志无限膨胀。</summary>
+    private const long CrashLogLimit = 1_048_576;
+
     private Mutex? _mutex;
+    private bool _firstInstance;
     private IslandWindow? _island;
     private TrayIcon? _tray;
+    private System.Windows.Controls.ContextMenu? _menu;
     private Settings _settings = null!;
+    private Themes.Palette _palette = Themes.Palette.Dark;
+
+    // 二次启动唤起通道：第一个实例建事件并等信号，第二个实例发信号后静默退出
+    private EventWaitHandle? _relaunchEvent;
+    private RegisteredWaitHandle? _relaunchListener;
+    // 唤起信号早于岛体窗口建成时先记在这里，窗口一出现就补上（否则这次唤起会丢）
+    private bool _relaunchPending;
 
     /// <summary>
     /// 内存加载引导（run.ps1 调用）：自定义 ALC 插件模式。
@@ -65,15 +83,46 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
-        // Per-Monitor DPI Awareness V2（必须在创建任何窗口前调用）
-        try { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2); } catch { }
+        // 启动按步走，每步单独兜住异常（Step）。
+        // 以前是一整段顺序执行：中途抛异常就把后面全跳过 —— 岛体窗口一失败，
+        // 托盘图标、右键菜单、设置中心全都没有，用户既进不去设置也退不出进程。
+        // 分步之后某一步失败只影响它自己，岛体挂了托盘照样出来，用户还能从托盘退出/打开设置。
+
+        // Per-Monitor DPI Awareness V2（必须在创建任何窗口前调用；失败只影响清晰度，不影响后续）
+        Step("DPI 感知", () =>
+        {
+            try { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2); } catch { }
+        });
 
         base.OnStartup(e);
 
-        // 单实例
-        _mutex = new Mutex(true, "Local\\MyIsland.Instance", out bool createdNew);
-        if (!createdNew)
+        // 单实例互斥体：拿到锁的才是主实例
+        // 以管理员重启：新实例先等旧实例真正退出，再去抢单实例互斥体。
+        // 不等的话两个进程抢同一个互斥体，谁后启动谁就判定"已有实例"→ 发完唤起信号自己退出，
+        // 而旧实例紧接着也退出 ⇒ 岛体和托盘一起消失（2026-11-23 审查 P1-17）。
+        int oldPid = ParseRestartPid(e.Args);
+        if (oldPid > 0) WaitForProcessExit(oldPid, 15000);
+
+        Step("单实例互斥", () =>
         {
+            _mutex = new Mutex(true, MutexName, out _firstInstance);
+            GC.KeepAlive(_mutex);
+        });
+        if (_mutex is null)
+        {
+            // 连互斥体都没拿到（权限/句柄问题），后面的一切都没有意义
+            Shutdown();
+            return;
+        }
+        if (!_firstInstance)
+        {
+            // 已有实例在跑：给它发唤起信号，让它把岛体显示出来，然后自己静默退出
+            if (TryWakeRunningInstance())
+            {
+                Shutdown();
+                return;
+            }
+            // 对方还没建好唤起事件（刚起来就被再次拉起），只能退回原来的提示框
             // MessageBox 置顶：分层窗口应用没有任务栏入口，普通提示框可能埋在窗口堆后面
             System.Windows.MessageBox.Show(
                 "Island 已在运行（托盘图标可管理）。", "Island",
@@ -82,54 +131,177 @@ public partial class App : Application
             Shutdown();
             return;
         }
-        GC.KeepAlive(_mutex);
 
         // 三路异常捕获（参考 BrimDeck）：UI 线程 / 后台线程 / 未观测 Task
         // 后台线程（监控采样、毛玻璃、媒体轮询）异常若不挂钩会直接杀死进程
-        System.AppDomain.CurrentDomain.UnhandledException += (_, args) =>
-            LogException(args.ExceptionObject as Exception ?? new Exception("非 UI 线程异常"));
-        System.Threading.Tasks.TaskScheduler.UnobservedTaskException += (_, args) =>
+        Step("异常捕获", () =>
         {
-            LogException(args.Exception);
-            args.SetObserved();
-        };
-
-        _settings = Settings.Load();
-        _island = new IslandWindow(_settings);
-        // 非管理员运行时，监控页温度位显示"需管理员"提示（温度链路需管理员 + PawnIO）
-        _island.MonitorTempNeedAdmin = !IsElevated();
-        _island.ContextMenu = BuildContextMenu();
-        _island.Show();
-
-        _tray = new TrayIcon("Island · Windows 灵动岛");
-        _tray.LeftClicked += () => _island?.ToggleExpand();
-        _tray.RightClicked += () =>
-        {
-            if (_island?.ContextMenu is { } menu)
+            System.AppDomain.CurrentDomain.UnhandledException += (_, args) =>
+                LogException(args.ExceptionObject as Exception ?? new Exception("非 UI 线程异常"));
+            System.Threading.Tasks.TaskScheduler.UnobservedTaskException += (_, args) =>
             {
-                menu.PlacementTarget = _island;
-                menu.IsOpen = true;
-            }
-        };
+                LogException(args.Exception);
+                args.SetObserved();
+            };
+            // UI 线程异常：记日志后继续跑，窗口不崩
+            DispatcherUnhandledException += (_, args) =>
+            {
+                LogException(args.Exception);
+                args.Handled = true;
+            };
+        });
 
-        DispatcherUnhandledException += (_, args) =>
+        // 二次启动唤起通道：尽早建立，缩短"第二个实例发信号时对方还没建好事件"的空窗期
+        Step("二次启动唤起通道", () =>
         {
-            LogException(args.Exception);
-            args.Handled = true;
-        };
+            _relaunchEvent = new EventWaitHandle(false, EventResetMode.AutoReset, RelaunchEventName);
+            // AutoReset + 无限等待：第二个实例 Set() 一次，第一个实例的回调就被唤起一次
+            _relaunchListener = ThreadPool.RegisterWaitForSingleObject(_relaunchEvent,
+                (_, _) => { try { Dispatcher.BeginInvoke(new Action(ShowIslandFromRelaunch)); } catch { } },
+                null, Timeout.Infinite, false);
+        });
+
+        // 加载设置
+        Step("加载设置", () =>
+        {
+            // Settings.Load 内部已经兜住损坏的文件；这里再兜一层：
+            // 万一它抛异常，也用默认设置继续，不让后面的步骤因为空引用整体失败
+            try { _settings = Settings.Load(); }
+            catch (Exception ex) { LogStepFailure("加载设置", ex); _settings = new Settings(); }
+        });
+
+        // 温度驱动（PawnIO，2026-11-24）：LibreHardwareMonitorLib 只会打开驱动设备、不会装驱动，
+        // 干净的机器上即使以管理员运行也永远读不到 CPU 温度。以管理员运行且驱动缺失/过旧时，
+        // 在后台把它装好（PawnIoInstaller.EnsureInstalled 会等安装器退出，可能长达两分钟）。
+        // 所以放线程池：UI 线程不等，启动也不等。装完之后温度服务会在一个采样间隔内自己恢复读数
+        //（ThermalService 的自愈），这里不需要、也不应该去等它。
+        // 非管理员：不起任务（装驱动要管理员；这里也从不拉 UAC，提权与否由用户从托盘菜单决定）。
+        Step("温度驱动", StartDriverInstall);
+
+        // 显卡探测（2026-11-24）：在后台先问清楚"机器上的 Intel 显卡是不是全是核显"（约 55ms，
+        // 走开源库自己的 D3D 探测），结果缓存；温度服务创建第一个 Computer 时直接用，不在 UI 线程上现探。
+        // 只有核显的机器上，随后会拦下库对 Intel GCL 计算栈的初始化 —— 那一步实测会造成
+        // 700 MB – 4.5 GB 的启动内存尖峰（之前一直没查到的"峰值工作集 929 MB"），见 IntelComputePolicy。
+        Step("显卡探测", () => _ = System.Threading.Tasks.Task.Run(Services.IntelComputePolicy.ShouldSkipOnThisMachine));
+
+        // 剪贴板：接上"要排除的来源进程"设置项。
+        // 此前 SetExcludedProcesses 全仓没有调用方 ⇒ 排除列表恒为空 ⇒
+        // 默认连密码管理器复制的内容一起记录（最长 24 小时）。
+        Step("剪贴板排除列表", () =>
+            Services.ClipboardService.SetExcludedProcesses(_settings.ClipboardExcludedProcesses));
+
+        // 创建并显示岛体窗口（最容易失败的一步：毛玻璃、显示器枚举、监控服务）
+        // 失败只记日志，托盘图标与右键菜单照样起来，用户仍能从托盘退出或打开设置
+        Step("创建并显示岛体窗口", () =>
+        {
+            _island = new IslandWindow(_settings);
+            // 非管理员运行时，监控页温度位显示"需管理员"提示（温度链路需管理员 + PawnIO）
+            _island.MonitorTempNeedAdmin = !IsElevated();
+            // 管理员运行、但温度驱动还没到位（正在后台装，或装失败了）：显示"缺驱动"。
+            // 只在管理员时读注册表；装完之后由 OnDriverInstallDone 再同步一次。
+            _island.MonitorTempNoDriver = IsElevated() && !Services.ThermalService.DriverPresent;
+            _island.Show();
+            // 唤起信号比窗口先到时记过一次，这里补上
+            if (_relaunchPending) { _relaunchPending = false; ShowIslandFromRelaunch(); }
+        });
+
+        // 托盘图标：岛体窗口失败时也要有，否则用户没有任何入口退出
+        Step("设置托盘图标", () =>
+        {
+            _tray = new TrayIcon("Island · Windows 灵动岛");
+            _tray.LeftClicked += () => _island?.ToggleExpand();
+            _tray.RightClicked += OpenTrayMenu;
+        });
+
+        // 右键菜单：托盘右键与岛体右键共用一份
+        Step("右键菜单", () =>
+        {
+            _menu = BuildContextMenu();
+            // 岛体自带右键菜单（窗口内部右键会打开它）；岛体没起来时菜单只挂在托盘上
+            if (_island is { } island) island.ContextMenu = _menu;
+        });
+
+        // 设置中心：先把主题色板解析出来（设置窗口按它上色）
+        // 打开设置中心时仍会按当时的设置重新解析，用户在设置里换了主题才立刻生效
+        Step("设置中心", () => _palette = ResolvePalette());
     }
 
-    internal static void LogException(Exception? ex)
+    /// <summary>
+    /// 启动分步：每步单独兜住异常，某一步失败不影响后面的步骤（失败写进 crash.log）。
+    /// 内存耗尽时不再往下走：堆已经不可信，继续跑只会把问题放大。
+    /// </summary>
+    private void Step(string name, Action step)
+    {
+        try { step(); }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { LogStepFailure(name, ex); }
+    }
+
+    /// <summary>第二个实例：给已在跑的实例发唤起信号。发成功就静默退出。</summary>
+    private static bool TryWakeRunningInstance()
+    {
+        try
+        {
+            using var handle = EventWaitHandle.OpenExisting(RelaunchEventName);
+            return handle.Set();
+        }
+        catch (WaitHandleCannotBeOpenedException) { return false; }  // 对方还没建好事件
+        catch (UnauthorizedAccessException) { return false; }
+    }
+
+    /// <summary>第二个实例发来信号：把已有实例的岛体显示出来并展开。</summary>
+    private void ShowIslandFromRelaunch()
+    {
+        if (_island is null)
+        {
+            // 岛体窗口还没建好（启动期被唤起）：先记下来，等窗口出来再补
+            _relaunchPending = true;
+            return;
+        }
+        // 唤起即"展开到"，不是"切换"：已经是展开态时不该被收起
+        _island.ShowAndExpand();
+    }
+
+    /// <summary>托盘右键：打开右键菜单。岛体没起来时菜单只从这里用。</summary>
+    private void OpenTrayMenu()
+    {
+        if (_menu is null) return;
+        if (_island is { } island) _menu.PlacementTarget = island;
+        _menu.IsOpen = true;
+    }
+
+    /// <summary>主题色板：设置中心按它上色；解析不出就用上次解析成功的那份。</summary>
+    private Themes.Palette ResolvePalette()
+    {
+        string theme = _settings.Theme;
+        _palette = Themes.Palette.ByName(theme)
+            ?? (theme == "Light" ? Themes.Palette.Light : Themes.Palette.Dark);
+        return _palette;
+    }
+
+    internal static void LogException(Exception? ex) => WriteLog($"[{DateTime.Now}] {ex}\n");
+
+    /// <summary>启动某一步失败：连步骤名一起写进日志，便于定位是哪一步挂的。</summary>
+    private static void LogStepFailure(string step, Exception ex)
+        => WriteLog($"[{DateTime.Now}] [启动步骤:{step}] {ex}\n");
+
+    /// <summary>
+    /// 崩溃日志：写在 %LOCALAPPDATA%\MyIsland\crash.log。
+    /// 以前是无脑追加，日志会一直涨到把磁盘塞满；现在超过约 1MB 就删掉旧文件重开一份。
+    /// 写日志失败只吞掉：不能因为日志写不进去把应用带崩。
+    /// </summary>
+    private static void WriteLog(string text)
     {
         try
         {
             string dir = Path.Combine(Environment.GetFolderPath(
                 Environment.SpecialFolder.LocalApplicationData), "MyIsland");
             Directory.CreateDirectory(dir);
-            System.IO.File.AppendAllText(Path.Combine(dir, "crash.log"),
-                $"[{DateTime.Now}] {ex}\n");
+            string path = Path.Combine(dir, "crash.log");
+            var info = new FileInfo(path);
+            if (info.Exists && info.Length > CrashLogLimit) File.Delete(path);
+            File.AppendAllText(path, text);
         }
-        catch { }
+        catch { /* 日志写失败不影响运行 */ }
     }
 
     private System.Windows.Controls.ContextMenu BuildContextMenu()
@@ -164,31 +336,37 @@ public partial class App : Application
     /// <summary>打开设置中心（全部设置项统一入口）。</summary>
     private void ShowSettingsWindow()
     {
-        if (_island is null) return;
-        var palette = Themes.Palette.ByName(_settings.Theme)
-            ?? (_settings.Theme == "Light" ? Themes.Palette.Light : Themes.Palette.Dark);
+        // 岛体窗口没起来时也能开：宿主回调空转，用户照样能改主题、看设置并从托盘退出
+        var palette = ResolvePalette();
         var win = new Island.App.Controls.SettingsWindow(_settings, palette, new Island.App.Controls.SettingsWindow.Host
         {
             SetTheme = SetTheme,
             SetEdge = SetEdge,
-            SetExpandMode = m => _island.SetExpandMode(m),
-            SetCompactView = v => _island.SetCompactView(v),
-            SetPetStyle = s => _island.SetPetStyle(s),
-            SetWeatherCity = c => _island.SetWeatherCity(c),
-            ShowDashSettings = () => _island.ShowDashSettings(),
-            ShowComboSettings = () => _island.ShowComboSettings(),
-            ShowMonitorSettings = () => _island.ShowMonitorSettings(),
+            SetExpandMode = m => _island?.SetExpandMode(m),
+            SetCompactView = v => _island?.SetCompactView(v),
+            SetPetStyle = s => _island?.SetPetStyle(s),
+            SetWeatherCity = c => _island?.SetWeatherCity(c),
+            ShowDashSettings = () => _island?.ShowDashSettings(),
+            ShowComboSettings = () => _island?.ShowComboSettings(),
+            ShowMonitorSettings = () => _island?.ShowMonitorSettings(),
             RestartAsAdmin = RestartAsAdmin,
-            SetClickThrough = on => _island.SetClickThrough(on),
-            SetMonitorInterval = ms => _island.SetMonitorInterval(ms),
-            SetPreferredNic = id => _island.SetPreferredNic(id),
+            SetClickThrough = on => _island?.SetClickThrough(on),
+            SetSmnDirectRead = on => _island?.SetSmnDirectRead(on),
+            SetMonitorInterval = ms => _island?.SetMonitorInterval(ms),
+            SetPreferredNic = id => _island?.SetPreferredNic(id),
             PromptCity = PromptCity,
             IsElevated = IsElevated(),
         });
         win.ShowDialog();
+        // 设置窗口已关闭：申请一次"用完即还"（2026-11-24；不阻塞，确认 UI 空闲后才回收）
+        Services.MemoryReclaim.Request();
     }
 
-    private static bool IsElevated()
+    /// <summary>
+    /// 当前进程是否以管理员运行。温度链路用它：非管理员时不装驱动、监控页显示"需管理员"。
+    /// 取不到身份时按非管理员处理：最坏只是不装驱动、不显示温度，不会在没权限时去跑安装器。
+    /// </summary>
+    internal static bool IsElevated()
     {
         try
         {
@@ -199,6 +377,79 @@ public partial class App : Application
         catch { return false; }
     }
 
+    /// <summary>驱动安装任务：只有"以管理员启动，且需要安装"时才有；null = 没有在装。</summary>
+    internal static System.Threading.Tasks.Task<string>? DriverInstall { get; private set; }
+
+    /// <summary>驱动安装的结果，与写进 run.log 的那一行相同；没装过为 null。</summary>
+    internal static string? DriverInstallStatus { get; private set; }
+
+    /// <summary>在后台装温度驱动（启动步骤"温度驱动"）。立刻返回，不等安装。</summary>
+    private void StartDriverInstall()
+    {
+        if (!IsElevated()) return;
+        var task = System.Threading.Tasks.Task.Run(Services.PawnIoInstaller.EnsureInstalled);
+        DriverInstall = task;
+        // 继续体固定在线程池上执行，不挂在当时的同步上下文上：写日志用不着 UI 线程
+        _ = task.ContinueWith(
+            OnDriverInstallDone,
+            System.Threading.CancellationToken.None,
+            System.Threading.Tasks.TaskContinuationOptions.ExecuteSynchronously,
+            System.Threading.Tasks.TaskScheduler.Default);
+    }
+
+    /// <summary>驱动安装结束（成功、失败、超时都算）：记一行 run.log，再让窗口把"缺驱动"状态词同步一次。</summary>
+    private void OnDriverInstallDone(System.Threading.Tasks.Task<string> task)
+    {
+        // EnsureInstalled 自己不抛；这里再兜一层，状态行里不出现"没有结果"这种空话
+        string status = task.Status == System.Threading.Tasks.TaskStatus.RanToCompletion
+            ? task.Result
+            : $"任务异常结束（{task.Status}）";
+        DriverInstallStatus = status;
+        // 走 SystemMonitor.AppendRunLog：与采样线程写 run.log 共用同一把进程内锁，否则两行会写花
+        Native.SystemMonitor.AppendRunLog($"[{DateTime.Now:HH:mm:ss}] pawnio: {status}\n");
+        // 这里在线程池线程上：窗口只能在它的 UI 线程上碰
+        try { _island?.Dispatcher.BeginInvoke(new Action(() => _island?.SyncTempHints())); }
+        catch { /* 窗口已经在关闭：没有可同步的东西 */ }
+    }
+
+    /// <summary>以管理员重启时传给新实例的标记：--elevated-restart &lt;旧实例PID&gt;。</summary>
+    private const string RestartFlag = "--elevated-restart";
+
+    /// <summary>
+    /// 解析"我是被提权重启拉起来的"标记，返回旧实例的 PID（没有则 0）。
+    /// 命令行参数在 exe 直跑模式下可用；内存加载模式用环境变量 ISLAND_ELEVATED_RESTART。
+    /// </summary>
+    private static int ParseRestartPid(string[]? args)
+    {
+        if (args is not null)
+        {
+            for (int i = 0; i < args.Length; i++)
+            {
+                if (!args[i].Equals(RestartFlag, StringComparison.OrdinalIgnoreCase)) continue;
+                if (i + 1 < args.Length && int.TryParse(args[i + 1], out int pid) && pid > 0) return pid;
+                return 0;
+            }
+        }
+        string? env = Environment.GetEnvironmentVariable("ISLAND_ELEVATED_RESTART");
+        return int.TryParse(env, out int envPid) && envPid > 0 ? envPid : 0;
+    }
+
+    /// <summary>等某个进程真正退出（最多 timeoutMs 毫秒）。</summary>
+    private static void WaitForProcessExit(int pid, int timeoutMs)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        while (DateTime.UtcNow < deadline)
+        {
+            try
+            {
+                using var p = System.Diagnostics.Process.GetProcessById(pid);
+                if (p.HasExited) return;
+            }
+            catch (ArgumentException) { return; }   // 进程已不存在
+            System.Threading.Thread.Sleep(100);
+        }
+    }
+
     /// <summary>以管理员重启：exe 直跑模式重启自身；内存加载模式调用 start-admin.ps1。</summary>
     private static void RestartAsAdmin()
     {
@@ -207,9 +458,12 @@ public partial class App : Application
             System.Diagnostics.ProcessStartInfo psi;
             string? islandDir = Environment.GetEnvironmentVariable("ISLAND_DIR");
             string exe = Environment.ProcessPath ?? "";
+            int myPid = Environment.ProcessId;
             if (islandDir is null && exe.EndsWith("Island.App.exe", StringComparison.OrdinalIgnoreCase))
             {
-                psi = new() { FileName = exe, UseShellExecute = true, Verb = "runas" };
+                // 把"我是被提权重启拉起来的 + 旧实例 PID"告诉新实例：
+                // 新实例会等旧进程退出后再接管单实例互斥体，两个实例就不会互相把对方当成"第二实例"退出。
+                psi = new() { FileName = exe, UseShellExecute = true, Verb = "runas", Arguments = $"{RestartFlag} {myPid}" };
             }
             else if (islandDir is not null &&
                      System.IO.File.Exists(System.IO.Path.Combine(islandDir, "start-admin.ps1")))
@@ -308,6 +562,9 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        // 唤起通道要释放：不释放的话，第二个实例会对着一个已经没人等的信号发信号
+        _relaunchListener?.Unregister(null);
+        _relaunchEvent?.Dispose();
         _tray?.Dispose();
         _settings?.Save();
         base.OnExit(e);

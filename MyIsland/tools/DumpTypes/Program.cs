@@ -1,112 +1,56 @@
-// Probe inpoutx64.dll exports directly: IsInpOutDriverOpen / DlPortWritePortUlong / DlPortReadPortUlong
+// 反射探测工具：列出程序集中的类型与成员。
+//
+// 2026-11-23 之前，这个工具是 inpoutx64 的物理内存探测器（MapPhysToLin +
+// 0xE0000000 / 0xC0000000 / 0xF0000000 三个基址依次映射），正是当天三次
+// 0x1EA THREAD_STUCK_IN_DEVICE_DRIVER 蓝屏的那条探测路径；而且 dll 路径写死成
+// 作者另一台机器的绝对路径，换机器即失效（等于一颗定时炸弹）。
+//
+// 现在它只做**纯反射**：不加载任何驱动、不碰物理内存、不写死任何路径。
 using System;
-using System.Runtime.InteropServices;
+using System.IO;
+using System.Linq;
+using System.Reflection;
 
 internal static class Program
 {
-    private delegate void WriteUlongDel(uint port, uint value);
-    private delegate uint ReadUlongDel(uint port);
-    private delegate int IsOpenDel();
-
-    private static unsafe void Main()
+    private static int Main(string[] args)
     {
-        string dll = @"C:\Users\fengl\WorkBuddy\2026-11-21-13-46-35\MyIsland\tools\inpout\inpoutx64.dll";
-        IntPtr lib = LoadLibrary(dll);
-        Console.WriteLine($"LoadLibrary: {lib}");
-        if (lib == IntPtr.Zero) return;
-
-        var isOpen = (IsOpenDel)Marshal.GetDelegateForFunctionPointer(
-            GetProcAddress(lib, "IsInpOutDriverOpen"), typeof(IsOpenDel));
-        var w = (WriteUlongDel)Marshal.GetDelegateForFunctionPointer(
-            GetProcAddress(lib, "DlPortWritePortUlong"), typeof(WriteUlongDel));
-        var r = (ReadUlongDel)Marshal.GetDelegateForFunctionPointer(
-            GetProcAddress(lib, "DlPortReadPortUlong"), typeof(ReadUlongDel));
-
-        Console.WriteLine($"IsInpOutDriverOpen: {isOpen()}");
-
-        w(0xCF8, 0x80000000u);
-        uint vid = r(0xCFC);
-        w(0xCF8, 0);
-        Console.WriteLine($"PCI B0D0F0 vendor/device: 0x{vid:X8} (expect low16=0x1022 AMD)");
-
-        if ((vid & 0xFFFF) == 0x1022)
+        if (args.Length < 1)
         {
-            foreach (uint fnBase in new uint[] { 0x80000000u, 0x80000800u })
-            {
-                w(0xCF8, fnBase | 0x60u);
-                w(0xCFC, 0x00059800u);
-                _ = r(0xCFC);              // settle
-                w(0xCF8, fnBase | 0x64u);
-                _ = r(0xCFC);              // settle
-                uint raw = r(0xCFC);
-                w(0xCF8, 0);
-                Console.WriteLine($"[fn=0x{fnBase:X8}] THM raw: 0x{raw:X8}");
-                if (raw != vid && raw != 0 && raw != 0xFFFFFFFF)
-                {
-                    double t = (raw >> 21) * 125 * 0.001;
-                    bool off = (raw & 0x80000) != 0 || (raw & 0x30000) == 0x30000;
-                    if (off) t -= 49;
-                    if (t > 0 && t < 150)
-                    {
-                        Console.WriteLine($"  ==> CPU temp: {t:F1} C (offsetFlag={off})");
-                        break;
-                    }
-                }
-            }
+            Console.WriteLine("用法: DumpTypes <程序集.dll> [类型名过滤]");
+            return 1;
         }
 
-        EcamProbe();
-    }
+        string path = Path.GetFullPath(args[0]);
+        if (!File.Exists(path)) { Console.WriteLine("找不到: " + path); return 2; }
 
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern IntPtr LoadLibrary(string f);
+        Assembly asm;
+        try { asm = Assembly.LoadFrom(path); }
+        catch (Exception ex) { Console.WriteLine("加载失败: " + ex.Message); return 3; }
 
-    // --- MapPhysToLin ECAM probe (append to Main flow via reflection-friendly static) ---
-    public static void EcamProbe()
-    {
-        string dll = @"C://Users//fengl//WorkBuddy//2026-11-21-13-46-35//MyIsland//tools//inpout//inpoutx64.dll";
-        IntPtr lib = LoadLibrary(dll);
-        _mapPhys = (MapPhysDel)Marshal.GetDelegateForFunctionPointer(GetProcAddress(lib, "MapPhysToLin"), typeof(MapPhysDel));
-        _unmapPhys = (UnmapDel)Marshal.GetDelegateForFunctionPointer(GetProcAddress(lib, "UnmapPhysicalMemory"), typeof(UnmapDel));
-
-        ulong ecamBase = 0xE0000000UL; // typical MCFG base; try a few
-        foreach (ulong base_ in new ulong[] { 0xE0000000UL, 0xC0000000UL, 0xF0000000UL })
+        string filter = args.Length > 1 ? args[1] : "";
+        Type[] types;
+        try { types = asm.GetTypes(); }
+        catch (ReflectionTypeLoadException ex)
         {
-            IntPtr lin = _mapPhys((IntPtr)base_, 0x100000, out IntPtr handle);
-            Console.WriteLine($"MapPhys(0x{base_:X}) -> lin=0x{lin:X}");
-            if (lin == IntPtr.Zero || lin == (IntPtr)0xFFFFFFFF) continue;
-            try
-            {
-                unsafe
-                {
-                    uint* cfg = (uint*)lin;
-                    // B0D0F0 offset 0: vendor/device
-                    uint vd = cfg[0];
-                    Console.WriteLine($"  ECAM B0D0F0 vendor: 0x{vd:X8}");
-                    if ((vd & 0xFFFF) == 0x1022)
-                    {
-                        // SMN via config regs 0x60/0x64 (byte offsets) -> dword idx 0x18/0x19
-                        cfg[0x18] = 0x00059800u;  // SMN addr
-                        uint raw = cfg[0x19];      // SMN data
-                        Console.WriteLine($"  THM raw: 0x{raw:X8}");
-                        double t = (raw >> 21) * 125 * 0.001;
-                        bool off = (raw & 0x80000) != 0 || (raw & 0x30000) == 0x30000;
-                        if (off) t -= 49;
-                        Console.WriteLine($"  ==> CPU temp: {t:F1} C");
-                        _unmapPhys(lin, handle);
-                        return;
-                    }
-                }
-            }
-            finally { }
-            _unmapPhys(lin, handle);
+            types = ex.Types.Where(t => t is not null).Select(t => t!).ToArray();
         }
-    }
 
-    private delegate IntPtr MapPhysDel(IntPtr phys, uint size, out IntPtr handle);
-    private delegate bool UnmapDel(IntPtr lin, IntPtr handle);
-    private static MapPhysDel _mapPhys;
-    private static UnmapDel _unmapPhys;
-    [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)]
-    private static extern IntPtr GetProcAddress(IntPtr m, string n);
+        Console.WriteLine("程序集: " + asm.FullName);
+        Console.WriteLine("类型数: " + types.Length);
+        foreach (Type t in types.OrderBy(t => t.FullName, StringComparer.Ordinal))
+        {
+            if (filter.Length > 0 && !(t.FullName ?? "").Contains(filter, StringComparison.OrdinalIgnoreCase))
+                continue;
+            string kind = t.IsInterface ? "interface" : t.IsEnum ? "enum" : t.IsValueType ? "struct" : "class";
+            Console.WriteLine();
+            Console.WriteLine((t.IsPublic ? "public " : "internal ") + kind + " " + t.FullName);
+            foreach (MemberInfo m in t.GetMembers(BindingFlags.Public | BindingFlags.NonPublic
+                                               | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly))
+            {
+                Console.WriteLine("    " + m.MemberType.ToString().PadRight(8) + " " + m);
+            }
+        }
+        return 0;
+    }
 }

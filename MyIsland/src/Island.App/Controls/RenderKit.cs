@@ -22,13 +22,39 @@ internal static class RenderKit
     public static Color LevelColor(double pct, Color normal, Palette pal)
         => pct >= CritPct ? pal.Up : pct >= WarnPct ? pal.Warning : normal;
 
+    // ---------- 矩形夹紧：渲染链路的最后一道防线 ----------
+    /// <summary>
+    /// 构造一个宽高非负、数值有限的 Rect。WPF 的 Rect 构造器对负宽高/NaN/Inf 直接抛 ArgumentException，
+    /// 而渲染链路上任何一处 NaN（弹簧值、快照值、窗口尺寸）都会让整窗以未处理异常崩掉
+    /// （2026-11-23 首帧 Arrange 即崩，crash.log：宽度和高度必须为非负值），
+    /// 因此所有渲染用矩形统一从这里出，坏值只会被削平，不会再把进程带走。
+    /// </summary>
+    public static Rect SafeRect(double x, double y, double w, double h)
+        => new(Fin(x), Fin(y), Size(w), Size(h));
+
+    private static double Fin(double v) => double.IsFinite(v) ? v : 0;
+    private static double Size(double v) => double.IsFinite(v) ? (v < 0 ? 0 : v) : 0;
+
     // ---------- 缓存：全部 Freeze，每帧零分配 ----------
-    private static readonly Dictionary<uint, SolidColorBrush> _brushes = new();
-    private static readonly Dictionary<(uint Color, int OpacityPct), SolidColorBrush> _faints = new();
-    private static readonly Dictionary<(uint Color, int OpacityPct, double Thickness), Pen> _pens = new();
-    private static readonly Dictionary<(string Text, double Size, bool Strong, uint Color, double Ppd), FormattedText> _texts = new();
+    // 用 ConcurrentDictionary：这几个缓存以前是普通 Dictionary，将来谁在后台线程调
+    // BrushOf/Faint/PenOf/Text 就会撞 "A concurrent update was performed on this collection"。
+    // 现在没有后台线程调用点，但换成并发字典零成本，也和 _icons/_wallpaperAccents 保持一致。
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<uint, SolidColorBrush> _brushes = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(uint Color, int OpacityPct), SolidColorBrush> _faints = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(uint Color, int OpacityPct, double Thickness), Pen> _pens = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Text, double Size, bool Strong, uint Color, double Ppd), FormattedText> _texts = new();
 
     private static uint Key(Color c) => (uint)((c.A << 24) | (c.R << 16) | (c.G << 8) | c.B);
+
+    /// <summary>颜色的 32 位键：调用方想记"上次用的颜色"来跳过没变化的绘制时用。</summary>
+    public static uint KeyOf(Color c) => Key(c);
+
+    /// <summary>
+    /// 画布统一字族。
+    /// 显式给出 CJK 回退（微软雅黑 UI 自带拉丁字形）：不指定的话中文字符会走
+    /// DirectWrite 的**系统回退链**，额外加载一整套中文字体（实测单个中文字族约 20MB 级）。
+    /// </summary>
+    private static readonly FontFamily UiFont = new("Segoe UI, Microsoft YaHei UI");
 
     public static SolidColorBrush BrushOf(Color c)
     {
@@ -59,61 +85,235 @@ internal static class RenderKit
         return _pens[k] = p;
     }
 
+    // ---------- 径向渐变（小形象眼周光晕）：按颜色缓存一份冻结的 ----------
+    // 2026-11-24：PetFace 每帧给每只眼 new 一个未冻结的 RadialGradientBrush，录制绘制指令时还会被再克隆一份。
+    // 渐变的形状是固定的（中心 0.5,0.5、半径 0.5、相对包围盒 → 透明），只跟"光晕色"有关，所以按颜色缓存。
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<uint, RadialGradientBrush> _radials = new();
+
+    /// <summary>"该色 → 透明"的径向渐变：中心 (0.5, 0.5)、半径 0.5（相对包围盒），按颜色缓存并 Freeze。</summary>
+    public static RadialGradientBrush RadialBrushOf(Color center)
+    {
+        uint k = Key(center);
+        if (_radials.TryGetValue(k, out var b)) return b;
+        if (_radials.Count > 64) _radials.Clear();
+        b = new RadialGradientBrush(center, Colors.Transparent)
+        {
+            Center = new Point(0.5, 0.5), RadiusX = 0.5, RadiusY = 0.5,
+        };
+        b.Freeze();
+        return _radials[k] = b;
+    }
+
     /// <summary>缓存的文本排版：同一字符串/字号/字重/颜色/DPI 只排版一次。</summary>
     public static FormattedText Text(string s, double size, Color color, bool strong = false, double ppd = 1)
     {
-        var k = (s, size, strong, Key(color), ppd);
+        // 字号/DPI 非法时 FormattedText 会抛（emSize<=0、pixelsPerDip<=0），这里是渲染链路，
+        // 抛异常等于整窗崩 —— 夹到合法值（和 SafeRect 同一个思路：坏值只被削平）
+        double safeSize = double.IsFinite(size) ? Math.Max(1, size) : 1;
+        double safePpd = double.IsFinite(ppd) && ppd > 0 ? ppd : 1;
+        var k = (s, safeSize, strong, Key(color), safePpd);
         if (_texts.TryGetValue(k, out var t)) return t;
         if (_texts.Count > 512) _texts.Clear();
         t = new FormattedText(s,
             System.Globalization.CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
-            new Typeface(new FontFamily("Segoe UI"), FontStyles.Normal,
+            new Typeface(UiFont, FontStyles.Normal,
                 strong ? FontWeights.SemiBold : FontWeights.Normal, FontStretches.Normal),
-            size, BrushOf(color), ppd);
+            safeSize, BrushOf(color), safePpd);
         return _texts[k] = t;
     }
 
-    /// <summary>限宽省略文本（宽度每次不同故不缓存——BrimDeck MonitorDraw.Trimmed 同款取舍）。</summary>
+    // 限宽省略文本的缓存（2026-11-24 展开态降耗）。键里带上宽度：读数是等宽体，名字旁边那段读数的宽度
+    // 只有寥寥几种（"1.5%" 与 "12.3%"），"文本 + 可用宽度"的组合翻来覆去就那么几个，命中率很高。
+    // 不缓存时监控页每次重绘都要重新排版 7 段限宽文本（6 个进程名 + 显卡名），离屏探针实测约 3ms，
+    // 占一次"读数没变"的重绘的大半。现有调用点拿到后只画不改，所以共享同一份排版是安全的；
+    // 以后谁要改返回值（设 MaxTextWidth 之类），先 clone。
+    // 两份缓存各有上限，超了整体清空（与 _texts 同一个取舍：宁可偶尔重排，也不让它无限长）。
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Text, double Size, bool Strong, uint Color, double Width, double Ppd), FormattedText> _trimmedTexts = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Text, double Size, bool Strong, uint Color, double Width, double Ppd), FormattedText> _trimmedMono = new();
+
+    /// <summary>限宽夹到合法值：非数 / 负数 / 0 都按 1 算（原来 NaN 会原样漏进 FormattedText）。</summary>
+    private static double SafeWidth(double width) => double.IsFinite(width) ? Math.Max(1, width) : 1;
+
+    private static Typeface Face(bool strong, bool mono)
+        => new(mono ? MonoFont : UiFont, FontStyles.Normal,
+            strong ? (mono ? FontWeights.Bold : FontWeights.SemiBold) : FontWeights.Normal, FontStretches.Normal);
+
+    private static FormattedText Ellipsized(string s, double size, Color color, double width, bool strong, double ppd, bool mono)
+        => new(s, System.Globalization.CultureInfo.CurrentCulture, FlowDirection.LeftToRight, Face(strong, mono), size, BrushOf(color), ppd)
+        { MaxTextWidth = width, MaxLineCount = 1, Trimming = TextTrimming.CharacterEllipsis };
+
+    /// <summary>限宽省略文本：同一串字在同一种可用宽度下只排版一次（宽度变了就是另一份）。</summary>
     public static FormattedText Trimmed(string s, double size, Color color, double width, bool strong, double ppd)
-        => new(s, System.Globalization.CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
-            new Typeface(new FontFamily("Segoe UI"), FontStyles.Normal,
-                strong ? FontWeights.SemiBold : FontWeights.Normal, FontStretches.Normal),
-            size, BrushOf(color), ppd)
-        { MaxTextWidth = Math.Max(1, width), MaxLineCount = 1, Trimming = TextTrimming.CharacterEllipsis };
+    {
+        double safeSize = double.IsFinite(size) ? Math.Max(1, size) : 1;
+        double safePpd = double.IsFinite(ppd) && ppd > 0 ? ppd : 1;
+        double w = SafeWidth(width);
+        var k = (s, safeSize, strong, Key(color), w, safePpd);
+        if (_trimmedTexts.TryGetValue(k, out var t)) return t;
+        if (_trimmedTexts.Count > 256) _trimmedTexts.Clear();
+        return _trimmedTexts[k] = Ellipsized(s, safeSize, color, w, strong, safePpd, mono: false);
+    }
 
     /// <summary>按基线放置文本：同一行不同字号的读数坐在同一条基线上。</summary>
     public static void Baseline(DrawingContext dc, FormattedText t, double x, double baseline)
         => dc.DrawText(t, new Point(x, baseline - t.Baseline));
+
+    // ---------- 数据字体：等宽（2026-11-24 视觉重做，暗色科技） ----------
+    // 读数、单位、拉丁标签用等宽体（Consolas）："终端感"来自字体的等宽节奏，不是加装饰。中文落在微软雅黑 UI 上
+    //（Consolas 没有汉字，按字体回退排在同一行，基线由排版引擎对齐）。等宽体的数字天然等宽：读数从 11 跳到 88 时
+    // 整行不抖（界面字体 Segoe UI 的数字是比例宽的，"1" 只占 "0" 的一半左右）。
+    // ⚠️ 一段读数只调一次 DrawText（整串排版）。曾经为了"数字居中进格子"逐字画：每一次 DrawText 在软件渲染里
+    //    约合 0.2ms，仪表盘视图一帧多出 5ms（离屏探针实测 7 → 12ms/帧）。换数据字体时确认新字体的数字是等宽的，
+    //    DesignSystemTests 守着这一条。
+    private static readonly FontFamily MonoFont = new("Consolas, Microsoft YaHei UI");
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Text, double Size, bool Strong, uint Color, double Ppd), FormattedText> _monoTexts = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(double Size, bool Strong, double Ppd), double> _digitCells = new();
+
+    /// <summary>缓存的等宽文本排版（读数、单位、拉丁标签、进程名）。Consolas 只有常规和粗体两档。</summary>
+    public static FormattedText Mono(string s, double size, Color color, bool strong = false, double ppd = 1)
+    {
+        // 字号/DPI 非法时 FormattedText 会抛，这里是渲染链路 —— 夹到合法值（与 Text 同样的处理）
+        double safeSize = double.IsFinite(size) ? Math.Max(1, size) : 1;
+        double safePpd = double.IsFinite(ppd) && ppd > 0 ? ppd : 1;
+        var k = (s, safeSize, strong, Key(color), safePpd);
+        if (_monoTexts.TryGetValue(k, out var t)) return t;
+        if (_monoTexts.Count > 512) _monoTexts.Clear();
+        t = new FormattedText(s,
+            System.Globalization.CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
+            new Typeface(MonoFont, FontStyles.Normal, strong ? FontWeights.Bold : FontWeights.Normal, FontStretches.Normal),
+            safeSize, BrushOf(color), safePpd);
+        return _monoTexts[k] = t;
+    }
+
+    /// <summary>限宽省略的等宽文本（进程名这类）：按"文本 + 可用宽度"缓存，见 <see cref="Trimmed"/> 上面的说明。</summary>
+    public static FormattedText MonoTrimmed(string s, double size, Color color, double width, bool strong, double ppd)
+    {
+        double safeSize = double.IsFinite(size) ? Math.Max(1, size) : 1;
+        double safePpd = double.IsFinite(ppd) && ppd > 0 ? ppd : 1;
+        double w = SafeWidth(width);
+        var k = (s, safeSize, strong, Key(color), w, safePpd);
+        if (_trimmedMono.TryGetValue(k, out var t)) return t;
+        if (_trimmedMono.Count > 256) _trimmedMono.Clear();
+        return _trimmedMono[k] = Ellipsized(s, safeSize, color, w, strong, safePpd, mono: true);
+    }
+
+    /// <summary>同一种颜色换个不透明度（辉光用的半透明版本）。</summary>
+    public static Color Halo(Color c, double alpha)
+        => Color.FromArgb((byte)Math.Clamp((int)Math.Round(alpha * 255), 0, 255), c.R, c.G, c.B);
+
+    /// <summary>"0"–"9" 里最宽的那个在这组字号 / 字重 / DPI 下的宽度（数字格子的宽度）。</summary>
+    public static double DigitCell(double size, bool strong, double ppd)
+    {
+        double safeSize = double.IsFinite(size) ? Math.Max(1, size) : 1;
+        double safePpd = double.IsFinite(ppd) && ppd > 0 ? ppd : 1;
+        return _digitCells.GetOrAdd((safeSize, strong, safePpd), k =>
+        {
+            double w = 0;
+            for (int d = 0; d < 10; d++) w = Math.Max(w, Mono(d.ToString(), k.Size, Colors.Black, k.Strong, k.Ppd).Width);
+            return w;
+        });
+    }
+
+    /// <summary>一段读数用 <see cref="Num"/> 排出来占的宽度（右对齐 / 给后面的文字让位时先量）。</summary>
+    public static double NumWidth(string s, double size, bool strong, double ppd)
+        => Mono(s, size, Colors.Black, strong, ppd).WidthIncludingTrailingWhitespace;
+
+    /// <summary>按基线画一段读数（等宽体，数字等宽）。返回右端 x。</summary>
+    public static double Num(DrawingContext dc, string s, double x, double baseline, double size, Color color, bool strong, double ppd)
+    {
+        var t = Mono(s, size, color, strong, ppd);
+        dc.DrawText(t, new Point(x, baseline - t.Baseline));
+        return x + t.WidthIncludingTrailingWhitespace;
+    }
+
+    /// <summary>1px 发丝线（对齐到像素，半透明的线落在半像素上会发虚成两行）。</summary>
+    public static void Hairline(DrawingContext dc, Palette pal, double x1, double x2, double y)
+        => dc.DrawLine(PenOf(pal.Hairline, 1), new Point(x1, Math.Round(y) + 0.5), new Point(x2, Math.Round(y) + 0.5));
+
+    // ---------- 顶部辉光（暗色科技的签名） ----------
+    // "近黑底 + 一束光"：本体顶部中央透出一团强调色，径向渐变到透明。相对本体包围盒定位，与本体尺寸无关，
+    // 所以按"颜色 + 不透明度 + 纵向半径"缓存，展开 / 收起动画的每一帧都复用同一份冻结的画刷。
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(uint Color, int RadiusY), RadialGradientBrush> _spotlights = new();
+
+    /// <summary>本体顶部的辉光画刷（中心在上边中点）。alpha 是中心的峰值不透明度，radiusY 是相对本体高度的纵向半径。</summary>
+    public static RadialGradientBrush Spotlight(Color accent, double alpha, double radiusY)
+    {
+        double a = double.IsFinite(alpha) ? Math.Clamp(alpha, 0, 1) : 0;
+        double ry = double.IsFinite(radiusY) ? Math.Max(0.05, radiusY) : 0.05;
+        var k = (Key(Halo(accent, a)), (int)Math.Round(ry * 1000));
+        return _spotlights.GetOrAdd(k, key =>
+        {
+            Color peak = Color.FromRgb((byte)(key.Color >> 16), (byte)(key.Color >> 8), (byte)key.Color);
+            var b = new RadialGradientBrush
+            {
+                Center = new Point(0.5, 0.02), GradientOrigin = new Point(0.5, 0.02),
+                RadiusX = 0.62, RadiusY = key.RadiusY / 1000.0,
+            };
+            b.GradientStops.Add(new GradientStop(Halo(peak, a), 0));
+            b.GradientStops.Add(new GradientStop(Halo(peak, a * 0.45), 0.45));
+            b.GradientStops.Add(new GradientStop(Halo(peak, 0), 1));
+            b.Freeze();
+            return b;
+        });
+    }
+
+    /// <summary>细进度条（圆头轨道 + 填充），share 为 0..1；填充短于一个高度时不画（圆头会糊成一团）。</summary>
+    public static void Meter(DrawingContext dc, Rect r, double share, Palette pal, Color fill)
+    {
+        double rr = r.Height / 2;
+        dc.DrawRoundedRectangle(BrushOf(pal.Track), null, r, rr, rr);
+        double w = (double.IsFinite(share) ? Math.Clamp(share, 0, 1) : 0) * r.Width;
+        if (w < r.Height) return;
+        dc.DrawRoundedRectangle(BrushOf(fill), null, SafeRect(r.X, r.Y, w, r.Height), rr, rr);
+    }
 
     // ---------- 表盘（BrimDeck MonitorDraw.Dial：270° 开口环 + 字母） ----------
     private const double DialStart = Math.PI * 1.25;   // 从左下角起
     private const double DialSweep = Math.PI * 1.5;    // 顺时针 270°
 
     public static void Dial(DrawingContext dc, Point center, double size, double ring,
-        double? share, Color track, Color arc, Color letterColor, string letter, double ppd)
+        double? share, Color track, Color arc, Color letterColor, string letter, double ppd, double glow = 0)
     {
-        double radius = size / 2 - ring / 2;
+        // size <= ring 时 radius 会变成负数 → new Size(负,负) 直接抛 ArgumentException，
+        // 而这是 OnRender 里的路径，抛了整窗崩。这里把尺寸/环宽/半径都夹到合法范围。
+        double safeSize = double.IsFinite(size) ? Math.Max(0, size) : 0;
+        double safeRing = double.IsFinite(ring) ? Math.Max(0.1, ring) : 0.1;
+        // 辉光占掉的宽度要算进半径，否则描出来的光晕会被 size 裁掉的视觉边界压扁
+        double safeGlow = double.IsFinite(glow) ? Math.Max(0, glow) : 0;
+        double radius = Math.Max(0.5, safeSize / 2 - safeGlow - safeRing / 2);
         // 开口环的可见包围盒居中：下端只到 radius/√2，顶端到 radius（BrimDeck centerVisibleBounds）
         var c = new Point(center.X, center.Y + radius * (1 - Math.Sqrt(0.5)) / 2);
-        Arc(dc, c, radius, ring, 1, track);
-        if (share is { } v && v > 0.002) Arc(dc, c, radius, ring, Math.Min(1, v), arc);
+        // 辉光（glow > 0 时）：同一道弧先用两条更宽、更淡的线描一遍（暗色科技的签名手法，只给主角环用）
+        if (safeGlow > 0 && share is { } v0 && v0 > 0.002)
+        {
+            Arc(dc, c, radius, safeRing + safeGlow * 2.6, Math.Min(1, v0), Halo(arc, 0.10));
+            Arc(dc, c, radius, safeRing + safeGlow, Math.Min(1, v0), Halo(arc, 0.24));
+        }
+        Arc(dc, c, radius, safeRing, 1, track);
+        if (share is { } v && v > 0.002) Arc(dc, c, radius, safeRing, Math.Min(1, v), arc);
+        // 空字母 = 只画环（监控页的 CPU 主读数环：字母由旁边的标签承担）
+        if (letter.Length == 0) return;
         var t = Text(letter, Math.Max(1, size * 7 / 16), letterColor, true, ppd);
         dc.DrawText(t, new Point(c.X - t.Width / 2, c.Y - t.Height / 2));
     }
 
     private static void Arc(DrawingContext dc, Point c, double radius, double thickness, double fraction, Color color)
     {
-        Point At(double angle) => new(c.X + radius * Math.Sin(angle), c.Y - radius * Math.Cos(angle));
-        double sweep = DialSweep * fraction;
+        // 兜底：半径/线宽/占比非法时不能让 new Size(...) 或 Pen 抛异常（渲染链路抛异常 = 整窗崩）
+        double r = double.IsFinite(radius) ? Math.Max(0.5, radius) : 0.5;
+        double th = double.IsFinite(thickness) ? Math.Max(0.1, thickness) : 0.1;
+        double f = double.IsFinite(fraction) ? Math.Clamp(fraction, 0, 1) : 0;
+        Point At(double angle) => new(c.X + r * Math.Sin(angle), c.Y - r * Math.Cos(angle));
+        double sweep = DialSweep * f;
         var geo = new StreamGeometry();
         using (var ctx = geo.Open())
         {
             ctx.BeginFigure(At(DialStart), false, false);
-            ctx.ArcTo(At(DialStart + sweep), new Size(radius, radius), 0,
+            ctx.ArcTo(At(DialStart + sweep), new Size(r, r), 0,
                 sweep > Math.PI, SweepDirection.Clockwise, true, false);
         }
         geo.Freeze();
-        dc.DrawGeometry(null, PenOf(color, thickness), geo);
+        dc.DrawGeometry(null, PenOf(color, th), geo);
     }
 
     // ---------- 取色（BrimDeck MusicVisuals.Accent 移植：饱和度加权平均 + HSL 亮度钳制） ----------
@@ -152,10 +352,23 @@ internal static class RenderKit
                 < 1 => (chroma, x, 0d), < 2 => (x, chroma, 0d), < 3 => (0d, chroma, x),
                 < 4 => (0d, x, chroma), < 5 => (x, 0d, chroma), _ => (chroma, 0d, x),
             };
-            return Color.FromRgb((byte)((r + m) * 255), (byte)((g + m) * 255), (byte)((b + m) * 255));
+            return Color.FromRgb(ToByte(r + m), ToByte(g + m), ToByte(b + m));
         }
         catch { return null; }
     }
+
+    /// <summary>0..1 → 字节：先夹到 [0,1] 再乘 255 并夹到 0..255。
+    /// 不夹的话 (r+m) 能到 1.28，(byte)326 会回绕成 50，颜色直接错乱。</summary>
+    private static byte ToByte(double v)
+    {
+        if (!double.IsFinite(v)) return 0;
+        double s = Math.Clamp(v, 0, 1) * 255.0;
+        return (byte)Math.Clamp(s, 0, 255);
+    }
+
+    // 壁纸主色缓存：解码 16×16 位图 + 取色要 30–150ms，同一张壁纸不重复解码。
+    // 键里带上壁纸文件的修改时间：换了壁纸（路径不变）会自动失效重算。
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Color?> _wallpaperAccents = new();
 
     /// <summary>桌面壁纸主色（macOS 式壁纸取色；纯色壁纸/读不到返回 null）。</summary>
     public static Color? WallpaperAccent(bool dark)
@@ -165,6 +378,18 @@ internal static class RenderKit
             string? path = Microsoft.Win32.Registry.GetValue(
                 @"HKEY_CURRENT_USER\Control Panel\Desktop", "Wallpaper", null) as string;
             if (string.IsNullOrWhiteSpace(path) || !System.IO.File.Exists(path)) return null;
+            long stamp = System.IO.File.GetLastWriteTimeUtc(path).Ticks;
+            string key = path + "|" + stamp + "|" + (dark ? "d" : "l");
+            return _wallpaperAccents.GetOrAdd(key, _ => DecodeWallpaperAccent(path, dark));
+        }
+        catch { return null; }
+    }
+
+    /// <summary>解码壁纸位图并取主色（只由 WallpaperAccent 调用，结果进缓存）。</summary>
+    private static Color? DecodeWallpaperAccent(string path, bool dark)
+    {
+        try
+        {
             var bmp = new BitmapImage();
             bmp.BeginInit();
             bmp.CacheOption = BitmapCacheOption.OnLoad;
@@ -194,6 +419,42 @@ internal static class RenderKit
                 _rimLightPen.Freeze();
             }
             return _rimLightPen;
+        }
+    }
+
+    // ---------- 缓存：顶部 sheen / 底部内阴影渐变（每帧零分配） ----------
+    private static LinearGradientBrush? _sheenBrush;
+    private static LinearGradientBrush? _shadeBrush;
+
+    /// <summary>顶部高光带渐变（白 12% → 透明，90°）：冻结的静态缓存，每帧零分配。</summary>
+    public static LinearGradientBrush SheenBrush
+    {
+        get
+        {
+            if (_sheenBrush is null)
+            {
+                var b = new LinearGradientBrush(
+                    Color.FromArgb(0x20, 0xFF, 0xFF, 0xFF), Colors.Transparent, 90);
+                b.Freeze();
+                _sheenBrush = b;
+            }
+            return _sheenBrush;
+        }
+    }
+
+    /// <summary>底部内阴影渐变（透明 → 黑 18%，90°）：冻结的静态缓存，每帧零分配。</summary>
+    public static LinearGradientBrush ShadeBrush
+    {
+        get
+        {
+            if (_shadeBrush is null)
+            {
+                var b = new LinearGradientBrush(Colors.Transparent,
+                    Color.FromArgb(0x2E, 0x00, 0x00, 0x00), 90);
+                b.Freeze();
+                _shadeBrush = b;
+            }
+            return _shadeBrush;
         }
     }
 
@@ -280,4 +541,98 @@ internal static class RenderKit
     private static extern bool DestroyIcon(IntPtr hIcon);
 
     private const uint SHGFI_ICON = 0x100, SHGFI_SMALLICON = 0x1;
+}
+
+/// <summary>
+/// 发光文字的位图缓存（2026-11-24，暗色科技里 CPU 主读数的辉光）。
+/// 做法：把文字画进一张**半分辨率**的小位图，手工做三遍可分离的盒式模糊（叠加起来等效高斯），
+/// 之后每帧只是把这张图放大贴上去（双线性插值，天然平滑）。文字 / 颜色没变就直接复用，一个字节都不动。
+/// 为什么不用现成的：BlurEffect 在软件渲染里每个渲染通道都要重算一遍模糊（约 3.5ms，而毛玻璃每更新一次
+/// 就是一个渲染通道）；多层错位描边每次重绘约 10ms（一次 DrawText 在软件渲染里约合 0.2ms）。
+/// 这里重做一次不到 1ms，每帧贴图约 0.3ms。位图是预乘 alpha（Pbgra32），四个通道一起模糊，预乘关系不变。
+/// </summary>
+internal sealed class GlowText
+{
+    private const double Scale = 0.5;     // 半分辨率：辉光本来就是模糊的
+    private const int Radius = 3;         // 半分辨率下的盒式模糊半径（三遍叠加 ≈ 全分辨率 10px 的高斯）
+    private const double Strength = 0.8;  // 辉光强度（直接乘进各通道，等于给整张图加不透明度）
+
+    private (string Text, uint Color, double Size, bool Strong, double Ppd)? _key;
+    private BitmapSource _bmp = null!;
+    private double _pad, _w, _h, _top;
+
+    /// <summary>
+    /// 取辉光位图。返回 (位图, 摆放矩形)：矩形以文字的落笔点（左端基线点）为原点。
+    /// 调用方先在矩形处贴图，再在落笔点照常写实心字。
+    /// </summary>
+    public (BitmapSource Bmp, Rect Bounds) Get(string text, double size, Color color, bool strong, double ppd)
+    {
+        uint ck = RenderKit.KeyOf(color);
+        if (_key == (text, ck, size, strong, ppd)) return (_bmp, new Rect(-_pad, _top - _pad, _w, _h));
+
+        // 字号 / DPI 非法时 Mono 会夹到合法值；下面的尺寸再夹一次（NaN 转整数是未定义的）
+        var t = RenderKit.Mono(text, size, color, strong, ppd);
+        _pad = double.IsFinite(size) ? Math.Max(1, size) * 0.5 : 0.5;
+        _w = t.WidthIncludingTrailingWhitespace + 2 * _pad;
+        _h = t.Height + 2 * _pad;
+        _top = -t.Baseline;
+        int bw = Math.Max(1, (int)Math.Round(_w * Scale));
+        int bh = Math.Max(1, (int)Math.Round(_h * Scale));
+
+        var rtb = new RenderTargetBitmap(bw, bh, 96 * Scale, 96 * Scale, PixelFormats.Pbgra32);
+        var dv = new DrawingVisual();
+        using (var c = dv.RenderOpen()) c.DrawText(t, new Point(_pad, _pad + t.Baseline));
+        rtb.Render(dv);
+
+        var wb = new WriteableBitmap(rtb);
+        int stride = wb.BackBufferStride;
+        var px = new byte[stride * bh];
+        var tmp = new byte[px.Length];
+        wb.CopyPixels(px, stride, 0);
+        for (int pass = 0; pass < 3; pass++) { BlurH(px, tmp, bw, bh, stride); BlurV(tmp, px, bw, bh, stride); }
+        for (int i = 0; i < px.Length; i++) px[i] = (byte)(px[i] * Strength);
+        wb.WritePixels(new Int32Rect(0, 0, bw, bh), px, stride, 0);
+        wb.Freeze();
+        _bmp = wb;
+        _key = (text, ck, size, strong, ppd);
+        return (_bmp, new Rect(-_pad, _top - _pad, _w, _h));
+    }
+
+    private static int Edge(int i, int n) => i < 0 ? 0 : i >= n ? n - 1 : i;
+
+    // 一维盒式模糊（滑动窗口和，边缘夹紧）：横向一遍、纵向一遍。三个通道方向无关，四个字节通道各自处理。
+    private static void BlurH(byte[] src, byte[] dst, int w, int h, int stride)
+    {
+        for (int y = 0; y < h; y++)
+        {
+            int row = y * stride;
+            for (int ch = 0; ch < 4; ch++)
+            {
+                int sum = 0;
+                for (int k = -Radius; k <= Radius; k++) sum += src[row + Edge(k, w) * 4 + ch];
+                for (int x = 0; x < w; x++)
+                {
+                    dst[row + x * 4 + ch] = (byte)((sum + Radius) / (2 * Radius + 1));
+                    sum += src[row + Edge(x + Radius + 1, w) * 4 + ch] - src[row + Edge(x - Radius, w) * 4 + ch];
+                }
+            }
+        }
+    }
+
+    private static void BlurV(byte[] src, byte[] dst, int w, int h, int stride)
+    {
+        for (int x = 0; x < w; x++)
+        {
+            for (int ch = 0; ch < 4; ch++)
+            {
+                int sum = 0;
+                for (int k = -Radius; k <= Radius; k++) sum += src[Edge(k, h) * stride + x * 4 + ch];
+                for (int y = 0; y < h; y++)
+                {
+                    dst[y * stride + x * 4 + ch] = (byte)((sum + Radius) / (2 * Radius + 1));
+                    sum += src[Edge(y + Radius + 1, h) * stride + x * 4 + ch] - src[Edge(y - Radius, h) * stride + x * 4 + ch];
+                }
+            }
+        }
+    }
 }

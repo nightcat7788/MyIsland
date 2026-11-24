@@ -31,6 +31,9 @@ public sealed class WinSampler : ISampler
     public WinSampler(int intervalMs)
     {
         _inner = new Island.Native.SystemMonitor(intervalMs);
+        // 跨平台版没有"收起/展开"之分，快照里的进程榜等明细始终用得上：
+        // SystemMonitor 的明细采样默认关（2026-11-24 空闲降耗，Windows 版只在面板展开时开），这里显式打开。
+        _inner.SetDetailWanted(true);
         _thermal.SetWanted(true);   // 常驻采样 CPU/GPU/SSD 温度（2s）
         _inner.Snapshot += s =>
         {
@@ -286,17 +289,30 @@ public sealed class MacSampler : ISampler
         finally { Marshal.FreeHGlobal(buf); }
     }
 
-    // ---------- 内存：HOST_VM_INFO64=4（free/active/inactive/spec/wire 前 5 个 u64） ----------
+    // ---------- 内存：HOST_VM_INFO64=4（vm_statistics64_data_t） ----------
+    // 布局要点（vm_statistics64_data_t，XNU osfmk/mach/vm_statistics.h）：
+    //   开头 4 个是 32 位 natural_t（free/active/inactive/wire），
+    //   之后是 64 位计数器，但中间还夹着 6 个 32 位 natural_t
+    //   （purgeable/speculative/compressor/throttled/external/internal）——
+    //   整个结构体 160 字节，不能假设"第 5 个起就全是 64 位"。
+    //   本函数只读 active@4 与 wire@12（这两个偏移是对的）。
+    //
+    // ⚠️ 2026-11-23 修复：原来只给了 8*15=120 字节缓冲、count=15。
+    //   host_statistics64 的 count 以 4 字节为单位，最少要覆盖 160 字节的结构体；
+    //   count 不足时内核直接返回 KERN_INVALID_ARGUMENT ⇒ Mac 上内存面板永远显示 0%。
+    //   现在缓冲 256 字节、count=64（=256/4），两边都够。
     private (double pct, double used, double total) SampleMemory()
     {
-        var buf = Marshal.AllocHGlobal(8 * 15);
+        var buf = Marshal.AllocHGlobal(256);
         try
         {
-            int count = 15;
+            int count = 64;   // 256 / 4：足够覆盖 160 字节的 vm_statistics64_data_t
             if (host_statistics64(mach_host_self(), 4, buf, ref count) != 0) return (0, 0, 0);
             if (host_page_size(mach_host_self(), out uint pageSize) != 0 || pageSize == 0) pageSize = 16384;
-            ulong active = (ulong)Marshal.ReadInt64(buf, 8);
-            ulong wire = (ulong)Marshal.ReadInt64(buf, 32);
+            // natural_t 是 32 位无符号整数：free@0 / active@4 / inactive@8 / wire@12
+            ulong active = (uint)Marshal.ReadInt32(buf, 4);
+            ulong wire = (uint)Marshal.ReadInt32(buf, 12);
+            // 近似口径：已用 ≈ 活跃页 + 联动页（未含压缩页，与活动监视器口径略有差异）
             double usedGb = (active + wire) * (double)pageSize / 1073741824.0;
 
             ulong memsize = 0;

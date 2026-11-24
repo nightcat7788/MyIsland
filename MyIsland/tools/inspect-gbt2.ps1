@@ -1,4 +1,4 @@
-$lib = "C:\Program Files\Gigabyte\Control Center\Lib\MBEasyTune\Gigabyte.HardwareMonitor.dll"
+﻿$lib = "C:\Program Files\Gigabyte\Control Center\Lib\MBEasyTune\Gigabyte.HardwareMonitor.dll"
 $asm = [System.Reflection.Assembly]::LoadFrom($lib)
 $t = $asm.GetType("Gigabyte.HardwareMonitor.Hardware.Processor.AmdCPUHardwareMonitor")
 "=== AmdCPUHardwareMonitor 成员 ==="

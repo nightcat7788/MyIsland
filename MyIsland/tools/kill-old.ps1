@@ -1,3 +1,12 @@
+﻿param(
+    # 要结束的进程 PID；留空则结束所有名为 Island.App 的进程
+    [int]$ProcessId = 0
+)
+$ErrorActionPreference = 'Continue'
+# 结束旧的 MyIsland 宿主进程。
+# 原实现把 PID 写死成 33816 —— PID 会被系统复用，运行它等于"杀一个随机进程"。
+# 现在改为参数化；不给 PID 时按进程名匹配 Island.App。
+
 $code = @'
 using System;
 using System.Runtime.InteropServices;
@@ -31,4 +40,13 @@ public static class Killer
 }
 '@
 Add-Type -TypeDefinition $code
-[Killer]::Kill(33816)
+
+if ($ProcessId -gt 0) {
+    "target pid=$ProcessId -> " + [Killer]::Kill($ProcessId)
+} else {
+    $procs = @(Get-Process -Name 'Island.App' -ErrorAction SilentlyContinue)
+    if ($procs.Count -eq 0) { "no Island.App process running"; exit 0 }
+    foreach ($p in $procs) {
+        "target pid=$($p.Id) -> " + [Killer]::Kill($p.Id)
+    }
+}

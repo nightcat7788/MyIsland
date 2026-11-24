@@ -47,8 +47,10 @@ public sealed class DevicesPage : FrameworkElement
         var devices = DeviceService.Snapshot;
         if (devices.Count == 0)
         {
-            var empty = RenderKit.Text("未检测到无线设备（蓝牙/HID 电量）", 11, pal.TextDim, ppd: ppd);
-            dc.DrawText(empty, new Point((W - empty.Width) / 2, H / 2 - empty.Height / 2));
+            // 空状态：一枚图标 + 一句话（以前是一行括号里塞着技术名词的长句）
+            Glyphs.Draw(dc, GlyphKind.Battery, RenderKit.SafeRect(W / 2 - 14, H / 2 - 34, 28, 28), pal.TextTertiary, 1.2);
+            var empty = RenderKit.Text("没有可显示电量的设备", 12, pal.TextDim, ppd: ppd);
+            dc.DrawText(empty, new Point((W - empty.Width) / 2, H / 2 + 6));
             return;
         }
 
@@ -77,14 +79,12 @@ public sealed class DevicesPage : FrameworkElement
             var glyph = RenderKit.Text(DeviceService.Glyph(d.Kind), 15, pal.Text, true, ppd);
             dc.DrawText(glyph, new Point(cx - glyph.Width / 2, ringCy - glyph.Height / 2));
 
-            // 充电角标：环右下绿色圆 + 闪电
+            // 充电角标：绿色圆 + 矢量闪电（不用 emoji：线粗和配色跟主题走）
             if (d.Charging)
             {
                 double bx = cx + ringR * 0.72, by = ringCy + ringR * 0.72;
-                dc.DrawEllipse(RenderKit.BrushOf(Color.FromRgb(0x3F, 0xC1, 0x5E)), null,
-                    new Point(bx, by), 9, 9);
-                var bolt = RenderKit.Text("⚡", 9, Color.FromRgb(0x0D, 0x11, 0x17), true, ppd);
-                dc.DrawText(bolt, new Point(bx - bolt.Width / 2, by - bolt.Height / 2));
+                dc.DrawEllipse(RenderKit.BrushOf(pal.Down), null, new Point(bx, by), 9, 9);
+                Glyphs.Draw(dc, GlyphKind.Bolt, RenderKit.SafeRect(bx - 5, by - 5.5, 10, 11), pal.IsDark ? pal.Surface : Colors.White);
             }
             y += ringR * 2 + 14;
 

@@ -2,6 +2,12 @@
 **/bin/
 **/obj/
 publish/
+
+# 代码签名密钥：绝不入库（PFX 带私钥，泄露=任何人都能伪造你的发布者签名）
+*.pfx
+*.p12
+*.cer
+signing/
 *.user
 
 # ---- 运行时数据 ----
@@ -16,3 +22,4 @@ Thumbs.db
 # ---- 大体积生成物 ----
 **/*.tmp
 installer/dist/
+dist/

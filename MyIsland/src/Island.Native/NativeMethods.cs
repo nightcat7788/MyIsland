@@ -81,6 +81,10 @@ public static class NativeMethods
     // 全屏/独占检测
     [DllImport("shell32.dll")]
     public static extern int SHQueryUserNotificationState(out int pqns);
+    // 微软官方枚举（值与官方一致，不要改）：
+    //   QUNS_BUSY = 2                    —— "A full-screen application is running or Presentation Settings are applied"
+    //   QUNS_RUNNING_D3D_FULL_SCREEN = 3 —— "A full-screen application is running"
+    //   QUNS_PRESENTATION_MODE = 4       —— "Presentation mode is running"
     public const int QUNS_BUSY = 2;
     public const int QUNS_RUNNING_D3D_FULL_SCREEN = 3;
     public const int QUNS_PRESENTATION_MODE = 4;

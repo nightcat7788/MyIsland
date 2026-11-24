@@ -66,11 +66,17 @@ public sealed class PanelData : INotifyPropertyChanged
     public bool HasFiles { get => _hasFiles; set => Set(ref _hasFiles, value); }
 
     // ---------- 控制页 ----------
-    private string _brightness = "--", _wlan = "--", _bt = "--";
+    private string _brightness = "--", _wlan = "--", _wlanAdapter = "--", _bt = "--";
     public string Brightness { get => _brightness; set => Set(ref _brightness, value); }
+    /// <summary>Wi-Fi 连接状态：已连接 / 未连接 / 状态未知（三态）。</summary>
     public string WlanState { get => _wlan; set => Set(ref _wlan, value); }
+    /// <summary>Wi-Fi 适配器开关状态：Wi-Fi 已开启 / Wi-Fi 已关闭 / Wi-Fi 状态未知（三态）。</summary>
+    public string WlanAdapterState { get => _wlanAdapter; set => Set(ref _wlanAdapter, value); }
     public string BtState { get => _bt; set => Set(ref _bt, value); }
-    public double BrightnessValue { get; set; }
+    /// <summary>亮度进度条绑定值：必须走 Set() 发通知，否则面板上的进度条不会跟着「＋/－」刷新
+    /// （OneWay 绑定只在建立时取一次值，不实现 INPC 的属性不会再通知）。</summary>
+    private double _brightnessValue;
+    public double BrightnessValue { get => _brightnessValue; set => Set(ref _brightnessValue, value); }
 
     // 音量 / 深色模式（宿主回调，面板不直接持有服务引用）
     private double _volumeValue;
@@ -133,8 +139,26 @@ public sealed class PanelData : INotifyPropertyChanged
         var b = Services.ControlService.GetBrightness();
         Brightness = b is null ? "不支持" : $"{b}%";
         if (b is { } v) BrightnessValue = v / 100.0;
-        WlanState = Services.ControlService.WlanEnabled ? "已连接" : "已关闭";
-        BtState = Services.ControlService.BluetoothEnabled ? "开启" : "关闭";
+        UpdateWlan();
+        // 这里读的是 bthserv 服务状态，不是 Win11 的蓝牙无线电开关，文案按"蓝牙服务"说
+        BtState = Services.ControlService.BluetoothEnabled ? "蓝牙服务运行中" : "蓝牙服务未运行";
+    }
+
+    /// <summary>
+    /// Wi-Fi 状态：连接状态与适配器开关分开显示。
+    /// 以前直接渲染 WlanEnabled（那是适配器的"管理状态"），
+    /// "Wi-Fi 开着但没连热点"会被显示成"已连接"。
+    /// </summary>
+    private void UpdateWlan()
+    {
+        var (adapter, connected) = Services.ControlService.GetWlanState();
+        WlanState = connected switch { true => "已连接", false => "未连接", _ => "状态未知" };
+        WlanAdapterState = adapter switch
+        {
+            true => "Wi-Fi 已开启",
+            false => "Wi-Fi 已关闭",
+            _ => "Wi-Fi 状态未知",
+        };
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

@@ -28,7 +28,12 @@ public partial class IslandWindow : Window
     private readonly Services.WeatherService _weather = new();
     private readonly GlassBackdrop _glass = new();
     private readonly DispatcherTimer _frame;
-    private readonly DispatcherTimer _pointerTrack;
+    // 帧计时：用真实时间差推进弹簧（固定 dt 会让空闲档动画慢 6 倍）
+    private readonly System.Diagnostics.Stopwatch _frameClock = System.Diagnostics.Stopwatch.StartNew();
+    private double _lastFrameSeconds;
+    // 指针跟踪是「用户正在看/正在等」性质的计时：DispatcherTimer 骑在 WM_TIMER 上，
+    // 鼠标持续移动时 tick 最迟到 3.5 秒才来，悬停展开/收起会明显迟滞 → 改用 PromptTimer
+    private readonly PromptTimer _pointerTrack;
     private readonly DispatcherTimer _fullscreenCheck;
     private readonly DispatcherTimer _cycleTimer;
     private readonly DispatcherTimer _weatherTimer;
@@ -49,15 +54,84 @@ public partial class IslandWindow : Window
     private bool _expanded;
     private bool _dragging;
     private int _frameTick;
+    // 上一拍临时活动浮条（音量/高温告警）是否还在显示：过期的那一拍要补画一帧擦掉它（见 Frame_Tick）
+    private bool _activityShown;
+    // 上一次画到画布上的分钟数（clock / combo 视图的时钟跨分钟时要补画一帧，见 Frame_Tick）
+    private int _minuteShown = -1;
     private Point _dragStart;
     private DateTime _pointerEnterSince = DateTime.MinValue;
     private DateTime _pointerLeftSince = DateTime.MinValue;
     private bool _lockedClosed;  // 双击"长关"：不再自动展开
+    // 二次启动唤起后保持展开，直到鼠标真的移进岛体（否则悬停收起逻辑会把它马上关掉）
+    private bool _keepOpenUntilHover;
     private Palette _palette = Palette.Dark;
     private MonitorSnapshot? _snapshot;
 
     // 本体的屏幕矩形（DIP），每帧由弹簧值计算
     private Rect _bodyRect;
+
+    // 展开面板（懒加载）：见 EnsurePanel / ReleasePanel 的说明
+    private ExpandedPanel? _panel;
+
+    // 收起动画结束后把分层窗口缩回胶囊大小（展开期间保持大窗口，避免逐帧 resize 闪帧）
+    private bool _pendingWindowShrink;
+
+    /// <summary>
+    /// 取展开面板（不存在则返回 null，不触发创建）。
+    /// </summary>
+    private ExpandedPanel? Panel => _panel;
+
+    /// <summary>
+    /// 确保展开面板存在（不存在就创建并挂上）。
+    ///
+    /// 为什么懒加载：面板在 XAML 里声明就会**启动即实例化** —— 540×380 的可视树、
+    /// 主题资源字典、中文字体（雅黑 UI 约 20MB 级）全部常驻，而常驻态只有一个小胶囊。
+    /// 创建时机放在展开动画**开始时**：面板还没显示（_open 从 0 淡入），
+    /// XAML 解析 + 布局的耗时被动画覆盖，用户看不到卡顿。
+    /// </summary>
+    private ExpandedPanel EnsurePanel()
+    {
+        if (_panel is not null) return _panel;
+        var p = new ExpandedPanel
+        {
+            Opacity = 0,
+            IsHitTestVisible = false,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Width = 540,
+            Height = 380,
+            Margin = new Thickness(0)
+        };
+        p.CloseRequested += () => SetExpanded(false);
+        _panel = p;
+        Root.Children.Add(p);
+        p.Monitor.Palette = _palette;
+        p.DevicesView.Palette = _palette;
+        // 面板是懒加载的：启动时 App 设下的两个温度状态词要在这里补交给监控页。
+        // 只靠 MonitorTempNeedAdmin / MonitorTempNoDriver 的 setter 同步不到它 —— 设的那一刻面板还不存在
+        //（2026-11-24 发现：此前监控页从来没显示过"需管理员"，一直是"—"）。
+        p.Monitor.TempNeedAdmin = _tempNeedAdmin;
+        p.Monitor.TempNoDriver = _tempNoDriver;
+        UpdatePanelResources();
+        RequestPanelData();
+        return p;
+    }
+
+    /// <summary>
+    /// 收起动画结束后释放展开面板，把可视树与控件还回内存。
+    /// （中文字体是进程级的 DirectWrite 缓存，释放面板不会卸载它 —— 这部分是首启省下的，
+    ///   展开过一次之后就回不来了，属于已知取舍。）
+    /// </summary>
+    private void ReleasePanel()
+    {
+        if (_panel is null) return;
+        Root.Children.Remove(_panel);
+        _panel = null;
+        // 面板没了，只有它才用得上的明细采样（进程榜等）也停（2026-11-24 空闲降耗；展开时在 SetExpanded 里开）
+        _monitor.SetDetailWanted(false);
+        // 面板那棵可视树已经没有持有者了：申请一次"用完即还"（不阻塞；确认 UI 空闲后才回收，见 IsUiIdle）
+        Services.MemoryReclaim.Request();
+    }
 
     public IslandWindow(Settings settings)
     {
@@ -70,10 +144,12 @@ public partial class IslandWindow : Window
         SourceInitialized += OnSourceInitialized;
         Loaded += OnLoaded;
         Closed += OnClosed;
-        PreviewMouseWheel += OnMouseWheel;
         PreviewKeyDown += OnPreviewKeyDown;
-
-        expandedPanel.CloseRequested += () => SetExpanded(false);   // 顶栏 ✕
+        // 滚轮只挂一处：XAML 里 IslandCanvas.MouseWheel="OnMouseWheel"（冒泡阶段）已经挂了。
+        // 这里再挂 PreviewMouseWheel（隧道阶段）的话，同一次滚轮先隧道再冒泡执行两遍，
+        // 视图索引一次跳两格 —— 所以这里不能再挂。
+        // 拖拽捕获丢失（Esc / Alt-Tab / 右键菜单）要复位拖拽态，否则岛体永久压扁
+        LostMouseCapture += OnLostMouseCapture;
 
         // 果冻物理：悬停微拉伸，按压缩扁回弹（仅收起态；展开面板不动）
         MouseEnter += (_, _) => { if (!_expanded) _squash.To(1.07, 240, 0.55); };
@@ -91,7 +167,16 @@ public partial class IslandWindow : Window
         _frame = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(16) };
         _frame.Tick += Frame_Tick;
 
-        _pointerTrack = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(30) };
+        // 收起态切视图的变形帧：画布按"本体要去的地方"排内容（见 IslandCanvas.FinalBodyRect 与它 OnRender 的"变形中"）。
+        // 每次渲染时现取弹簧的目标值，所以只挂这一次。展开动画期间给空矩形：那一段保持原来的画法。
+        islandCanvas.FinalBodyRect = () =>
+        {
+            if (_expanded) return Rect.Empty;
+            var f = ComputeBodyRect(_bodyW.Target, _bodyH.Target);
+            return RenderKit.SafeRect(f.X - Left, f.Y - Top, f.Width, f.Height);
+        };
+
+        _pointerTrack = new PromptTimer(Dispatcher, TimeSpan.FromMilliseconds(30));
         _pointerTrack.Tick += PointerTrack_Tick;
 
         _fullscreenCheck = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
@@ -127,7 +212,9 @@ public partial class IslandWindow : Window
 
     private IntPtr OnWndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        if (msg == WM_DPICHANGED) { _dpiScale = 0; PositionOnEdge(); }   // DPI 变化后重定位（防级联位置残留）
+        // WM_DPICHANGED / WM_DISPLAYCHANGE(0x007E) 会让显示器矩形与缩放失效 → 清缓存再定位
+        if (msg == WM_DPICHANGED) { _dpiScale = 0; _monitorDip = null; PositionOnEdge(); }
+        else if (msg == 0x007E) { _monitorDip = null; PositionOnEdge(); }   // DPI 变化后重定位（防级联位置残留）
         else if (msg == WM_SETTINGCHANGE && _settings.Theme == "Auto") ApplyTheme();   // 壁纸/深浅切换跟随
         else if (msg == WM_HOTKEY && wParam.ToInt32() == HotkeyToggleId)
         {
@@ -146,7 +233,9 @@ public partial class IslandWindow : Window
             string dir = Path.Combine(Environment.GetFolderPath(
                 Environment.SpecialFolder.LocalApplicationData), "MyIsland");
             Directory.CreateDirectory(dir);
-            System.IO.File.AppendAllText(Path.Combine(dir, "run.log"),
+            // 走 SystemMonitor.AppendRunLog：与采样线程写 run.log 共用同一把进程内锁，
+            // 否则两个写入者交错会把日志写花
+            SystemMonitor.AppendRunLog(
                 $"[{DateTime.Now:HH:mm:ss}] island-up pid={Environment.ProcessId} edge={_settings.Edge}\n");
         }
         catch { }
@@ -157,8 +246,10 @@ public partial class IslandWindow : Window
         // Loaded 后窗口矩形已定，重新定位一次（实测本机 200% 缩放必现）
         PositionOnEdge();
 
-        // 设备电量：30s 轮询（BLE/HID/WMI），收起态 devices 视图消费
-        Services.DeviceService.Start();
+        // 设备电量：30s 轮询（BLE/HID/WMI）——按需启停：
+        // 只有收起态是 devices 视图、或面板展开(里面有设备电量页)时才跑，
+        // 否则 30 秒两次 WMI 搜索会一直唤醒 WMI provider host（实测 13ms + 19ms 每次）
+        Services.DeviceService.SetWanted(false);
 
         // 剪贴板历史：挂监听（纯本地内存，最多 50 条）
         Services.ClipboardService.Attach(new System.Windows.Interop.WindowInteropHelper(this).Handle);
@@ -176,45 +267,83 @@ public partial class IslandWindow : Window
         _volume.Start();
 
         // 温度/风扇：展开或收起视图需要时才采样；启动先采一次做诊断
-        _thermal.Updated += t => Dispatcher.BeginInvoke(() =>
-        {
-            islandCanvas.Thermal = t;
-            expandedPanel.Monitor.Thermal = t;
-            expandedPanel.Monitor.InvalidateVisual();
-        });
+        // SMN 直读默认关闭（会装未签名内核驱动，见 InpOutSmnService 的 0x1EA 教训）
+        _thermal.AllowSmnDirectRead = _settings.EnableSmnDirectRead;
+        // 具名方法订阅：OnClosed 里要用同一个目标 -= 解绑
+        //（lambda 订阅解不掉，ThermalService 是长驻的，会一直持有这个已关闭的窗口）
+        _thermal.Updated += OnThermalUpdated;
         // 启动 5s 后采一次温度做诊断（一次性；此前写法每 5s 空跑一次，违背按需采样设计）
         var prime = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(5) };
         prime.Tick += (_, _) => { prime.Stop(); _thermal.PrimeOnce(); };
         prime.Start();
 
         _frame.Start();
-        _pointerTrack.Start();
+        UpdatePointerTracking();   // 按需启停：穿透 / 长关模式下 PointerTrack_Tick 整个是空转
         _fullscreenCheck.Start();
         if (_settings.ClickThrough) SetClickThrough(true);   // 恢复上次的穿透状态
         islandCanvas.Pet.Style = _settings.PetStyle;
-        expandedPanel.Monitor.Palette = _palette;   // 监控页主题（ApplyTheme 在 Loaded 前跳过）
-        expandedPanel.DevicesView.Palette = _palette;
         ApplyItemFilters();                          // dash/combo/监控页 显示项注入
         islandCanvas.CompactView = _settings.CompactView;
         StartPetCycle();   // 必须在恢复视图之后：仅 pet/combo 视图才会启动轮换
         ApplyExpandMode();
+        // 预热面板数据（后台构建）：第一次展开时面板不会是空的
+        RequestPanelData();
         var s = CollapsedSize(islandCanvas.CompactView);
         _bodyW.Snap(s.Width); _bodyH.Snap(s.Height);
+
+        // 内存"用完即还"（2026-11-24 空闲降耗）：空闲与否由 IsUiIdle 判定；
+        // 启动稳定后（45s）回收一次，把启动期的临时分配还回去。
+        Services.MemoryReclaim.IsIdle = IsUiIdle;
+        Services.MemoryReclaim.Request(TimeSpan.FromSeconds(45));
     }
+
+    /// <summary>
+    /// UI 是否空闲 —— MemoryReclaim 的回调（UI 线程上调用）。回收会短暂阻塞 UI 线程，
+    /// 所以凡是"用户正盯着看"的状态都不算空闲：展开中、拖拽中、任意一根弹簧还在动
+    /// （展开/收起、液桥、水滴、挤压）、临时活动浮条还在显示、还有一次缩窗没做。
+    /// 展开面板还在可视树上也不算：面板那块内存正是这次要还的东西。
+    /// </summary>
+    private bool IsUiIdle() =>
+        !_expanded && !_dragging
+        && _bodyW.AtRest && _bodyH.AtRest && _open.AtRest && _neckStrength.AtRest
+        && _neckStretch.AtRest && _drip.AtRest && _squash.AtRest
+        && !(islandCanvas.Activity is { } a && DateTime.Now < a.Until)
+        && !_pendingWindowShrink && _panel is null;
 
     private void OnClosed(object? sender, EventArgs e)
     {
         IntPtr hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
         if (hwnd != IntPtr.Zero) UnregisterHotKey(hwnd, HotkeyToggleId);
-        _frame.Stop(); _pointerTrack.Stop(); _fullscreenCheck.Stop();
+        _frame.Stop(); _fullscreenCheck.Stop();
         _cycleTimer.Stop(); _weatherTimer.Stop();
+        _pointerTrack.Stop(); _pointerTrack.Dispose();   // PromptTimer：释放线程池计时器并解绑 Tick
+        // 服务是长驻的：不解绑的话，它们会一直持有这个已关闭的窗口
+        _monitor.Snapshot -= OnMonitorSnapshot;
+        _glass.Updated -= OnGlassUpdated;
+        _volume.Changed -= OnVolumeChanged;
+        _thermal.Updated -= OnThermalUpdated;   // 解绑温度回调（服务长驻，不解绑会一直持有已关闭的窗口）
+        LostMouseCapture -= OnLostMouseCapture;
         Services.ClipboardService.Detach();   // 摘掉剪贴板监听（窗口关了就不该再记录）
-        _monitor.Dispose();
+        Services.DeviceService.Stop();        // 停掉设备电量轮询（不随窗口常驻）
+        Services.MemoryReclaim.IsIdle = null; // 这个静态回调持有本窗口：窗口关了就摘掉
+        StopMonitor();
         _volume.Dispose();
         _thermal.Dispose();
         _glass.Dispose();
         _settings.CompactView = islandCanvas.CompactView;
         _settings.Save();
+    }
+
+    /// <summary>
+    /// 停掉监控采样：StopAndWait = 停表 + 等在途采样结束。
+    /// 直接 Dispose 不会等在途 tick，那一轮采样会在已释放的计数器上抛
+    /// ObjectDisposedException，被采样线程记进 run.log —— 写出误导性的 "sample-failed"。
+    /// </summary>
+    private void StopMonitor()
+    {
+        _monitor.StopAndWait(500);
+        // Dispose 走同一条路径且幂等，负责释放 PDH 句柄等资源
+        _monitor.Dispose();
     }
 
     // ---------- 主循环 ----------
@@ -231,21 +360,50 @@ public partial class IslandWindow : Window
 
     private void Frame_Tick(object? sender, EventArgs e)
     {
-        double dt = 1.0 / 60.0;
+        // 真实帧间隔：原来固定 1/60，而空闲档的 tick 是 100ms → 弹簧每拍只推进 1/6 秒，
+        // 动画尾段看起来"顿一下再跳到终点"。改用真实 dt 并钳到 50ms
+        //（Spring 内部按 1/240 子步积分，大 dt 也不会发散）。
+        double now = _frameClock.Elapsed.TotalSeconds;
+        double dt = Math.Clamp(now - _lastFrameSeconds, 0.0, 0.05);
+        _lastFrameSeconds = now;
         _bodyW.Step(dt); _bodyH.Step(dt); _open.Step(dt);
         _neckStrength.Step(dt); _neckStretch.Step(dt); _drip.Step(dt); _squash.Step(dt);
 
-        // 动态帧率：弹簧全静止且无临时活动时降到 10fps（常驻省电，参考 BrimDeck/wisland）
-        bool busy = !_bodyW.AtRest || !_bodyH.AtRest || !_open.AtRest || !_neckStrength.AtRest ||
-                    !_squash.AtRest || !_drip.AtRest ||
-                    (islandCanvas.Activity is { } a && DateTime.Now < a.Until) ||
-                    (!_expanded && (islandCanvas.CompactView is "pet" or "dash")); // 宠物/dash 时间更新需连续帧
-        _frame.Interval = busy ? TimeSpan.FromMilliseconds(16) : TimeSpan.FromMilliseconds(100);
+        // 动态帧率（参考 BrimDeck/wisland 的省电做法），三档：
+        //   弹簧在动 / 有临时活动 → 60fps
+        //   小形象视图（连续帧动画）→ 30fps
+        //   其它静止态 → 10fps
+        // ⚠️ 之前把 "dash" 也算进 busy：仪表盘的数据全是 1Hz 快照、���面里没有时钟，
+        // 却常年 60fps 重建 640×500 的分层表面（实测单核 28%）。
+        // 液桥拉伸（_neckStretch，只有拖拽时在动）也要算进 moving（2026-11-24 空闲降耗）：
+        // 小形象视图不再整画布重绘（见下方的 InvalidatePet），这根弹簧不算进来的话，
+        // 挤压弹簧静止之后再拖，液桥就不能逐帧跟着鼠标走了（只剩监控快照那一拍的重绘）。
+        bool moving = !_bodyW.AtRest || !_bodyH.AtRest || !_open.AtRest || !_neckStrength.AtRest ||
+                      !_neckStretch.AtRest || !_squash.AtRest || !_drip.AtRest;
+        bool activity = islandCanvas.Activity is { } a && DateTime.Now < a.Until;
+        bool petFrames = !_expanded && islandCanvas.CompactView == "pet";
+        bool busy = moving || activity;
+        // 小形象动画 30fps → 24fps：逐帧重绘的是整块分层窗口的画布，
+        // 24fps 对这个尺度的连续动画已经看不出差别，但每帧省 20% 的重建开销
+        _frame.Interval = busy ? TimeSpan.FromMilliseconds(16)
+                         : petFrames ? TimeSpan.FromMilliseconds(42)
+                         : TimeSpan.FromMilliseconds(100);
+
+        // 收起动画彻底结束后再把分层窗口缩回胶囊尺寸（省 native 内存）
+        if (_pendingWindowShrink && _open.AtRest)
+        {
+            _pendingWindowShrink = false;
+            ApplyWindowSize(false);
+            // 缩窗后本体在窗口内的相对位置变了，显式补一次整画布重画（2026-11-24 空闲降耗）：
+            // 这一拍弹簧已静止、不算 busy，而以前兜着它的是小形象视图的每拍整画布重绘和每秒一次的无条件重绘，
+            // 这两样现在都去掉了 —— 位置变了就明确画一帧，不去依赖"窗口改尺寸时 WPF 会自己重画自绘控件"。
+            islandCanvas.InvalidateVisual();
+        }
 
         _bodyRect = ComputeBodyRect(_bodyW.Value, _bodyH.Value);
 
         // 本体矩形（窗口相对 DIP）注入自绘控件
-        islandCanvas.BodyRect = new Rect(
+        islandCanvas.BodyRect = RenderKit.SafeRect(
             _bodyRect.X - Left, _bodyRect.Y - Top, _bodyRect.Width, _bodyRect.Height);
 
         islandCanvas.NeckStrength = _neckStrength.Value;
@@ -264,23 +422,54 @@ public partial class IslandWindow : Window
         // 天气：后台拉到数据后自然出现在时钟视图右缘
         if (islandCanvas.Weather is null)
             islandCanvas.Weather = _weather.Current;
-        // 按需重绘：忙时（弹簧/律动/宠物/仪表盘）每帧画；静止时 10fps 且每 3s 才画一帧。
+        // 按需重绘：忙时（弹簧/律动/仪表盘）每帧画；静止时 10fps 且每 3s 才画一帧。
         // 监控快照等数据经 DependencyProperty(AffectsRender) 变化时自动触发重绘，无需兜底。
         _frameTick++;
-        if (busy || (!_expanded && islandCanvas.CompactView is "devices" or "clipboard")
+        // 浮条（音量/高温告警）过期的那一拍补画一帧把它擦掉，且只补这一拍（2026-11-24 空闲降耗）：
+        // 它显示期间算 busy、每帧都画；过期后 busy 变 false。以前毛玻璃每秒两次的重绘会顺手把它擦掉，
+        // 现在身后的桌面没变时毛玻璃不再触发重绘，不补这一帧浮条就得等到下一次别的重绘（下一拍监控快照）才消失。
+        bool activityGone = _activityShown && !activity;
+        _activityShown = activity;
+        if (busy || activityGone
+            || (!_expanded && islandCanvas.CompactView is "devices" or "clipboard")
             || _frameTick % 30 == 0)
             islandCanvas.InvalidateVisual();
+        // 时钟（clock / combo 视图里的"时:分"）跨分钟的那一拍补画一帧（2026-11-24 空闲降耗的配套）：
+        // 以前靠每秒一次的无条件重绘顺带更新（最多滞后 1 秒）；那次重绘去掉后只剩监控快照和每 3 秒的兜底重绘，
+        // 采样间隔设得长时分钟跳变最长会滞后 3 秒。现在帧循环（空闲 10Hz）发现分钟变了就画，滞后 ≤ 0.1 秒。
+        int minute = DateTime.Now.Minute;
+        if (minute != _minuteShown)
+        {
+            _minuteShown = minute;
+            if (!_expanded && islandCanvas.CompactView is "clock" or "combo")
+                islandCanvas.InvalidateVisual();
+        }
+        // 小形象视图只重画小形象自己的图层，不再为此重建整块分层窗口（2026-11-24 空闲降耗）；
+        // 弹簧在动时（上面的整画布重绘之外）同样要调：小形象的落点跟着本体矩形走。
+        if (petFrames)
+            islandCanvas.InvalidatePet();
 
-        expandedPanel.Opacity = Easing.Clamp(_open.Value, 0, 1);
-        expandedPanel.IsHitTestVisible = _open.Value > 0.9;
-        if (_open.Value > 0.05 && expandedPanel.DataContext is null)
-            expandedPanel.DataContext = BuildPanelData();
+        if (_panel is not null)
+        {
+            _panel.Opacity = Easing.Clamp(_open.Value, 0, 1);
+            _panel.IsHitTestVisible = _open.Value > 0.9;
+            // 面板数据在后台线程构建（见 RequestPanelData）：这里只补一次"还没建好"的请求
+            if (_open.Value > 0.05 && _panel.DataContext is null)
+                RequestPanelData();
+        }
+        // 收起动画彻底结束后释放面板：常驻态不需要它
+        if (!_expanded && _open.AtRest && _open.Value <= 0.001 && _panel is not null)
+            ReleasePanel();
 
         // 温度数据：面板可见或 dash 视图需要时采（按需采样）
-        bool thermalWanted = _open.Value > 0.3 || (!_expanded && islandCanvas.CompactView == "dash");
+        bool thermalWanted = _open.Value > 0.3 || (!_expanded && islandCanvas.CompactView is "dash" or "combo");
         _thermal.SetWanted(thermalWanted);
         if (thermalWanted)
             islandCanvas.Thermal = _thermal.Current;
+
+        // 设备电量按需轮询（devices 视图或面板展开时才跑）
+        Services.DeviceService.SetWanted(
+            (!_expanded && islandCanvas.CompactView == "devices") || _expanded);
 
         // 毛玻璃刷新：展开时 8fps，收起且静止时 2fps（省 CPU）
         if (Visibility == Visibility.Visible)
@@ -297,39 +486,65 @@ public partial class IslandWindow : Window
         double t = Easing.Clamp(_settings.PosAlongEdge, 0.02, 0.98);
         // 屏宽用监视器物理像素 ÷ DpiScale：SystemParameters 在本机（200% 缩放）实测
         // 返回物理像素 3072，导致岛心被放到可见区右缘（2 倍未换算）
-        GetScreenSizeDip(out double sw, out double sh);
+        GetScreenSizeDip(out double sw, out double sh, out double ox, out double oy);
+        // ox/oy：副屏在主屏左侧/上方时，虚拟桌面原点不是 (0,0)；不带上就会贴到主屏那一侧
         return _settings.Edge switch
         {
-            "bottom" => new Rect(sw * t - bodyW / 2, sh - bodyH, bodyW, bodyH),
-            "left"   => new Rect(0, sh * t - bodyH / 2, bodyW, bodyH),
-            "right"  => new Rect(sw - bodyW, sh * t - bodyH / 2, bodyW, bodyH),
-            _        => new Rect(sw * t - bodyW / 2, 0, bodyW, bodyH),
+            "bottom" => RenderKit.SafeRect(ox + sw * t - bodyW / 2, oy + sh - bodyH, bodyW, bodyH),
+            "left"   => RenderKit.SafeRect(ox, oy + sh * t - bodyH / 2, bodyW, bodyH),
+            "right"  => RenderKit.SafeRect(ox + sw - bodyW, oy + sh * t - bodyH / 2, bodyW, bodyH),
+            _        => RenderKit.SafeRect(ox + sw * t - bodyW / 2, oy, bodyW, bodyH),
         };
     }
 
-    /// <summary>屏幕 DIP 尺寸：监视器物理矩形 ÷ 窗口 DPI 缩放（任何感知模式下都正确）。</summary>
-    private void GetScreenSizeDip(out double sw, out double sh)
+    /// <summary>
+    /// 屏幕 DIP 尺寸与原点：监视器物理矩形 ÷ 窗口 DPI 缩放（任何感知模式下都正确）。
+    /// 显示器信息做缓存：原来每帧都要 MonitorFromWindow + GetMonitorInfo + 结构体编组。
+    /// 缓存只在 DPI 变化（WM_DPICHANGED）或显示器拓扑变化（WM_DISPLAYCHANGE）时失效。
+    /// </summary>
+    private void GetScreenSizeDip(out double sw, out double sh, out double ox, out double oy)
+    {
+        try
+        {
+            Rect cached = _monitorDip ?? ReadMonitorDip();
+            sw = cached.Width; sh = cached.Height;
+            ox = cached.X; oy = cached.Y;
+            return;
+        }
+        catch { }
+        sw = SystemParameters.PrimaryScreenWidth;
+        sh = SystemParameters.PrimaryScreenHeight;
+        ox = 0; oy = 0;
+    }
+
+    /// <summary>读当前显示器的 DIP 矩形（含原点）并缓存。</summary>
+    private Rect ReadMonitorDip()
     {
         try
         {
             IntPtr hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
             IntPtr mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
             var mi = new MONITORINFO { cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<MONITORINFO>() };
-            if (mon != IntPtr.Zero && GetMonitorInfo(mon, ref mi))
+            double scale = DpiScale;
+            if (mon != IntPtr.Zero && GetMonitorInfo(mon, ref mi) && scale > 0.1)
             {
-                double scale = DpiScale;
-                if (scale > 0.1)
-                {
-                    sw = (mi.rcMonitor.Right - mi.rcMonitor.Left) / scale;
-                    sh = (mi.rcMonitor.Bottom - mi.rcMonitor.Top) / scale;
-                    return;
-                }
+                var rect = RenderKit.SafeRect(
+                    mi.rcMonitor.Left / scale,
+                    mi.rcMonitor.Top / scale,
+                    (mi.rcMonitor.Right - mi.rcMonitor.Left) / scale,
+                    (mi.rcMonitor.Bottom - mi.rcMonitor.Top) / scale);
+                _monitorDip = rect;
+                return rect;
             }
         }
         catch { }
-        sw = SystemParameters.PrimaryScreenWidth;
-        sh = SystemParameters.PrimaryScreenHeight;
+        var fallback = RenderKit.SafeRect(0, 0, SystemParameters.PrimaryScreenWidth, SystemParameters.PrimaryScreenHeight);
+        _monitorDip = fallback;
+        return fallback;
     }
+
+    // 显示器 DIP 矩形缓存（DPI / 显示器拓扑变化时失效）
+    private Rect? _monitorDip;
 
     private Point BodyCenter => new(_bodyRect.X + _bodyRect.Width / 2, _bodyRect.Y + _bodyRect.Height / 2);
 
@@ -383,8 +598,35 @@ public partial class IslandWindow : Window
     private bool _tempNeedAdmin;
     public bool MonitorTempNeedAdmin
     {
-        get => expandedPanel.Monitor.TempNeedAdmin;
-        set { _tempNeedAdmin = value; expandedPanel.Monitor.TempNeedAdmin = value; }
+        get => _panel?.Monitor.TempNeedAdmin ?? _tempNeedAdmin;
+        set { _tempNeedAdmin = value; if (_panel is not null) _panel.Monitor.TempNeedAdmin = value; }
+    }
+
+    /// <summary>
+    /// 以管理员运行、但温度驱动（PawnIO）还没到位时为 true：温度位显示"缺驱动"而不是"—"（2026-11-24）。
+    /// 驱动是启动之后在后台装的：装完（成功或失败）由 App.OnDriverInstallDone 调 <see cref="SyncTempHints"/> 再同步一次。
+    /// </summary>
+    private bool _tempNoDriver;
+    public bool MonitorTempNoDriver
+    {
+        get => _tempNoDriver;
+        set
+        {
+            if (_tempNoDriver == value) return;
+            _tempNoDriver = value;
+            if (_panel is null) return;
+            _panel.Monitor.TempNoDriver = value;
+            _panel.Monitor.InvalidateVisual();
+        }
+    }
+
+    /// <summary>驱动安装结束时（成功或失败）同步一次"缺驱动"状态词。只在 UI 线程上调用。</summary>
+    internal void SyncTempHints()
+    {
+        // 非管理员：问题不在驱动，状态词保持"需管理员"
+        if (_tempNeedAdmin) return;
+        MonitorTempNoDriver = !Services.ThermalService.DriverPresent;
+        UpdateTempTooltip(_thermal.Current);
     }
 
     /// <summary>展开方式：hover=悬停展开 always=常驻展开 never=长关（不自动展开）。</summary>
@@ -406,13 +648,55 @@ public partial class IslandWindow : Window
                 _lockedClosed = false;
                 break;
         }
+        UpdatePointerTracking();   // 展开方式变了：指针跟踪要不要跑也随之变
     }
+
+    /// <summary>
+    /// 开关 AMD SMN 直读温度通道（高风险：会安装未签名内核驱动，见 InpOutSmnService）。
+    /// 运行中切换立即生效：关掉后温度服务不再使用该通道。
+    /// </summary>
+    public void SetSmnDirectRead(bool on) => _thermal.AllowSmnDirectRead = on;
 
     public void SetExpandMode(string mode)
     {
         _settings.ExpandMode = mode;
         _settings.Save();
         ApplyExpandMode();
+    }
+
+    /// <summary>
+    /// 二次启动唤起用：把岛体叫出来并展开到展开态。
+    /// 与 ToggleExpand 的区别是"展开到"而不是"切换"——已经是展开态时不会被收起
+    /// （BrimDeck 的二次启动也是"唤起到展开"，不是切换）。
+    /// </summary>
+    public void ShowAndExpand()
+    {
+        if (!IsVisible) Show();
+        if (_expanded) return;
+        // never 是用户明确要求"不自动展开"，这里只把岛体叫出来，不替他展开
+        if (_settings.ExpandMode == "never") return;
+        SetExpanded(true);
+        // 唤起时鼠标多半不在岛体上：不锁住的话，悬停收起逻辑 350ms 后又把它关回去，等于白唤起。
+        // 锁到"鼠标真的移进岛体"为止——那时用户已经在用面板了，再按正常悬停规则走。
+        _keepOpenUntilHover = true;
+    }
+
+    /// <summary>
+    /// 指针跟踪按需启停（2026-11-24 空闲降耗）。_pointerTrack 是 30ms 一次的线程池计时器：
+    /// 每拍都要唤醒一个线程池线程、再往 UI 线程投递一次，而 PointerTrack_Tick 在下面两种状态下整个是空转 ——
+    /// 穿透模式（第一行就 return，任何展开方式下都一样）、长关模式（不自动展开）。
+    /// 所以只有"没开穿透、且不是长关"时才让它跑：
+    ///   hover           → 悬停展开 / 自动收起全靠它；
+    ///   always          → tick 兼职"被收起就重新展开"的看门狗（穿透时这个看门狗本来也不生效，一并停掉）。
+    /// 调用点：OnLoaded（替代原来无条件的 Start）+ 每个会改这两个设置的地方
+    ///（SetClickThrough / ApplyExpandMode / ToggleExpand）。
+    /// </summary>
+    private void UpdatePointerTracking()
+    {
+        // 与 PointerTrack_Tick 的判定保持一致：穿透在最前面直接返回；只有 "never" 是长关
+        bool wanted = !_settings.ClickThrough && _settings.ExpandMode != "never";
+        if (!wanted) { _pointerTrack.Stop(); return; }
+        if (!_pointerTrack.IsEnabled) _pointerTrack.Start();   // 已经在跑就别重启（Start = Stop + 新计时器）
     }
 
     private void PointerTrack_Tick(object? sender, EventArgs e)
@@ -433,6 +717,7 @@ public partial class IslandWindow : Window
         if (over)
         {
             _pointerLeftSince = DateTime.MinValue;
+            _keepOpenUntilHover = false;   // 鼠标已移进岛体：恢复正常的悬停规则
             if (!_expanded && !_lockedClosed)
             {
                 if (_pointerEnterSince == DateTime.MinValue)
@@ -446,6 +731,8 @@ public partial class IslandWindow : Window
             _pointerEnterSince = DateTime.MinValue;
             if (_expanded)
             {
+                // 二次启动唤起后：鼠标还没移进来，先保持展开，别让它 350ms 后自己关掉
+                if (_keepOpenUntilHover) return;
                 if (_pointerLeftSince == DateTime.MinValue)
                     _pointerLeftSince = DateTime.Now;
                 else if ((DateTime.Now - _pointerLeftSince).TotalMilliseconds >= HoverCloseMs)
@@ -463,14 +750,27 @@ public partial class IslandWindow : Window
 
         if (expanded)
         {
+            // 面板要显示进程榜等明细：现在起采样才带上它们（2026-11-24 空闲降耗；收起后在 ReleasePanel 里停）
+            _monitor.SetDetailWanted(true);
+            // 面板此时还没显示（_open 从 0 淡入），创建耗时被动画覆盖
+            EnsurePanel();
+            // 先把分层窗口撑到展开态尺寸，再播动画（动画期间不逐帧 resize）
+            ApplyWindowSize(true);
+            // ⚠️ 必须清掉"待缩窗"标记：收起动画还没播完就又被展开时，
+            //    否则展开态稳定后（_open.AtRest）仍会触发缩窗，把展开面板裁掉。
+            _pendingWindowShrink = false;
             _bodyW.To(ExpandW); _bodyH.To(ExpandH); _open.To(1);
             _neckStrength.To(0);
+            // 每次展开都重新拉一遍面板数据（后台构建）：读数不会停在上一轮的旧值
+            RequestPanelData();
         }
         else
         {
             var s = CurrentCollapsedSize();
             _bodyW.To(s.Width); _bodyH.To(s.Height); _open.To(0);
             _neckStrength.To(1);
+            // 收起动画结束后再缩窗口（动画期间保持大窗口，避免分层窗逐帧 resize 闪帧）
+            _pendingWindowShrink = true;
             StartPetCycle();   // 收起后恢复小形象轮换计时
         }
     }
@@ -519,26 +819,29 @@ public partial class IslandWindow : Window
             }
 
             // 展开页监控页（自绘，不走绑定）
-            var mon = expandedPanel.Monitor;
-            mon.Snapshot = s;
-            mon.CpuHistory = cpuSeq;
-            mon.NetHistory = netSeq;
-            mon.DownHistory = downSeq;
-            mon.UpHistory = upSeq;
-            mon.Thermal = _thermal.Current;
-            mon.InvalidateVisual();
+            var mon = _panel?.Monitor;
+            if (mon is not null)
+            {
+                mon.Snapshot = s;
+                mon.CpuHistory = cpuSeq;
+                mon.NetHistory = netSeq;
+                mon.DownHistory = downSeq;
+                mon.UpHistory = upSeq;
+                mon.Thermal = _thermal.Current;
+                mon.InvalidateVisual();
+            }
             UpdateTempTooltip(_thermal.Current);
             ApplyAutoCollapsedWidth();   // 内容增减（显示项/电池/天气）→ 岛体宽度自动跟随
             islandCanvas.MicActive = _volume.MicInUse;   // 隐私点：麦克风使用中亮绿点
 
             CheckAlerts();
 
-            if (expandedPanel.DataContext is PanelData pd)
+            if (_panel?.DataContext is PanelData pd)
             {
                 pd.UpdateClipboard();   // 剪贴板（内部 2s 节流）
                 pd.UpdateFiles();       // 文件中转
             }
-            expandedPanel.DevicesView.InvalidateVisual();   // 自绘设备页：随帧重绘
+            _panel?.DevicesView.InvalidateVisual();   // 自绘设备页：随帧重绘
         });
     }
 
@@ -548,21 +851,27 @@ public partial class IslandWindow : Window
     private void UpdateTempTooltip(Services.ThermalSnapshot? t)
     {
         string F(double? v) => v is { } x ? $"{Math.Round(x)}" : "--";
-        string key = $"{F(t?.CpuTemp)}|{F(t?.GpuTemp)}|{F(t?.SsdTemp)}|{F(t?.MotherboardTemp)}|{_tempNeedAdmin}";
+        // 末尾带上"缺驱动"：驱动装完的那一刻读数多半还是 "--"，只靠读数变化不会触发重建，状态词会一直停在"缺驱动"
+        string key = $"{F(t?.CpuTemp)}|{F(t?.GpuTemp)}|{F(t?.SsdTemp)}|{F(t?.MotherboardTemp)}|{_tempNeedAdmin}|{_tempNoDriver}";
         if (key == _tempTipKey) return;   // 读数没变不重建（1s 一跳，避免抖动）
         _tempTipKey = key;
 
         var tip = BuildTempTip(t);
         islandCanvas.ToolTip = tip;
-        expandedPanel.Monitor.ToolTip = tip;
+        if (_panel is not null) _panel.Monitor.ToolTip = tip;
     }
 
     private UIElement BuildTempTip(Services.ThermalSnapshot? t)
     {
         var pal = _palette;
+        // 状态词在拼这段文本的这一刻才定，不提前缓存：驱动是启动后在后台装的，"缺驱动"会在运行途中变成读得到。
+        // 重建时机由 UpdateTempTooltip 的 key 把关（读数变了、或驱动装完了才重建）。
+        bool needAdmin = _tempNeedAdmin;
+        bool noDriver = !needAdmin && !Services.ThermalService.DriverPresent;
+        string unavailable = needAdmin ? "需管理员" : noDriver ? "缺驱动" : "读不到";
         (Color C, string Word) Grade(double? v) => v switch
         {
-            null => (pal.TextTertiary, _tempNeedAdmin ? "需管理员" : "读不到"),
+            null => (needAdmin || noDriver ? pal.Warning : pal.TextTertiary, unavailable),
             <= 70 => (Color.FromRgb(0x60, 0xC0, 0x78), "正常"),
             <= 85 => (pal.Warning, "偏高"),
             _ => (pal.Up, "过热"),
@@ -589,18 +898,20 @@ public partial class IslandWindow : Window
             {
                 Text = v is { } x ? $"{Math.Round(x)}°  {g.Word}" : note ?? g.Word,
                 FontSize = 11, FontWeight = FontWeights.SemiBold,
-                Foreground = new SolidColorBrush(v is null && _tempNeedAdmin ? pal.Warning : g.C),
+                Foreground = new SolidColorBrush(g.C),
                 VerticalAlignment = System.Windows.VerticalAlignment.Center,
             });
             panel.Children.Add(row);
         }
 
         Row("CPU", t?.CpuTemp);
-        Row("GPU", t?.GpuTemp, t?.GpuTemp is null && !_tempNeedAdmin ? "核显无接口" : null);
+        // GPU 读不到的原因要看情况：缺权限 / 缺驱动时显示状态词；两者都不缺才是真的没有接口（Intel 核显）
+        Row("GPU", t?.GpuTemp, t?.GpuTemp is null && !needAdmin && !noDriver ? "核显无接口" : null);
         Row("SSD", t?.SsdTemp, "传感器已禁用");
         Row("主板", t?.MotherboardTemp);
 
-        if (_tempNeedAdmin)
+        // 这行只在这时成立：问题真的出在权限上。缺驱动时重启成管理员没有用（已经是了），不能这么提示
+        if (needAdmin)
             panel.Children.Add(new System.Windows.Controls.TextBlock
             {
                 Text = "托盘 → 以管理员重启 可读取 CPU/GPU 温度",
@@ -646,6 +957,19 @@ public partial class IslandWindow : Window
         islandCanvas.InvalidateVisual();
     }
 
+    /// <summary>温度/风扇更新（服务在后台线程触发）：回 UI 线程刷新自绘控件。</summary>
+    private void OnThermalUpdated(Services.ThermalSnapshot t)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            islandCanvas.Thermal = t;
+            // 监控页：画面会变才重绘（2026-11-24 展开态降耗，见 MonitorPage.ThermalShown）。
+            // 展开态下温度更新原来每次都让监控页整页重绘，而页面上只用得到取整后的几个数。
+            if (_panel is not null && _panel.Monitor.ThermalUpdate(t))
+                _panel.Monitor.InvalidateVisual();
+        });
+    }
+
     private void OnVolumeChanged(float vol, bool muted)
     {
         Dispatcher.BeginInvoke(() =>
@@ -662,6 +986,67 @@ public partial class IslandWindow : Window
             }
             islandCanvas.InvalidateVisual();
         });
+    }
+
+    // ---------- 展开面板数据（后台构建，UI 线程赋值） ----------
+    private PanelData? _panelData;
+    private bool _panelBuilding;
+    private bool _panelFailed;
+    private DateTime _panelLastTry = DateTime.MinValue;
+    private int _panelGen;
+
+    /// <summary>
+    /// 构建/刷新展开面板数据。
+    /// 构建放后台线程：PanelData.UpdateControls 会同步起 netsh 子进程（本机实测 126–238ms），
+    /// 在 UI 线程做会把展开动画首帧卡住。
+    /// 完成后回 UI 线程赋值 DataContext（跨线程改 DataContext 会抛线程亲和异常）。
+    /// 每次展开都走这里 → 面板读数不会停留在上一轮的旧值。
+    /// </summary>
+    private void RequestPanelData()
+    {
+        if (_panelBuilding) return;   // 已有构建在途：它就是要用的那份
+        // 构建失败后别每帧重试（Frame_Tick 在 DataContext 为空时会反复调这里）
+        if (_panelFailed && (DateTime.Now - _panelLastTry).TotalSeconds < 5) return;
+        _panelLastTry = DateTime.Now;
+        _panelBuilding = true;
+        int gen = ++_panelGen;
+        Task.Run(() =>
+        {
+            var pd = BuildPanelData();
+            // 剪贴板/文件：实例刚建好、还没绑到界面上，这时在后台填好，展开时不会是空列表
+            pd.UpdateClipboard();
+            pd.UpdateFiles();
+            return pd;
+        }).ContinueWith(t => Dispatcher.BeginInvoke(() =>
+        {
+            _panelBuilding = false;
+            if (gen != _panelGen) return;
+            if (t.Status != TaskStatus.RanToCompletion)
+            {
+                _panelFailed = true;   // 失败：按上面的节流重试
+                return;
+            }
+            _panelFailed = false;
+            var pd = t.Result;
+            // 只有新实例**没拿到数据**时才沿用上一轮的集合（防止换 DataContext 时列表闪空）。
+            // ⚠️ 不能无条件覆盖：pd 的集合是后台刚取好的新数据，
+            //    无条件换成 old 的集合会把新数据整个丢掉 —— 剪贴板/文件中转在首次展开后再也不更新。
+            if (_panelData is { } old)
+            {
+                if (pd.Clipboard.Count == 0 && old.Clipboard.Count > 0)
+                {
+                    pd.Clipboard = old.Clipboard;
+                    pd.HasClipboard = old.HasClipboard;
+                }
+                if (pd.Files.Count == 0 && old.Files.Count > 0)
+                {
+                    pd.Files = old.Files;
+                    pd.HasFiles = old.HasFiles;
+                }
+            }
+            _panelData = pd;
+            if (_panel is not null) _panel.DataContext = pd;
+        }));
     }
 
     private PanelData BuildPanelData()
@@ -681,12 +1066,21 @@ public partial class IslandWindow : Window
             }),
             new RelayCommand(_ =>
             {
-                Services.ControlService.SetWlan(!Services.ControlService.WlanEnabled);
+                // 读不到就不猜：状态未知时不动开关（旧的 bool 语义会把"未知"当成"已关闭"）
+                var enabled = Services.ControlService.WlanAdapterEnabled;
+                if (enabled is null)
+                {
+                    System.Windows.MessageBox.Show("Wi-Fi 状态读取失败，未做改动。", "MyIsland");
+                    return;
+                }
+                var (wlanOk, wlanMsg) = Services.ControlService.SetWlan(!enabled.Value);
+                if (!wlanOk) System.Windows.MessageBox.Show(wlanMsg, "MyIsland");
                 pd.UpdateControls();
             }),
             new RelayCommand(_ =>
             {
-                Services.ControlService.SetBluetooth(!Services.ControlService.BluetoothEnabled);
+                var (btOk, btMsg) = Services.ControlService.SetBluetooth(!Services.ControlService.BluetoothEnabled);
+                if (!btOk) System.Windows.MessageBox.Show(btMsg, "MyIsland");
                 pd.UpdateControls();
             }),
             new RelayCommand(_ => Services.ControlService.OpenBluetoothSettings()),
@@ -709,7 +1103,14 @@ public partial class IslandWindow : Window
             if (!Services.ControlService.SetNightLight(on))
                 Services.ControlService.OpenSettings("nightlight");
         };
-        pd.OnSetClickThrough = on => SetClickThrough(on);
+        // 面板里的开关触发的穿透设置：面板自己会在用户点开关后收起（见 ExpandedPanel.OnClickThroughToggle），
+        // 这里不能重复收（那就是"一开就自我收起"）。用标志区分来源。
+        pd.OnSetClickThrough = on =>
+        {
+            _clickThroughFromPanel = true;
+            try { SetClickThrough(on); }
+            finally { _clickThroughFromPanel = false; }
+        };
         if (_volume.Current is { } vc) { pd.VolumeValue = vc.vol; pd.IsMuted = vc.mute; }
         pd.IsLightTheme = Services.ControlService.IsSystemLightTheme();
         pd.ClickThrough = _settings.ClickThrough;
@@ -762,8 +1163,9 @@ public partial class IslandWindow : Window
     private static (double Width, double Height) CollapsedSize(string view) => view switch
     {
         "clock" => (230, 44),   // 时间 + 天气 + 网速（参考 BrimDeck compact-clock 的信息密度）
-        "combo" => (440, 44),   // 信息胶囊：配额环 + 时间 + 系统读数表盘 + 网速
-        "monitor" => (460, 44), // 单排高密度读数带（BrimDeck compact-monitor 同款）
+        "combo" => (880, 44),   // 信息胶囊：时间 + 读数表盘(C/M/G 占用) + 温度/硬盘环 + 网速（宽度上限随显示项增加）
+        // 2026-11-24：读数带的等宽数字 + 四个表盘 + 网速实测约 470 宽，原来上限 460 会把末尾的 "K" 裁掉
+        "monitor" => (500, 44), // 单排高密度读数带
         "dash" => (660, 69),    // LiteMonitor 同款全读数行（含硬盘/SSD 温度/电池）
         "window" => (360, 44),  // 活动窗口（YASB ActiveWindow 同款：进程名 + 标题）
         "devices" => (300, 64),
@@ -791,14 +1193,24 @@ public partial class IslandWindow : Window
         Visibility = Visibility.Visible;
         // 前台窗口最大化时缩成指示条（BrimDeck 同款）；展开中不缩
         SetIndicator(_settings.IndicatorOnMaximize && !_expanded && ctx.Kind == ForegroundKind.Maximized);
-        islandCanvas.ActiveWindow = (ctx.ProcessName, ctx.Title);
+        SetActiveWindow(ctx);
     }
 
     /// <summary>长期显示模式下也要注入前台窗口（UpdateFullscreenHidden 提前 return 的分支）。</summary>
-    private void InjectActiveWindow()
+    private void InjectActiveWindow() => SetActiveWindow(ForegroundDetector.Detect());
+
+    /// <summary>
+    /// 注入前台窗口（进程名 + 标题）：和上一次相同就什么都不做。
+    /// ActiveWindow 是普通 CLR 属性（不是 DP），不会自动触发重绘 → 变了才显式重画一次，
+    /// 否则活动窗口视图的标题最多滞后 3 秒（重绘只发生在忙时或每 3s 一次）。
+    /// 以前这里每秒无条件重画（2026-11-24 空闲降耗）：前台窗口没变的那一拍，整块分层窗口都白重建一次。
+    /// </summary>
+    private void SetActiveWindow(ScreenContext ctx)
     {
-        var ctx = ForegroundDetector.Detect();
-        islandCanvas.ActiveWindow = (ctx.ProcessName, ctx.Title);
+        var active = (ctx.ProcessName, ctx.Title);
+        if (islandCanvas.ActiveWindow == active) return;
+        islandCanvas.ActiveWindow = active;
+        islandCanvas.InvalidateVisual();
     }
 
     // ---------- 指示条模式（最大化时：本体缩成 44×6 小条，只留呼吸底） ----------
@@ -842,38 +1254,71 @@ public partial class IslandWindow : Window
 
     private void ApplyTheme()
     {
-        _palette = _settings.Theme switch
+        if (_settings.Theme == "Auto")
+        {
+            // Auto 主题要读注册表（系统深浅）+ 解码壁纸位图（实测 30–150ms）——
+            // 放后台线程算，UI 线程只负责应用结果（原来在 UI 线程同步做，启动和每次
+            // WM_SETTINGCHANGE 都会卡一下）。
+            int gen = ++_autoThemeGen;
+            Task.Run(AutoPalette).ContinueWith(t =>
+            {
+                if (t.Status != TaskStatus.RanToCompletion) return;
+                Dispatcher.BeginInvoke(() =>
+                {
+                    if (gen != _autoThemeGen) return;   // 已有更新的请求：丢弃过期结果
+                    ApplyPalette(t.Result);
+                });
+            });
+            return;
+        }
+        ApplyPalette(_settings.Theme switch
         {
             "Light" => Palette.Light,
-            "Auto" => AutoPalette(),   // 跟随系统深浅 + 壁纸取色（macOS 式）
             _ => Themes.Palette.ByName(_settings.Theme) ?? Palette.Dark,
-        };
+        });
+    }
+
+    /// <summary>Auto 主题的异步代次：只有最后一次请求的结果会被应用。</summary>
+    private int _autoThemeGen;
+
+    /// <summary>应用配色（必须在 UI 线程调用）。</summary>
+    private void ApplyPalette(Palette pal)
+    {
+        _palette = pal;
+        // 收起态画布不等 Loaded：构造函数末尾就会调一次 ApplyTheme，那时 IsLoaded 还是 false。
+        // 这一句以前关在下面的 if (IsLoaded) 里 ⇒ 每次启动后收起态都停在默认深色主题的配色上，
+        // 展开面板用的却是用户选的主题，要到用户手动换一次主题才对得上
+        //（2026-11-24 实机验证发现：赛博朋克下胶囊的 CPU 环是默认主题的青色，展开面板是黄色）。
+        islandCanvas.Palette = _palette;
         if (IsLoaded)
         {
-            islandCanvas.Palette = _palette;
-            expandedPanel.Monitor.Palette = _palette;
-            expandedPanel.DevicesView.Palette = _palette;
+            if (_panel is not null)
+            {
+                _panel.Monitor.Palette = _palette;
+                _panel.DevicesView.Palette = _palette;
+                _panel.Monitor.InvalidateVisual();
+            }
             islandCanvas.InvalidateVisual();
-            expandedPanel.Monitor.InvalidateVisual();
+            // 换主题要让毛玻璃换一张底图（2026-11-24 空闲降耗）：截图里带着岛体自己的像素，
+            // 而身后的桌面没变时毛玻璃靠像素比对不会再换图，岛体的新配色就反映不到底图里。
+            // 排到本次重绘之后再截：此刻岛体还没按新配色画出来（重绘排在本次调用返回之后的 Render 优先级），
+            // 立刻截到的还是旧像素，等于白强制一次。
+            Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(_glass.Invalidate));
         }
         // 展开面板静态资源同步（CardBg/FgDim 等随主题变）
         UpdatePanelResources();
     }
 
-    /// <summary>把当前主题刷进展开面板的 StaticResource（XAML 用 StaticResource 故需手动同步）。</summary>
+    /// <summary>把当前主题刷进展开面板的资源字典（XAML 里用 DynamicResource，写面板自己的字典才实时生效）。</summary>
     private void UpdatePanelResources()
     {
-        if (!IsLoaded || _palette is null) return;
+        if (!IsLoaded || _palette is null || _panel is null) return;
         // 注意：面板 XAML 的引用已改为 DynamicResource，写面板自己的资源字典才会实时生效
-        var res = expandedPanel.Resources;
-        res["PanelBg"] = new SolidColorBrush(_palette.Surface) { Opacity = 0.96 };
-        res["CardBg"] = new SolidColorBrush(_palette.SurfaceAlt);
-        res["Fg"] = new SolidColorBrush(_palette.Text);
-        res["FgDim"] = new SolidColorBrush(_palette.TextDim);
-        res["FgTertiary"] = new SolidColorBrush(_palette.TextTertiary);
-        res["Accent"] = new SolidColorBrush(_palette.Accent);
-        res["Track"] = new SolidColorBrush(_palette.Track);
-        res["Down"] = new SolidColorBrush(_palette.Down);
+        _panel.Resources["PanelBg"] = new SolidColorBrush(_palette.Surface) { Opacity = 0.96 };
+        // 全套语义令牌（含派生的悬停 / 压下色、圆角）在 ExpandedPanel.ApplyTheme 里一次写齐
+        ExpandedPanel.ApplyTheme(_panel.Resources, _palette);
+        // 页签 / 电源计划按钮的选中色是创建时取的本地值，换主题后要重取
+        _panel.Retint();
     }
 
     /// <summary>Auto 主题：系统深浅 + 壁纸主色作为 Accent（macOS 壁纸取色）。</summary>
@@ -896,20 +1341,45 @@ public partial class IslandWindow : Window
     }
 
     // ---------- 定位 ----------
-    /// <summary>窗口矩形覆盖本体+液桥+阴影+展开面板的最大范围，避免分层窗口 resize 闪帧（BrimDeck 手法）。</summary>
-    private void PositionOnEdge()
+    /// <summary>按当前状态重新定位/定尺寸窗口（展开态或收起态）。</summary>
+    private void PositionOnEdge() => ApplyWindowSize(_expanded);
+
+    /// <summary>
+    /// 窗口矩形 = 本体矩形 + 边距（40 DIP）。
+    ///
+    /// 展开态：覆盖展开面板最大范围（560×420 + 边距 = 640×500）。
+    /// 收起态：只覆盖本体（如 44 + 边距 = 124 高）—— 分层窗口(AllowsTransparency=True)
+    /// 要为整块窗口开渲染表面/DIB/合成缓冲，**面积差 4 倍就是几十 MB 的 native 内存**
+    /// （同机最小 WPF 探针实测：640×500 分层窗 182MB vs 640×124 165MB；MyIsland 本体 272MB）。
+    ///
+    /// ⚠️ **宽度恒定**：本体宽度随内容（读数/天气）自动变化，窗口跟着变就会抖；
+    ///    只调高度，且只在状态切换时调（展开动画期间不 resize，避免分层窗闪帧）。
+    /// </summary>
+    private void ApplyWindowSize(bool expanded)
     {
         const double margin = 40;
-        double maxW = ExpandW + margin * 2;
-        double maxH = ExpandH + margin * 2;
-        Width = maxW; Height = maxH;
-
-        // 以展开态本体中心为窗口中心：展开动画只动本体，窗口不移动
-        var expandRect = ComputeBodyRect(ExpandW, ExpandH);
-        double cx = expandRect.X + expandRect.Width / 2;
-        double cy = expandRect.Y + expandRect.Height / 2;
-        Left = cx - maxW / 2;
-        Top = cy - maxH / 2;
+        double wantW = ExpandW + margin * 2;
+        double wantH, cx, cy;
+        if (expanded)
+        {
+            wantH = ExpandH + margin * 2;
+            var r = ComputeBodyRect(ExpandW, ExpandH);
+            cx = r.X + r.Width / 2;
+            cy = r.Y + r.Height / 2;
+        }
+        else
+        {
+            var s = CurrentCollapsedSize();
+            wantH = Math.Max(64, s.Height + margin * 2);
+            var r = ComputeBodyRect(s.Width, s.Height);
+            cx = r.X + r.Width / 2;
+            cy = r.Y + r.Height / 2;
+        }
+        double wantLeft = cx - wantW / 2;
+        double wantTop = cy - wantH / 2;
+        if (Math.Abs(Width - wantW) < 0.5 && Math.Abs(Height - wantH) < 0.5 &&
+            Math.Abs(Left - wantLeft) < 0.5 && Math.Abs(Top - wantTop) < 0.5) return;
+        Width = wantW; Height = wantH; Left = wantLeft; Top = wantTop;
     }
 
     // ---------- 鼠标 ----------
@@ -921,10 +1391,22 @@ public partial class IslandWindow : Window
             if (_lockedClosed) SetExpanded(false);
             return;
         }
-        _dragging = true;
         _dragStart = CursorDip();
         _squash.To(0.82, 300, 0.6);
-        CaptureMouse();
+        // 捕获失败就别进拖拽态：否则永远等不到 MouseLeftButtonUp，岛体会一直压着不回弹
+        if (!CaptureMouse()) return;
+        _dragging = true;
+    }
+
+    /// <summary>
+    /// 鼠标捕获被系统夺走（Esc / Alt-Tab / 弹右键菜单）：此时不会补发 MouseLeftButtonUp，
+    /// _dragging 复位不了 → 岛体永久保持压扁 18%。这里补复位。
+    /// </summary>
+    private void OnLostMouseCapture(object? sender, MouseEventArgs e)
+    {
+        if (!_dragging) return;
+        _dragging = false;
+        _squash.To(1, 240, 0.6);
     }
 
     private void OnMouseLeftUp(object sender, MouseButtonEventArgs e)
@@ -971,6 +1453,9 @@ public partial class IslandWindow : Window
         }
     }
 
+    /// <summary>滚轮切收起视图。
+    /// 只能挂一处：XAML 的 IslandCanvas.MouseWheel="OnMouseWheel"（冒泡阶段）已经挂了，
+    /// 再挂一份 PreviewMouseWheel（隧道阶段）会让一次滚轮跳两格视图。</summary>
     private void OnMouseWheel(object sender, MouseWheelEventArgs e)
     {
         if (_expanded) return;
@@ -995,6 +1480,7 @@ public partial class IslandWindow : Window
         _settings.ExpandMode = "hover";
         _lockedClosed = false;
         SetExpanded(!_expanded);
+        UpdatePointerTracking();   // 展开方式被改成 hover：原来是长关 / 穿透的话，跟踪要重新跑起来
     }
     public void ApplyThemeExternal() => ApplyTheme();
     public void RepositionExternal() => PositionOnEdge();
@@ -1009,6 +1495,28 @@ public partial class IslandWindow : Window
         islandCanvas.Weather = _weather.Get();
     }
 
+    // combo 信息胶囊的默认显示项：时间 + 读数表盘(C/M/G 环) + CPU/GPU 温度 + 硬盘占用 + 网速。
+    // 环组已经画了 CPU/内存/GPU 的占用率，所以 cpu/gpu/mem 三个纯数字项默认不勾——需要"数字不要环"时再单独开。
+    internal static readonly string[] ComboDefaultItems =
+        ["clock", "dials", "cputemp", "gputemp", "disk", "net"];
+
+    /// <summary>
+    /// 解析 combo 显示项。
+    /// 空 = 默认组合；旧版本遗留值里带 "rings"（从来不是有效键的老写法）也按默认组合处理，
+    /// 这样升级后用户立刻能看到新增的温度/硬盘读数，而不是"设置没变所以什么都没加"。
+    /// </summary>
+    private static HashSet<string> ParseComboItems(string? items)
+    {
+        if (string.IsNullOrWhiteSpace(items)) return new(ComboDefaultItems);
+        // "none" = 一个都不显示（哨兵，与 ParseItems 一致）
+        if (items.Trim().Equals("none", StringComparison.OrdinalIgnoreCase)) return new HashSet<string>();
+        var set = new HashSet<string>(items.Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => s.Trim()).Where(s => s.Length > 0));
+        if (set.Count == 0) return new(ComboDefaultItems);
+        if (set.Contains("rings")) return new(ComboDefaultItems);
+        return set;
+    }
+
     /// <summary>把 Settings.DashItems 注入自绘控件（空 = 全部显示）。</summary>
     private void ApplyDashItems()
     {
@@ -1016,18 +1524,36 @@ public partial class IslandWindow : Window
         islandCanvas.InvalidateVisual();
     }
 
+    /// <summary>解析显示项集合：空 = 全部；"none" = 一个都不显示。</summary>
+    /// <remarks>
+    /// "none" 是哨兵：用户把显示项**全部取消勾选**时必须能表达"什么都不显示"。
+    /// 以前"取消最后一个"会存成空串，而空串被约定为"全部" ⇒ 取消全部反而变成全部显示（已修）。
+    /// </remarks>
     private static HashSet<string>? ParseItems(string? items)
-        => string.IsNullOrWhiteSpace(items) ? null
-            : new HashSet<string>(items.Split(',', StringSplitOptions.RemoveEmptyEntries));
+    {
+        if (string.IsNullOrWhiteSpace(items)) return null;          // 空 = 全部
+        if (items.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
+            return new HashSet<string>();                          // 一个都不显示
+        return new HashSet<string>(items.Split(',', StringSplitOptions.RemoveEmptyEntries));
+    }
 
     /// <summary>三处显示项过滤统一注入（dash / combo / 监控页）。</summary>
     private void ApplyItemFilters()
     {
         ApplyDashItems();
-        islandCanvas.ComboItems = ParseItems(_settings.ComboItems);
-        expandedPanel.Monitor.Items = ParseItems(_settings.MonitorItems);
+        // 旧值里带 "rings"（从来不是有效键）→ 升到新默认组合，并把这个结果落盘（只做一次）
+        if (_settings.ComboItems.Contains("rings"))
+        {
+            _settings.ComboItems = string.Join(',', ComboDefaultItems);
+            _settings.Save();
+        }
+        islandCanvas.ComboItems = ParseComboItems(_settings.ComboItems);
+        if (_panel is not null)
+        {
+            _panel.Monitor.Items = ParseItems(_settings.MonitorItems);
+            _panel.Monitor.InvalidateVisual();
+        }
         islandCanvas.InvalidateVisual();
-        expandedPanel.Monitor.InvalidateVisual();
     }
 
     /// <summary>打开 dash 显示项设置（勾选 + 实时预览）。</summary>
@@ -1059,13 +1585,17 @@ public partial class IslandWindow : Window
         var preview = new IslandCanvas
         {
             CompactView = "combo", Palette = _palette, IsHitTestVisible = false,
-            Width = 440, Height = 44,
+            Width = 820, Height = 44,
         };
+        // 显示项变多，预览按比例缩一点才塞得进设置窗口
+        preview.LayoutTransform = new ScaleTransform(0.62, 0.62);
         OpenModuleSettings(
             "信息胶囊显示项",
             new ModuleSettingsWindow.Module[]
             {
-                new("clock", "时间"), new("dials", "读数表盘"), new("net", "网速"),
+                new("clock", "时间"), new("dials", "读数表盘(C/M/G 占用)"),
+                new("cputemp", "CPU 温度"), new("gputemp", "GPU 温度"), new("disk", "硬盘占用"),
+                new("net", "网速"),
             },
             preview,
             () => _settings.ComboItems,
@@ -1096,17 +1626,27 @@ public partial class IslandWindow : Window
         string title, ModuleSettingsWindow.Module[] modules, FrameworkElement preview,
         Func<string?> getItems, Action<string> saveItems, Action<HashSet<string>?> applyFilter)
     {
-        var win = new ModuleSettingsWindow(
-            title, modules, _palette, preview,
-            () => (_snapshot, _thermal.Current),
-            getItems, saveItems, applyFilter, ApplyItemFilters);
-        win.ShowDialog();
+        // 预览用的是实时快照（含监控页的进程榜等明细）。收起状态下明细采样是关的（2026-11-24 空闲降耗），
+        // 不临时打开的话，监控页预览只会显示"采样中…"。对话框在的那段时间打开，关掉后按展开/收起恢复。
+        _monitor.SetDetailWanted(true);
+        try
+        {
+            var win = new ModuleSettingsWindow(
+                title, modules, _palette, preview,
+                () => (_snapshot, _thermal.Current),
+                getItems, saveItems, applyFilter, ApplyItemFilters);
+            win.ShowDialog();
+        }
+        finally { _monitor.SetDetailWanted(_expanded); }   // 面板还展开着就继续要明细，否则停
     }
 
     /// <summary>切收起视图（菜单入口），带挤压回弹反馈。</summary>
     public void SetCompactView(string view)
     {
         islandCanvas.CompactView = view;
+        // 立即落盘：以前只靠 OnClosed 同步设置，中途杀进程就丢（2026-11-23 复审 P1-3）
+        _settings.CompactView = view;
+        _settings.RequestSave();
         if (!_expanded)
         {
             var s = CurrentCollapsedSize();
@@ -1126,7 +1666,16 @@ public partial class IslandWindow : Window
         islandCanvas.InvalidateVisual();
     }
 
-    /// <summary>鼠标穿透模式：WS_EX_TRANSPARENT 动态切换；开启时强制收起面板。</summary>
+    /// <summary>穿透设置来自面板内开关（那种情况由面板自己负责收起）。</summary>
+    private bool _clickThroughFromPanel;
+
+    /// <summary>
+    /// 鼠标穿透模式：WS_EX_TRANSPARENT 动态切换。
+    /// 面板里的开关回写也会走到这里，所以这里不能一开就收起面板 ——
+    /// 那会让"穿透模式"开出来就没法用（鼠标已穿透，用户也点不到开关）。
+    /// 面板内的收起由用户点开关触发（见 ExpandedPanel.OnClickThroughToggle）；
+    /// 设置中心等外部入口开穿透时，这里代收一次（鼠标已穿透，面板留着也没法交互）。
+    /// </summary>
     public void SetClickThrough(bool on)
     {
         _settings.ClickThrough = on;
@@ -1139,7 +1688,8 @@ public partial class IslandWindow : Window
             style = on ? style | WS_EX_TRANSPARENT : style & ~WS_EX_TRANSPARENT;
             SetWindowLongPtr(hwnd, GWL_EXSTYLE, new IntPtr(style));
         }
-        if (on) SetExpanded(false);
+        if (on && !_clickThroughFromPanel) SetExpanded(false);
+        UpdatePointerTracking();   // 悬停展开 / 收起只在没穿透时才有意义：跟踪随之启停
     }
 
     // ---------- 专注模式（L4 三击同款）：三击岛体 → 半透明 + 穿透；再三击恢复 ----------

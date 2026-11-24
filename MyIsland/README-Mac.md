@@ -8,16 +8,19 @@ Windows 灵动岛 MyIsland 的跨平台版本，基于 Avalonia 11 开发，与 
 需要 .NET 8 SDK（Mac 上 `brew install dotnet-sdk` 或官网安装包）：
 
 ```bash
+# 解决方案整体构建（Windows / macOS 都跑同一条，0 警告 0 错误是硬要求）
+dotnet build Island.sln -c Release
+
 # 开发运行（Windows/Linux/macOS 均可直接跑）
-dotnet run --project src/Island.Avalonia -c Release
+dotnet run --project src/Island.Avalonia/Island.Avalonia.csproj -c Release
 
 # Mac 发布（Apple Silicon）
-dotnet publish src/Island.Avalonia -c Release -r osx-arm64 --self-contained \
-  -p:PublishSingleFile=true
+dotnet publish src/Island.Avalonia/Island.Avalonia.csproj -c Release -r osx-arm64 \
+  --self-contained -p:PublishSingleFile=true
 
 # Mac 发布（Intel）
-dotnet publish src/Island.Avalonia -c Release -r osx-x64 --self-contained \
-  -p:PublishSingleFile=true
+dotnet publish src/Island.Avalonia/Island.Avalonia.csproj -c Release -r osx-x64 \
+  --self-contained -p:PublishSingleFile=true
 ```
 
 发布产物在 `src/Island.Avalonia/bin/Release/net8.0/<rid>/publish/`。
@@ -34,9 +37,11 @@ dotnet publish src/Island.Avalonia -c Release -r osx-x64 --self-contained \
 | CPU/内存/网速/进程 | ✅ | mach host_statistics64 + NetworkInterface + Process 差分 |
 | 电池 | ✅ | IOKit IOPSCopyPowerSourcesInfo |
 | CPU/GPU/SSD 温度 | ⚠️ | Apple Silicon 的 SMC/温度读取受系统限制，显示 "--"（不伪造） |
-| GPU 使用率 | ⚠️ | macOS 需 IOReport（私有接口），显示 0 |
-| 天气 / 剪贴板 / 文件中转 | 🔲 | 待做（Open-Meteo 跨平台可直接接） |
-| 毛玻璃 | 🔲 | 待做（Avalonia TransparencyLevelHint 支持平台模糊） |
+| GPU 使用率 | ⚠️ | macOS 需 IOReport（私有接口），未接入时该读数整块隐藏（不伪造 0） |
+| 天气 | ✅ | Open-Meteo 跨平台，直接复用 Windows 版 WeatherService（时钟视图右缘显示） |
+| 剪贴板 | ✅ | 跨平台 ClipboardHistory（轮询 TopLevel.Clipboard，2s 刷新，纯内存 20 条）+ 剪贴板页 |
+| 文件中转 | 🔲 | 待做（Windows 版 FileTrayService 依赖 WinForms 托盘，Mac 版需另做） |
+| 毛玻璃 | ⚠️ | 透明窗口已实现（TransparencyLevelHint=Transparent）；真正的背景模糊待接 AcrylicBlur |
 
 ## 设计原则
 
@@ -54,6 +59,7 @@ src/Island.Avalonia/
 ├── RenderKit.cs       渲染助手（文本/画笔缓存、表盘、平滑走势图）
 ├── PetFaceAv.cs       小形象（PetFace 的 Avalonia 移植）
 ├── Samplers.cs        ISampler：WinSampler（复用 Windows 全套）/ MacSampler（mach+IOKit）
+├── ClipboardHistory.cs 剪贴板历史（跨平台轮询 TopLevel.Clipboard，纯内存 20 条）
 ├── Themes.cs          Palette 语义色（9 套）
 └── App.axaml(.cs)     应用入口
 ```

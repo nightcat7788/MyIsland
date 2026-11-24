@@ -1,0 +1,60 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <!-- InpOutSmnService 里有指针字段（物理内存映射），编译它需要 unsafe -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>Island.Tests</AssemblyName>
+    <RootNamespace>Island.Tests</RootNamespace>
+    <!-- 最小测试门禁：零 NuGet 包，自研 harness（Check 失败即抛，退出码非 0） -->
+  </PropertyGroup>
+
+  <!-- 无论 BaseIntermediateOutputPath 指到哪，都不把本目录下的 obj/bin 当源码编译
+       （否则用独立目录构建时，in-tree obj 里已生成的 *.g.cs / AssemblyInfo.cs 会与新生成的重复定义） -->
+  <PropertyGroup>
+    <DefaultItemExcludes>$(DefaultItemExcludes);obj/**;bin/**</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <!-- 与主工程"源码合并进单一 exe"思路一致：把被测源文件链接进来（不生成额外 DLL） -->
+  <ItemGroup>
+    <Compile Include="..\..\src\Island.App\Services\Settings.cs" Link="Merged\App\Settings.cs" />
+    <Compile Include="..\..\src\Island.Core\Monitoring\*.cs" Link="Merged\Core\%(Filename)%(Extension)" />
+    <Compile Include="..\..\src\Island.App\Themes\Theme.cs" Link="Merged\App\Theme.cs" />
+    <!-- 温度通道：SMN 直读服务（2026-11-23 的 0x1EA 蓝屏回归用例要用到厂商判定与拒绝逻辑） -->
+    <Compile Include="..\..\src\Island.App\Services\InpOutSmnService.cs" Link="Merged\App\InpOutSmnService.cs" />
+    <!-- SMN 高风险通道的所有者：把"要不要碰驱动"的决策收拢到可被测试链接的地方
+         （事故门禁以前没链接 ThermalService.cs，这条判断根本没被覆盖过 —— 假绿） -->
+    <Compile Include="..\..\src\Island.App\Services\SmnChannel.cs" Link="Merged\App\SmnChannel.cs" />
+    <!-- 动画数值安全（2026-11-23 首帧 Rect 宽高为 NaN 崩窗的回归）：弹簧 + 缓动 -->
+    <Compile Include="..\..\src\Island.App\Animation\Spring.cs" Link="Merged\App\Spring.cs" />
+    <!-- 渲染矩形夹紧 RenderKit.SafeRect（依赖 Spring + Theme，测试工程已启用 WPF） -->
+    <Compile Include="..\..\src\Island.App\Controls\RenderKit.cs" Link="Merged\App\RenderKit.cs" />
+    <!-- 矢量图标（2026-11-24 视觉重做）：坏尺寸不抛异常的用例 -->
+    <Compile Include="..\..\src\Island.App\Controls\Glyphs.cs" Link="Merged\App\Glyphs.cs" />
+    <!-- 温度快照 + 它在监控页上"看得见的样子"（2026-11-24 展开态降耗：温度更新不再每次都让监控页整页重绘）；
+         两个文件都没有 WPF 依赖 -->
+    <Compile Include="..\..\src\Island.App\Services\ThermalSnapshot.cs" Link="Merged\App\ThermalSnapshot.cs" />
+    <Compile Include="..\..\src\Island.App\Controls\ThermalDisplay.cs" Link="Merged\App\ThermalDisplay.cs" />
+    <!-- 毛玻璃变化检测（2026-11-24：静止桌面上的重复截图不该触发重绘）；依赖 RenderKit.SafeRect -->
+    <Compile Include="..\..\src\Island.App\Services\GlassBackdrop.cs" Link="Merged\App\GlassBackdrop.cs" />
+    <!-- "用完即还"（2026-11-24：挂机几小时后工作集涨到 276 MB）：面板/设置窗口释放后的延迟压缩回收；
+         纯托管 + psapi/kernel32 的 P/Invoke，无 NuGet 依赖，可链进测试工程 -->
+    <Compile Include="..\..\src\Island.App\Services\MemoryReclaim.cs" Link="Merged\App\MemoryReclaim.cs" />
+    <!-- Intel GCL 初始化拦截策略（2026-11-24：只有核显的机器上这次初始化是纯开销，还会造成 GB 级的启动内存尖峰）；
+         对开源库只用反射按名字取类型，没有编译期依赖，可链进零包依赖的测试工程 -->
+    <Compile Include="..\..\src\Island.App\Services\IntelComputePolicy.cs" Link="Merged\App\IntelComputePolicy.cs" />
+    <!-- 温度驱动（PawnIO）自举（2026-11-24）：注册表只读 + SHA-256 + Process，全是 BCL，无 NuGet 依赖。
+         测试工程**不内嵌**安装器资源，用例也绝不运行它（见 PawnIoInstallerTests） -->
+    <Compile Include="..\..\src\Island.App\Services\PawnIoInstaller.cs" Link="Merged\App\PawnIoInstaller.cs" />
+    <!-- 注意：Island.Native 依赖 System.Management / System.Diagnostics.PerformanceCounter 两个 NuGet 包，
+         测试项目保持零包依赖，故不链接 Native 的源文件 -->
+    <!-- PDH 通配符读取器（GPU Engine 分组聚合）：纯 P/Invoke，无 NuGet 依赖，可链进测试工程 -->
+    <Compile Include="..\..\src\Island.Native\PdhWildcardQuery.cs" Link="Merged\PdhWildcardQuery.cs" />
+  </ItemGroup>
+
+</Project>

@@ -33,7 +33,9 @@ public sealed class IslandWindow : Window
     private double _netMax = 1;
 
     private bool _expanded;
-    private DispatcherTimer? _hoverTimer;
+    // 悬停防抖计时器复用一个：原来每次 PointerMoved 都 new 一个 DispatcherTimer（鼠标移动时每秒几十个）
+    private readonly DispatcherTimer _hoverTimer;
+    private bool _hoverOpen;
     private readonly DispatcherTimer _cycleTimer;
     private readonly DispatcherTimer _weatherTimer;
     private readonly DispatcherTimer _clipsTimer;
@@ -65,6 +67,10 @@ public sealed class IslandWindow : Window
         _frame = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(16) };
         _frame.Tick += Frame_Tick;
         _frame.Start();
+
+        // 悬停开/关防抖（150ms 开 / 350ms 关）：同一个计时器反复复用
+        _hoverTimer = new DispatcherTimer(DispatcherPriority.Normal) { Interval = TimeSpan.FromMilliseconds(HoverOpenMs) };
+        _hoverTimer.Tick += OnHoverTick;
 
         // pet 10s → 信息胶囊 30s 轮换（与 Windows 版一致）
         // 注意：必须显式 Normal 优先级——默认 Background 会被 60fps 渲染循环饿死
@@ -135,14 +141,16 @@ public sealed class IslandWindow : Window
     // ---------- 悬停展开（开 150ms / 关 350ms 防抖） ----------
     private void ArmHover(bool open)
     {
-        _hoverTimer?.Stop();
-        _hoverTimer = new DispatcherTimer(DispatcherPriority.Normal) { Interval = TimeSpan.FromMilliseconds(open ? HoverOpenMs : HoverCloseMs) };
-        _hoverTimer.Tick += (_, _) =>
-        {
-            _hoverTimer?.Stop();
-            SetExpanded(open);
-        };
+        _hoverOpen = open;
+        _hoverTimer.Stop();
+        _hoverTimer.Interval = TimeSpan.FromMilliseconds(open ? HoverOpenMs : HoverCloseMs);
         _hoverTimer.Start();
+    }
+
+    private void OnHoverTick(object? sender, EventArgs e)
+    {
+        _hoverTimer.Stop();
+        SetExpanded(_hoverOpen);
     }
 
     private void SetExpanded(bool expanded)
@@ -196,7 +204,7 @@ public sealed class IslandWindow : Window
         // 动态帧率（与 WPF 版一致）：忙时 60fps，静止时 10fps——也避免渲染优先级饿死低优定时器
         bool busy = !_bodyW.AtRest || !_bodyH.AtRest || _expanded || _canvas.View == "pet";
         _frame.Interval = busy ? TimeSpan.FromMilliseconds(16) : TimeSpan.FromMilliseconds(100);
-        _canvas.BodyRect = new Rect((WinW - _bodyW.Value) / 2, 0, _bodyW.Value, _bodyH.Value);
+        _canvas.BodyRect = IslandCanvas.SafeRect((WinW - _bodyW.Value) / 2, 0, _bodyW.Value, _bodyH.Value);
         _canvas.InvalidateVisual();
     }
 
@@ -275,7 +283,8 @@ public sealed class IslandWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         _frame.Stop();
-        _hoverTimer?.Stop();
+        _hoverTimer.Stop();
+        _hoverTimer.Tick -= OnHoverTick;
         _weatherTimer.Stop();
         _clipsTimer.Stop();
         _clips.Dispose();

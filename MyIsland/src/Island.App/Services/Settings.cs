@@ -1,9 +1,19 @@
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Threading;
 
 namespace Island.App.Services;
 
-/// <summary>全局设置，存到 %LOCALAPPDATA%\MyIsland\settings.json。原子写入避免损坏。</summary>
+/// <summary>
+/// 全局设置，存到 %LOCALAPPDATA%\MyIsland\settings.json。原子写入避免损坏。
+/// 持久化加固（参考 BrimDeck SettingsStore）：
+/// - 逐字段反序列化：单个字段类型不对只丢该字段，其余字段照常读（整份反序列化时一个手滑的引号能抹掉全部配置）；
+/// - 损坏隔离：读不出来就把原文件"另存为" settings.unreadable-<时间戳>.json，原文件绝不覆盖/删除；
+/// - IO 失败（文件被占用/无权限）不当成"内容坏了"：保留原文件、记日志，本次会话用默认值且禁止回写；
+/// - 未知字段保留：文件里本版本不认识的键原样写回，旧版本不会抹掉新版本写的键；
+/// - 写入防抖 + 串行：RequestSave() 合并 400ms 内的连续改动只落一次盘；Save() 保持立即写（退出/显式保存用）。
+/// </summary>
 public sealed class Settings
 {
     public string Theme { get; set; } = "Dark";       // Dark / Light / Auto
@@ -20,8 +30,13 @@ public sealed class Settings
     public bool AlwaysVisible { get; set; } = false;
     /// <summary>dash 视图显示项（逗号分隔：cores,cputemp,gputemp,mem,gpu,disk,ssd,battery,net；空=全部）。</summary>
     public string DashItems { get; set; } = "";
-    /// <summary>combo 信息胶囊显示项（rings,dials,clock,net；空=全部）。</summary>
-    public string ComboItems { get; set; } = "";
+    /// <summary>
+    /// combo 信息胶囊显示项（逗号分隔：clock,dials,cputemp,gputemp,disk,net；
+    /// 空=默认组合 clock,dials,cputemp,gputemp,disk,net）。
+    /// dials = C/M/G 三个占用率环；cputemp/gputemp = C/G 温度环；disk = D 硬盘环。
+    /// 全部是同一套环式表盘，胶囊里不会出现两种视觉风格。
+    /// </summary>
+    public string ComboItems { get; set; } = "clock,dials,cputemp,gputemp,disk,net";
     /// <summary>监控页显示项（cpu,cores,mem,gpu,disk,net,power,topproc；空=全部）。</summary>
     public string MonitorItems { get; set; } = "";
     /// <summary>鼠标穿透模式：岛体只显示不拦截点击（适合游戏；BrimDeck 兼容模式同款）。</summary>
@@ -32,37 +47,327 @@ public sealed class Settings
     /// <summary>高温告警阈值（°C）。</summary>
     public int TempAlertThreshold { get; set; } = 88;
     public string City { get; set; } = "";             // 天气城市（空=IP 定位）
+    /// <summary>
+    /// 允许 AMD SMN 直读 CPU 温度（默认关闭）。
+    /// ⚠️ 这条通道会加载未签名的 inpoutx64 内核驱动并映射 PCIe 物理内存，
+    /// 2026-11-23 在本机引发过三次 0x1EA 蓝屏；只在明确知道风险、且 CPU 确实是 AMD 时才开。
+    /// </summary>
+    public bool EnableSmnDirectRead { get; set; } = false;
     /// <summary>手动选择网卡 Id（空=自动聚合；LiteMonitor PreferredNetwork 同款）。</summary>
     public string PreferredNetwork { get; set; } = "";
+    /// <summary>剪贴板"排除来源进程"列表（逗号分隔的进程名，如 "keepass,1password"；空=全部记录）。</summary>
+    public string ClipboardExcludedProcesses { get; set; } = "";
 
-    private static string Dir => Path.Combine(
+    // ---------- 数值字段范围校正 ----------
+    // 坏值（手改 JSON、旧版本遗留）会让岛体窗口整个起不来：
+    // 例如 MonitorIntervalMs=0 → new System.Timers.Timer(0) 抛 ArgumentOutOfRangeException
+    // → 构造 IslandWindow 抛异常 → 被 App.Step 吞掉 → 只剩托盘图标，岛体窗口永不再出现。
+    // 载入后与保存时都夹一次，坏值不会一直留在文件里。
+
+    /// <summary>监控刷新间隔下限（毫秒）。</summary>
+    private const int MonitorIntervalMinMs = 250;
+    /// <summary>监控刷新间隔上限（毫秒）。</summary>
+    private const int MonitorIntervalMaxMs = 10000;
+    /// <summary>高温告警阈值下限（°C）。</summary>
+    private const int TempAlertMinC = 30;
+    /// <summary>高温告警阈值上限（°C）。</summary>
+    private const int TempAlertMaxC = 120;
+
+    /// <summary>把数值字段夹到合法范围（就地修正）。</summary>
+    public void ClampValues()
+    {
+        MonitorIntervalMs = Math.Clamp(MonitorIntervalMs, MonitorIntervalMinMs, MonitorIntervalMaxMs);
+        TempAlertThreshold = Math.Clamp(TempAlertThreshold, TempAlertMinC, TempAlertMaxC);
+        // PosAlongEdge 是 0..1 的比例；NaN/Infinity 要单独处理（Math.Clamp 对 NaN 不生效）
+        if (double.IsNaN(PosAlongEdge) || double.IsInfinity(PosAlongEdge)) PosAlongEdge = 0.5;
+        else PosAlongEdge = Math.Clamp(PosAlongEdge, 0.0, 1.0);
+    }
+
+    /// <summary>写盘防抖窗口：RequestSave() 合并这段时间内的连续改动。</summary>
+    private static readonly TimeSpan SaveDebounce = TimeSpan.FromMilliseconds(400);
+
+    /// <summary>写盘串行锁：同一时刻只允许一个线程写 settings.json（后写覆盖先写，不会写坏）。</summary>
+    private static readonly object WriteGate = new();
+
+    /// <summary>已知字段名集合（用于识别文件里的未知键）。</summary>
+    private static readonly HashSet<string> KnownKeys = new(
+        JsonSerializer.SerializeToNode(new Settings())!.AsObject().Select(p => p.Key),
+        StringComparer.Ordinal);
+
+    /// <summary>本实例从文件里读到的未知键：保存时原样写回，旧版本不删新版本的键。</summary>
+    private JsonObject _unknown = new();
+
+    /// <summary>读盘失败标记：本次会话读不到原文件，禁止用默认值把它覆盖掉。</summary>
+    private bool _readFailed;
+
+    /// <summary>读盘失败原因（供 UI 提示"为什么没保存"）。</summary>
+    private string? _readError;
+
+    /// <summary>本实例的防抖计时器（合并连续改动，_timerGate 只保护计时器本身）。</summary>
+    private Timer? _saveTimer;
+    private readonly object _timerGate = new();
+
+    /// <summary>测试钩子：把设置目录指向别处（测试用；null = 真实用户目录）。</summary>
+    internal static string? DirectoryOverride { get; set; }
+
+    /// <summary>已完成的写盘次数（测试用：验证防抖只落一次盘）。</summary>
+    internal static int SaveWriteCount;
+
+    private static string Dir => DirectoryOverride ?? Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MyIsland");
     public static string FilePath => Path.Combine(Dir, "settings.json");
 
     public static Settings Load()
     {
+        var settings = new Settings();
         try
         {
-            if (System.IO.File.Exists(FilePath))
+            if (!File.Exists(FilePath)) return settings;
+
+            string json;
+            try
             {
-                var json = System.IO.File.ReadAllText(FilePath);
-                return JsonSerializer.Deserialize<Settings>(json) ?? new Settings();
+                json = File.ReadAllText(FilePath);
             }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // IO 失败（文件被占用/无权限）≠ 内容坏了。
+                // 这时退回默认再回写 = 一次 Save 就把用户原文件覆盖成默认配置，必须避免。
+                // 保留原文件、记日志，本次会话用默认值，并且禁止静默覆盖。
+                Log($"读取设置文件失败（{ex.GetType().Name}: {ex.Message}）；本次会话使用默认值且不覆盖原文件");
+                settings._readFailed = true;
+                settings._readError = "设置文件无法读取（可能被占用或无权限），本次会话使用默认值且不会覆盖原文件";
+                return settings;
+            }
+
+            JsonNode? node;
+            try
+            {
+                node = JsonNode.Parse(json);
+            }
+            catch (JsonException ex)
+            {
+                // JSON 坏了：另存一份副本，原文件留在原地（绝不覆盖/删除）
+                Log($"设置文件 JSON 解析失败：{ex.Message}");
+                KeepUnreadable();
+                settings._readFailed = true;
+                settings._readError = "设置文件内容损坏，已另存为 unreadable 副本，本次会话使用默认值";
+                return settings;
+            }
+
+            if (node is not JsonObject root)
+            {
+                Log("设置文件根节点不是对象，已另存为 unreadable 副本");
+                KeepUnreadable();
+                settings._readFailed = true;
+                settings._readError = "设置文件内容损坏，已另存为 unreadable 副本，本次会话使用默认值";
+                return settings;
+            }
+
+            // 逐字段读取：单个字段类型不对只丢该字段，其余字段照常读
+            settings.ApplyFields(root);
+            // 坏值校正：数值字段越界会让岛体窗口起不来，载入时就夹回合法范围
+            settings.ClampValues();
+            // 不认识的键原样留着，保存时写回去（新版本加的字段不会被旧版本抹掉）
+            foreach (var pair in root)
+                if (!KnownKeys.Contains(pair.Key))
+                    settings._unknown[pair.Key] = pair.Value?.DeepClone();
+            return settings;
         }
-        catch { /* 损坏则用默认 */ }
-        return new Settings();
+        catch (Exception ex)
+        {
+            // 兜底：其它异常一律按"读不出来"处理，原文件保留不动
+            Log($"读取设置文件失败：{ex}");
+            KeepUnreadable();
+            settings._readFailed = true;
+            settings._readError = "设置文件读取失败，已保留原文件，本次会话使用默认值";
+            return settings;
+        }
     }
 
+    /// <summary>
+    /// 逐字段反序列化：单个字段类型不对只丢该字段，其余字段照常读。
+    /// 以前是整份 root.Deserialize&lt;Settings&gt;()：任意一个字段类型写错就抛 JsonException
+    /// → 整套配置退默认 → 随后任意一次 Save 用默认值覆盖用户原文件。
+    /// </summary>
+    private void ApplyFields(JsonObject root)
+    {
+        if (TryReadField(root, nameof(Theme), out string theme)) Theme = theme;
+        if (TryReadField(root, nameof(Edge), out string edge)) Edge = edge;
+        if (TryReadField(root, nameof(PosAlongEdge), out double pos)) PosAlongEdge = pos;
+        if (TryReadField(root, nameof(ExpandMode), out string expandMode)) ExpandMode = expandMode;
+        if (TryReadField(root, nameof(CompactView), out string compactView)) CompactView = compactView;
+        if (TryReadField(root, nameof(AlwaysOnTop), out bool alwaysOnTop)) AlwaysOnTop = alwaysOnTop;
+        if (TryReadField(root, nameof(HideFullscreen), out bool hideFullscreen)) HideFullscreen = hideFullscreen;
+        if (TryReadField(root, nameof(PetStyle), out string petStyle)) PetStyle = petStyle;
+        if (TryReadField(root, nameof(PetAutoCycle), out bool petAutoCycle)) PetAutoCycle = petAutoCycle;
+        if (TryReadField(root, nameof(IndicatorOnMaximize), out bool indicator)) IndicatorOnMaximize = indicator;
+        if (TryReadField(root, nameof(AlwaysVisible), out bool alwaysVisible)) AlwaysVisible = alwaysVisible;
+        if (TryReadField(root, nameof(DashItems), out string dashItems)) DashItems = dashItems;
+        if (TryReadField(root, nameof(ComboItems), out string comboItems)) ComboItems = comboItems;
+        if (TryReadField(root, nameof(MonitorItems), out string monitorItems)) MonitorItems = monitorItems;
+        if (TryReadField(root, nameof(ClickThrough), out bool clickThrough)) ClickThrough = clickThrough;
+        if (TryReadField(root, nameof(MonitorIntervalMs), out int interval)) MonitorIntervalMs = interval;
+        if (TryReadField(root, nameof(TempAlertEnabled), out bool tempAlert)) TempAlertEnabled = tempAlert;
+        if (TryReadField(root, nameof(TempAlertThreshold), out int threshold)) TempAlertThreshold = threshold;
+        if (TryReadField(root, nameof(City), out string city)) City = city;
+        if (TryReadField(root, nameof(EnableSmnDirectRead), out bool smn)) EnableSmnDirectRead = smn;
+        if (TryReadField(root, nameof(PreferredNetwork), out string nic)) PreferredNetwork = nic;
+        if (TryReadField(root, nameof(ClipboardExcludedProcesses), out string clip)) ClipboardExcludedProcesses = clip;
+    }
+
+    /// <summary>
+    /// 从 JSON 对象里取一个字段并做类型校验（纯函数，可单测覆盖）。
+    /// true = 取到且类型正确；false = 字段缺失 / 为 null / 类型不对（调用方保留该字段的默认值）。
+    /// 类型不对只丢这一个字段，不牵连其它字段。
+    /// </summary>
+    internal static bool TryReadField<T>(JsonObject root, string name, out T value)
+    {
+        value = default!;
+        if (root is null || string.IsNullOrEmpty(name)) return false;
+        if (!root.TryGetPropertyValue(name, out JsonNode? node) || node is null) return false;
+        try
+        {
+            if (node.GetValueKind() == JsonValueKind.Null) return false;
+            T? parsed = node.Deserialize<T>();
+            if (parsed is null) return false;
+            value = parsed;
+            return true;
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException)
+        {
+            // 类型不匹配（例如把数字写进 string 字段、把字符串写进 int 字段）：只丢这个字段
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 当前值是否与出厂默认不同。
+    /// 读盘失败时用它判断"用户是不是真的改过设置"：没改过就不许用默认值覆盖用户原文件。
+    /// </summary>
+    private bool DiffersFromDefaults()
+    {
+        var mine = JsonSerializer.SerializeToNode(this)?.AsObject();
+        var def = JsonSerializer.SerializeToNode(new Settings())?.AsObject();
+        if (mine is null || def is null) return true;
+        foreach (var pair in def)
+        {
+            if (!mine.TryGetPropertyValue(pair.Key, out JsonNode? v)) return true;
+            if (!JsonNode.DeepEquals(v, pair.Value)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// 最近一次保存失败的原因（null = 上次保存成功，或还没保存过）。
+    /// UI 层可以据此提示"保存失败"，不用再自己猜。
+    /// </summary>
+    public static string? LastSaveError { get; private set; }
+
+    /// <summary>
+    /// 立即写盘（签名保持 void：App.xaml.cs 等处按 void 调用）。
+    /// 写失败不抛：记日志并把原因放进 <see cref="LastSaveError"/>，UI 层可提示"保存失败"。
+    /// </summary>
     public void Save()
     {
         try
         {
-            Directory.CreateDirectory(Dir);
-            string json = JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
-            string tmp = FilePath + ".tmp";
-            System.IO.File.WriteAllText(tmp, json);
-            System.IO.File.Move(tmp, FilePath, true);
+            // 数值字段越界时一并夹回合法范围，坏值不会一直留在文件里
+            ClampValues();
+            // 立即写：防抖里待落盘的那次不必再写（写的是同一份状态）
+            CancelPendingSave();
+            lock (WriteGate)
+            {
+                // 读盘失败过：原文件（可能是用户唯一的一份）不能被默认值盖掉。
+                // 只有用户确实改了设置（与出厂默认不同）才写 —— unreadable 副本也已经留着了。
+                if (_readFailed && !DiffersFromDefaults())
+                {
+                    LastSaveError = _readError ?? "设置文件读取失败，已跳过写盘以保留原文件";
+                    Log("读盘失败过且用户未修改设置：跳过写盘，避免用默认值覆盖用户原文件");
+                    return;
+                }
+                Directory.CreateDirectory(Dir);
+                var own = JsonSerializer.SerializeToNode(this)!.AsObject();
+                foreach (var pair in _unknown)
+                    if (!own.ContainsKey(pair.Key))
+                        own[pair.Key] = pair.Value?.DeepClone();
+                string json = own.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+                string tmp = FilePath + ".tmp";
+                System.IO.File.WriteAllText(tmp, json);
+                System.IO.File.Move(tmp, FilePath, true);
+            }
+            LastSaveError = null;
+            Interlocked.Increment(ref SaveWriteCount);
         }
-        catch { /* 写盘失败不影响运行 */ }
+        catch (Exception ex)
+        {
+            // 写盘失败不能一声不吭：用户以为设置存上了，其实下次启动就没了
+            LastSaveError = $"保存设置失败：{ex.Message}";
+            Log($"保存设置失败：{ex}");
+        }
+    }
+
+    /// <summary>
+    /// 防抖写入：连续调用合并成一次落盘（UI 频繁改动用这个，避免每点一下就写盘）。
+    /// 显式保存点（退出/确定/重置）仍走 Save()（立即写）。
+    /// </summary>
+    public void RequestSave()
+    {
+        lock (_timerGate)
+        {
+            _saveTimer ??= new Timer(_ => Save(), null, Timeout.Infinite, Timeout.Infinite);
+            _saveTimer.Change(SaveDebounce, Timeout.InfiniteTimeSpan);
+        }
+    }
+
+    /// <summary>取消待落盘的防抖写入（应用退出前/测试用）。</summary>
+    internal void CancelPendingSave()
+    {
+        lock (_timerGate)
+        {
+            if (_saveTimer is not null) _saveTimer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+        }
+    }
+
+    /// <summary>日志上限（约 1MB）：超过就删掉旧文件重开一份，免得日志无限膨胀（同 App.WriteLog 的做法）。</summary>
+    private const long LogLimit = 1_048_576;
+
+    /// <summary>
+    /// 写诊断日志（%LOCALAPPDATA%\MyIsland\crash.log，与 App.WriteLog 同风格）。
+    /// Settings.cs 不依赖 App（测试工程只链接本文件），所以自己写一份；写失败只吞掉。
+    /// </summary>
+    private static void Log(string text)
+    {
+        try
+        {
+            Directory.CreateDirectory(Dir);
+            string path = Path.Combine(Dir, "crash.log");
+            var info = new FileInfo(path);
+            if (info.Exists && info.Length > LogLimit) File.Delete(path);
+            File.AppendAllText(path, $"[{DateTime.Now}] {text}\n");
+        }
+        catch { /* 日志写失败不影响运行 */ }
+    }
+
+    /// <summary>
+    /// 读失败时把原文件"另存为" settings.unreadable-&lt;yyyyMMdd-HHmmss&gt;.json。
+    /// 复制而非改名/删除：用户的原文件既不被覆盖也不被删，数据永远找得回来。
+    /// </summary>
+    private static void KeepUnreadable()
+    {
+        try
+        {
+            if (!System.IO.File.Exists(FilePath)) return;
+            string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+            string name = $"settings.unreadable-{stamp}.json";
+            string target = Path.Combine(Dir, name);
+            for (int i = 1; System.IO.File.Exists(target); i++)
+            {
+                name = $"settings.unreadable-{stamp}-{i}.json";
+                target = Path.Combine(Dir, name);
+            }
+            System.IO.File.Copy(FilePath, target);
+        }
+        catch { /* 副本失败也不影响启动 */ }
     }
 }

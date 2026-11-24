@@ -9,13 +9,27 @@ namespace Island.App.Services;
 public sealed record WeatherInfo(
     string City, string Condition, string Emoji,
     double Temp, double FeelsLike, double TempMin, double TempMax,
-    int Humidity, double WindKmh, DateTime UpdatedAt);
+    int Humidity, double WindKmh, DateTime UpdatedAt)
+{
+    /// <summary>过期阈值：最近一次成功更新距今超过这么久就算过期。</summary>
+    public static readonly TimeSpan StaleThreshold = TimeSpan.FromMinutes(30);
+
+    /// <summary>距最近一次成功更新的时长。</summary>
+    public TimeSpan Age => DateTime.Now - UpdatedAt;
+
+    /// <summary>
+    /// 是否已过期（最近一次成功更新超过 30 分钟）。
+    /// 网络失败时旧值仍会返回，但界面无从分辨"实时"和"旧数据"——
+    /// 靠这个标记区分，界面才能提示"数据可能已过期"。
+    /// </summary>
+    public bool IsStale => Age > StaleThreshold;
+}
 
 /// <summary>
 /// 天气：Open-Meteo 免费无 Key（wisland 同款默认源）。
 /// 定位：优先 Settings.City（"北京" 等中文名走 geocoding API），
 /// 未配置则用 IP 定位接口（ipapi.co，免 Key）。
-/// 30 分钟缓存；失败保留上次数据（超过 3 小时才标记过期）。
+/// 30 分钟缓存；失败保留上次数据并进入退避重试（60 秒起，封顶 10 分钟）。
 /// </summary>
 public sealed class WeatherService : IDisposable
 {
@@ -27,6 +41,26 @@ public sealed class WeatherService : IDisposable
     private readonly object _gate = new();
     private Task? _fetching;
 
+    /// <summary>
+    /// 失败后的重试间隔：首次 60 秒，逐次翻倍，封顶 10 分钟。
+    /// 为什么要有：原来失败时 _lastFetch 不更新，Get() 一直判 stale，
+    /// 但宿主只有 30 分钟的定时器会再调 Get() → 一次失败可以空白半小时。
+    /// </summary>
+    private static readonly TimeSpan MinRetryDelay = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromMinutes(10);
+
+    /// <summary>当前退避时长（成功一次后重置回 MinRetryDelay）。</summary>
+    private TimeSpan _retryDelay = MinRetryDelay;
+
+    /// <summary>下一次允许发起请求的时间；DateTime.MinValue = 不在退避期。</summary>
+    private DateTime _retryAfter = DateTime.MinValue;
+
+    /// <summary>自愈重试定时器：失败后由服务自己按退避时间再拉一次，不必等宿主的 30 分钟定时器。</summary>
+    private System.Threading.Timer? _retryTimer;
+
+    /// <summary>已释放：不再发起新的请求（Dispose 后仍可能有已排队的重试回调）。</summary>
+    private bool _disposed;
+
     public Settings Settings { get; set; } = new();
 
     /// <summary>当前天气（可能为缓存；null=从未成功）。</summary>
@@ -35,21 +69,39 @@ public sealed class WeatherService : IDisposable
     /// <summary>城市变更后调用：作废缓存，下次 Get() 立即重新定位并拉取。</summary>
     public void Invalidate()
     {
-        lock (_gate) { _lastFetch = DateTime.MinValue; _resolvedCity = null; _coords = null; }
+        lock (_gate)
+        {
+            _lastFetch = DateTime.MinValue;
+            _resolvedCity = null;
+            _coords = null;
+            // 换城市是用户的主动操作：清掉退避，立刻重试（别让用户等 60 秒）
+            _retryAfter = DateTime.MinValue;
+            _retryDelay = MinRetryDelay;
+        }
     }
 
-    /// <summary>取天气：缓存新鲜（30 分钟）直接返回，否则后台刷新。</summary>
+    /// <summary>
+    /// 取天气：缓存新鲜（30 分钟）直接返回，否则后台刷新。
+    /// 失败后进入退避（首次 60 秒，逐次翻倍，封顶 10 分钟）：退避期内不再发请求，
+    /// 免得断网时每次取用都打一次网络。
+    /// </summary>
     public WeatherInfo? Get()
     {
-        bool stale;
-        lock (_gate) stale = _last is null || (DateTime.Now - _lastFetch).TotalMinutes > 30;
-        if (stale && _fetching is null or { IsCompleted: true })
+        lock (_gate)
+        {
+            if (_disposed) return _last;
+            bool stale = _last is null || (DateTime.Now - _lastFetch).TotalMinutes > 30;
+            if (!stale) return _last;                                  // 缓存还新鲜
+            if (DateTime.Now < _retryAfter) return _last;              // 退避中：等自愈重试
+            if (!(_fetching is null || _fetching.IsCompleted)) return _last;  // 已有请求在飞
             _fetching = Task.Run(FetchAsync);
-        return Current;
+            return _last;
+        }
     }
 
     private async Task FetchAsync()
     {
+        bool ok = false;
         try
         {
             var (lat, lon, city) = await ResolveLocationAsync();
@@ -74,9 +126,61 @@ public sealed class WeatherService : IDisposable
 
             var (cond, emoji) = Describe(code);
             var info = new WeatherInfo(city, cond, emoji, temp, feels, tmin, tmax, humidity, wind, DateTime.Now);
-            lock (_gate) { _last = info; _lastFetch = DateTime.Now; _coords = (lat, lon); }
+            lock (_gate)
+            {
+                _last = info;
+                _lastFetch = DateTime.Now;
+                _coords = (lat, lon);
+                // 成功一次：退避重置，下次失败重新从 60 秒开始
+                _retryDelay = MinRetryDelay;
+                _retryAfter = DateTime.MinValue;
+            }
+            ok = true;
         }
-        catch { /* 网络失败保留旧数据 */ }
+        catch
+        {
+            // 网络失败保留旧数据，但旧数据会带上 IsStale 标记（界面能分辨是不是实时数据）
+        }
+        finally
+        {
+            // 失败：不更新 _lastFetch（保持 stale），但排一次"退避后自动重试"，
+            // 否则只有宿主 30 分钟的定时器会再调 Get()，天气最长空白半小时
+            if (!ok) ScheduleRetry();
+        }
+    }
+
+    /// <summary>
+    /// 安排一次退避后的自动重试：按当前退避时长（60 秒起，逐次翻倍，封顶 10 分钟）重拉一次。
+    /// 退避期内 Get() 不再发起请求，避免断网时每次取用都打一次网络。
+    /// </summary>
+    private void ScheduleRetry()
+    {
+        lock (_gate)
+        {
+            if (_disposed) return;   // 已释放：不再排重试
+            TimeSpan delay = _retryDelay;
+            _retryAfter = DateTime.Now + delay;
+            // 逐次翻倍，封顶 10 分钟：断网时也不至于把接口打爆
+            _retryDelay = TimeSpan.FromTicks(Math.Min(_retryDelay.Ticks * 2, MaxRetryDelay.Ticks));
+            _retryTimer ??= new System.Threading.Timer(_ => RetryTick(), null,
+                System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
+            _retryTimer.Change(delay, System.Threading.Timeout.InfiniteTimeSpan);
+        }
+    }
+
+    /// <summary>
+    /// 退避到期：清掉退避标记后走正常取用路径重拉一次。
+    /// 必须先清标记：定时器可能比计划时刻早几毫秒触发，
+    /// 若此时 _retryAfter 还没到，Get() 会直接返回且不再排下一次重试 → 又要等 30 分钟。
+    /// </summary>
+    private void RetryTick()
+    {
+        try
+        {
+            lock (_gate) _retryAfter = DateTime.MinValue;
+            Get();
+        }
+        catch { }
     }
 
     /// <summary>定位：Settings.City 中文名 → Open-Meteo geocoding；否则 IP 定位。</summary>
@@ -85,15 +189,21 @@ public sealed class WeatherService : IDisposable
         string? want = Settings.City;
         if (!string.IsNullOrWhiteSpace(want))
         {
-            string url = $"https://geocoding-api.open-meteo.com/v1/search?name={Uri.EscapeDataString(want)}&count=1&language=zh";
-            string json = await _http.GetStringAsync(url);
-            using var doc = JsonDocument.Parse(json);
-            if (doc.RootElement.TryGetProperty("results", out var results) && results.GetArrayLength() > 0)
+            // 地理编码单独包 try：原来它的 HTTP 调用不在 try 内，
+            // 端点一挂（超时/DNS 失败）整个定位直接抛出去 → 连 IP 兜底都不走
+            try
             {
-                var r = results[0];
-                return (r.GetProperty("latitude").GetDouble(), r.GetProperty("longitude").GetDouble(),
-                        r.GetProperty("name").GetString() ?? want);
+                string url = $"https://geocoding-api.open-meteo.com/v1/search?name={Uri.EscapeDataString(want)}&count=1&language=zh";
+                string json = await _http.GetStringAsync(url);
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.TryGetProperty("results", out var results) && results.GetArrayLength() > 0)
+                {
+                    var r = results[0];
+                    return (r.GetProperty("latitude").GetDouble(), r.GetProperty("longitude").GetDouble(),
+                            r.GetProperty("name").GetString() ?? want);
+                }
             }
+            catch { /* 地理编码端点不可用 → 继续走 IP 兜底 */ }
         }
         // IP 定位兜底
         try
@@ -126,5 +236,14 @@ public sealed class WeatherService : IDisposable
         _ => ("未知", "🌡️"),
     };
 
-    public void Dispose() { }
+    public void Dispose()
+    {
+        // 退避重试定时器也要停：否则窗口关了还会自己再拉一次天气
+        lock (_gate)
+        {
+            _disposed = true;
+            _retryTimer?.Dispose();
+            _retryTimer = null;
+        }
+    }
 }

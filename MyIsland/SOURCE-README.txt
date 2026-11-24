@@ -9,28 +9,37 @@ MyIsland/
 ├── sign.ps1 / start-admin.ps1     签名 / 管理员启动辅助
 ├── src/
 │   ├── Island.App/                WPF 主应用（.NET 8, Windows）
-│   │   ├── Controls/              IslandCanvas(液态岛自绘) IslandWindow(宿主弹簧)
-│   │   │                          ExpandedPanel(展开面板XAML+页签) MonitorPage(监控页自绘)
-│   │   │                          RenderKit(共享渲染层) ModuleSettingsWindow(显示项设置)
-│   │   │                          PanelData(ViewModel)
+│   │   ├── Controls/              IslandCanvas(液态岛自绘: 玻璃外壳+顶部辉光+收起态各视图) IslandWindow(宿主弹簧)
+│   │   │                          ExpandedPanel(展开面板XAML) PanelStyles(面板控件样式: 按钮/开关/滑杆/滚动条)
+│   │   │                          MonitorPage(监控页自绘) ThermalDisplay(温度更新: 画面变没变的判断)
+│   │   │                          RenderKit(共享渲染层: 缓存/等宽数据字体/发光)
+│   │   │                          Glyphs(矢量图标) ModuleSettingsWindow(显示项设置) PanelData(ViewModel)
+│   │   │                          DevicesPage(设备电量自绘) SettingsWindow(设置中心: 与面板共用控件样式的两栏卡片)
 │   │   ├── Services/              ThermalService(CPU/GPU/SSD温度: LHM+inpoutx64/SMN)
+│   │   │                          PawnIoInstaller(温度驱动 PawnIO 自举: 内嵌安装器校验+静默安装)
+│   │   │                          IntelComputePolicy(只有核显时拦下库的 Intel GCL 初始化)
+│   │   │                          MemoryReclaim(用完即还: 面板/设置窗口关闭后压缩回收)
 │   │   │                          WeatherService(Open-Meteo) ControlService(亮度/WLAN/蓝牙)
 │   │   │                          DeviceService(设备电量WMI) ClipboardService FileTrayService
 │   │   │                          VolumeService(音量浮条) GlassBackdrop(毛玻璃) TrayIcon Settings
+│   │   │                          ThermalSnapshot(温度快照; 独立文件, 被三个工程链接)
 │   │   ├── Animation/             Spring(阻尼弹簧) PetFace(小形象: 4款式+情境反应)
 │   │   │                          LiquidGeometry(液桥/水滴)
-│   │   ├── Themes/Theme.cs        Palette 语义色 + 9 预设主题
+│   │   ├── Themes/Theme.cs        Palette 语义色 + 9 预设主题（每套 = 近黑中性色 + 一个强调色 + 状态色）
 │   │   └── app.ico                产品图标
 │   ├── Island.Core/               监控模型（纯 .NET，跨平台）
 │   │   └── Monitoring/            MonitorSnapshot / DiskStat / TopProcess
-│   ├── Island.Native/             SystemMonitor(PDH: CPU/核心/内存/GPU/磁盘/网速/Top进程)
+│   ├── Island.Native/             SystemMonitor(PDH: CPU/核心/内存/GPU/磁盘/网速/Top进程;
+│   │                              明细按需: 进程榜等只在面板展开时采, 见 SetDetailWanted)
 │   │                              NativeMethods(Win32) ScreenContext(全屏检测) GpuUsageReader
 │   └── Island.Avalonia/           Mac/跨平台版（Avalonia 11，详见 README-Mac.md）
 ├── tools/
 │   ├── inpout/inpoutx64.dll       LHM 0.9.4 内嵌提取（AMD CPU 温度用户态 dll）
 │   ├── LogoGen/                   Logo 矢量渲染导出工具（PNG 多尺寸+ICO）
-│   ├── DumpTypes/                 反射探测工具（资源提取/驱动行为探测）
+│   ├── DumpTypes/                 反射探测工具（类型/成员枚举；纯反射，不碰驱动与物理内存）
 │   └── analyze*.py                截图像素分析脚本（PNG 手工解码器）
+├── driver/                        温度驱动（PawnIO）官方安装器 PawnIO_setup.exe 2.2.0（原样内嵌进 Island.App，
+│                                  不要修改）+ COPYING-PawnIO.txt 许可证全文 + README.md（来源/SHA-256/升级步骤）
 └── branding/                      品牌资产（svg/ico/png 9尺寸 + README 品牌规范
                                    + ref/ BrimDeck 官方参考图）
 
@@ -46,14 +55,107 @@ MyIsland/
 【运行】
 普通：直接跑 publish 输出的 Island.App.exe（或分发目录的 Island.App.exe）
 WDAC 机器：pwsh -NoProfile -File run.ps1
-要温度（CPU/SSD）：以管理员启动（start-admin.ps1 或托盘菜单"以管理员重启"）
+要温度（CPU/GPU）：以管理员启动（start-admin.ps1 或托盘菜单"以管理员重启"）；驱动由程序自己装，见下
 
-【温度链路说明（InpOutSmnService / ThermalService）】
-- AMD：系统已装的 inpoutx64 内核驱动 + ECAM 内存映射直读 SMN（零提权）
-- Intel/其他：LibreHardwareMonitor + PawnIO 驱动（需管理员）
-- SSD：LHM 存储传感器（NVMe IOCTL，多数机器需管理员）
+【温度链路说明（ThermalService）】
+- 驱动：LibreHardwareMonitorLib 0.9.6 读 CPU 温度（MSR）走 PawnIO 驱动（微软签名）。库只会"打开"驱动设备，
+  不会安装。MyIsland 自己带了驱动：内嵌官方签名的 PawnIO 2.2.0 安装器（driver/PawnIO_setup.exe，详见
+  driver/README.md），以管理员运行、且驱动缺失或低于 2.0.0.0 时在后台静默安装
+  （Services/PawnIoInstaller.cs，2026-11-24）。界面不等待安装；装完之后温度服务在下一次采样时
+  自动重建读数对象，不需要重启程序。用户不用手工安装任何东西。
+- CPU 温度需要两个条件同时满足：① PawnIO 已安装 ② 进程以管理员运行。
+  非管理员 → 温度位显示"需管理员"；管理员、但驱动还没到位（正在装 / 装失败）→ 显示"缺驱动"。
+- CPU 覆盖以库为准：Intel 走 IntelCpu；AMD 只支持 Zen（Family 0x17 / 0x19 / 0x1A）与 K8（0x0F）——
+  Family 0x10–0x16 上游不支持（库的 CpuGroup.cs 里创建 Amd10Cpu 的那行被注释掉了），
+  这些 CPU 上装了驱动也读不到，温度显示 "--"。
+- 常规路径：LibreHardwareMonitor + PawnIO 驱动（需管理员）→ 读不到再退 WMI 热区 → 都没有显示 "--"
+- AMD SMN 直读（InpOutSmnService）：**默认关闭**（设置 › 监控 › 高风险实验功能）。
+  它会加载未签名的 inpoutx64.sys 内核驱动并映射 PCIe ECAM/MMIO 物理内存，
+  2026-11-23 在本机（Intel）曾三次触发 0x1EA THREAD_STUCK_IN_DEVICE_DRIVER 蓝屏；
+  现已改为「先判 CPU 厂商再碰驱动」+「只认 0xE0000000」+「不随包发布 inpoutx64.dll」。
+  本次改动（2026-11-24，驱动自举）没有动这条通道，它仍然默认关闭。
+- SSD：LHM 存储传感器（NVMe IOCTL）—— 2026-11-22 在本机同样触发过 0x1EA 蓝屏，已永久关闭
 - Intel 核显温度：无公开接口，任何权限都读不到，显示 "--"
 - 全部读数读不到时显示 "--"，绝不伪造
+
+【性能与内存（2026-11-24 优化，改这些地方前先读）】
+- 实测基线（本机，管理员运行）：空闲 CPU 7.66% → 5.21% 单核；启动峰值工作集 929–1132 MB → 252 MB；
+  工作集 276 MB → 121 MB。这组数字来自不含"明细按需采样"的构建；加上采样层的完整版过了构建、全部测试和
+  采样器行为检查，实机数字见第十节的"实机验证"。细节与逐项验证见 D:\YQDESK\MyIsland-改进记录.md 第九节。
+- 展开态的稳态 CPU（2026-11-24 实机诊断，按线程拆）：监控页每重绘一次约 30ms（录制指令约 5ms +
+  软件光栅化约 25ms），是展开态最大的一块。温度更新原来每 1.4 秒都让监控页整页重绘，而页面上只用得到
+  取整后的几个数 —— 现在"画面会变才重绘"（见下面"界面设计系统"一节）。排查这类问题用诊断构建：
+  给渲染路径加计数器和计时器、每 5 秒按线程导出一次 CPU，比看任务管理器的总数有用得多。
+- Intel GCL（IntelComputePolicy）：LibreHardwareMonitor 0.9.6 在 Windows 上会无条件初始化 Intel 的
+  Level Zero 计算栈，实测不可预测地申请 700 MB – 4.5 GB 提交内存、耗 1.4–1.8 秒 CPU，而只有核显的
+  机器上它一个读数都不产生。机器上的 Intel 显卡全是核显时把它拦下；有 Intel 独显或判断不出来则不动。
+  必须在创建第一个 Computer 之前生效（ThermalService.OpenComputer），探测在 App 启动时后台完成。
+- 毛玻璃（GlassBackdrop）：身后桌面没变就不换图、不重绘；连续 8 张没变化后截图间隔 0.5s → 1s。
+  "收敛窗口"（ConvergeRounds）不能删：底图截的是岛体自己，每换一张岛体颜色只向主题色靠一步，
+  少了它颜色会停在中途。改动判定逻辑时跑 Island.Tests 的 GlassBackdropTests。
+- 小形象（IslandCanvas.InvalidatePet / PetFace）：小形象画在自己的子图层上，每帧只重画这一小块；
+  画刷/画笔/渐变全部走 RenderKit 的冻结缓存。不想改外观的渲染改动（性能、重构）要先存一份当前渲染，
+  改完逐像素对比再合入。⚠️ 2026-11-24 的界面重做是有意改了外观，之前的基线图作废，基线 = 重做后的渲染。
+- 按需启停：鼠标跟踪器只在"没开穿透且不是长关"时运行（IslandWindow.UpdatePointerTracking）；
+  只有监控页才用的明细采样在面板展开时才开（SystemMonitor.SetDetailWanted）；跨平台版与
+  设置中心的实时预览要显式 SetDetailWanted(true)。
+- 展开面板后的 CPU 进程榜（SystemMonitor.SampleTopProcesses）：榜是两次采样做差分出来的。
+  上升沿那一帧不受 3 秒节流；上一份基线超过"3 秒 + 1.5 个采样间隔"（默认 4.5 秒）就只记基线，
+  0.6 秒后再差分出第一份榜（这期间显示上一份榜）。**不要改回去拿整段时间做差**：那是收起期间的
+  平均占用，一个展开前已经停掉的进程会排在榜首。进程榜的任何改动都要用真机行为检查验证
+  （展开后 1.5 秒内出榜、已停的进程不在榜里、数值 0..100）。
+- 用完即还（MemoryReclaim）：面板/设置窗口关闭后、界面静止 5 秒，做一次压缩回收并裁剪工作集。
+  只在界面空闲时做（IslandWindow.IsUiIdle），Request 不阻塞调用方。
+- 已量清但没做的：WPF 改软件渲染（RenderOptions.ProcessRenderMode = SoftwareOnly）可再省约 57 MB，
+  代价是文字边缘抗锯齿不是逐像素相同（放大 5 倍肉眼也看不出），留给产品决定。
+
+【界面设计系统（2026-11-24 重做，改界面前先读）】
+方向是"暗色科技"（近黑底 + 一束强调色辉光 + 等宽的数据字体）。方法论取自两个开源的界面设计技能包
+（HeiGe-UI 的"暗色科技"配方、ui-aesthetics 的克制原则）。改动明细与对比图见
+D:\YQDESK\MyIsland-改进记录.md 第十节。规则只有下面这几条，别破：
+- 一套主题 = 一组近黑的中性色 + **一个**强调色 + 状态色（Themes/Theme.cs）。数据不按指标配色：
+  UI 里不许再出现写死的"CPU 蓝 / 内存青 / GPU 粉"，颜色一律取 Palette 的语义色。
+- 强调色只给主角和选中态：CPU 主读数（数字、环、走势线）、面板顶部那束辉光、选中的电源计划按钮。
+  其余读数是中性色，只有 ≥70% / ≥90% 才换成状态色（RenderKit.LevelColor）—— 告警是画面里唯一跳出来的颜色。
+- 发光是稀缺资源（暗色科技的全部"科技感"就靠它）：CPU 主读数的辉光是一张按内容缓存的位图
+  （Controls/RenderKit.cs 末尾的 GlowText：半分辨率画字 + 三遍盒式模糊；数字和颜色没变就原样复用，重做一次
+  不到 1ms），实心字照常画在它上面。开口环用 RenderKit.Dial 的 glow 参数，选中的电源计划用 PanelStyles 的
+  AccentBtn（辉光由 ExpandedPanel.ApplyTheme 的 "Glow" 资源给）。
+  **不要给页面挂 BlurEffect**：软件渲染里每个渲染通道都会重算一遍模糊（毛玻璃每更新一次就是一个通道），
+  实测约 3.5ms。**也不要用"多层半透明错位描边"模拟发光**：每一次 DrawText 在软件渲染里约合 0.2ms，
+  48 次描边就是 10ms/帧。
+  **不要给页签挂 Effect**：软件渲染下按钮会被重新采样，强调色发灰、边缘发糊（试过，已撤）。
+- 顶部辉光与细网格画在 IslandCanvas.OnRender 里（RenderKit.Spotlight，按颜色缓存），只属于深色主题；
+  读数类收起视图的辉光画在压层之上（DrawCapsuleBase）。像素主题不铺网格。浅色主题不发光、不铺网格。
+- 数据用等宽字体：读数走 RenderKit.Num —— **一段读数只调一次 DrawText（整串排版）**，数字天然等宽。
+  不要为了"数字居中进格子"逐字画：每一次 DrawText 在软件渲染里约合 0.2ms，仪表盘视图一帧多出 5ms。
+  拉丁标签 / 单位 / 进程名走 RenderKit.Mono，中文走 RenderKit.Text（界面字体）。等宽体没有汉字，
+  混排时靠逐字回退到微软雅黑。限宽省略的文本（进程名、显卡名）走 Trimmed / MonoTrimmed：按"文本 + 可用宽度"
+  缓存，拿到后只画不改。
+- **重绘很贵，数据更新不等于画面变化**：监控页重绘一次（录制绘制指令 + 软件光栅化）约 30ms。温度服务
+  每 1.4 秒推一次快照，但页面上只用得到取整后的几个数 —— 所以温度更新先过 Controls/ThermalDisplay.Signature
+  （与 OnRender 的显示格式逐项对应），画面会变才 InvalidateVisual（MonitorPage.ThermalUpdate）。
+  改监控页里温度的显示格式时要同步改 ThermalDisplay（DesignSystemTests 守着取整边界）。
+  给别的页加"数据驱动"的重绘时照这个做：先问画面变没变。
+- 收起态切视图的变形帧（小形象 → 信息胶囊、滚轮换视图）：本体还在长的那零点几秒，内容按**最终的本体矩形**排版、
+  裁进当前的本体（IslandCanvas.FinalBodyRect 由宿主提供，每次渲染现取弹簧的目标值），胶囊长大时把最终版面
+  从中间揭开。不要改回"按当前矩形排"：网速块贴着当前右缘，会和表盘叠在一起，装不下的部分画到胶囊外面。
+  本体静止时两个矩形相等，走原来的路径 —— 不加裁剪、画面逐像素不变。各视图的压层（DrawCapsuleBase）永远按
+  当前本体（_bodyNow）画，不跟随排版矩形。
+- 面板字号只用四档：36（主读数）/ 17（行读数）/ 12（标签与说明）/ 11（页脚与计数）。
+- 面板里的控件必须用 PanelStyles.xaml 的样式（QuietBtn / AccentBtn / TabBtn / ToggleSwitch / ThinSlider /
+  ThinProgress），不要放默认模板的 WPF 控件；图标用 Glyphs.cs 的矢量图标，不要用 emoji。
+- 设置窗口（SettingsWindow）与面板共用同一套：构造时合并 PanelStyles.xaml，令牌由 ExpandedPanel.ApplyTheme 写进
+  窗口资源（SettingsWindow.Res<T>("Fg") 取用）。给设置窗口加控件先找 PanelStyles 里有没有；面板按钮的尺寸是按
+  小面板定的，设置窗口里用 SettingsWindow.WindowButton 放大一号。别的窗口要跟主题走也照这个做，不要各写一套颜色。
+- 设置窗口里的交互逻辑是有来历的（保存失败的提示与确认、"全部重置"的两段确认和顺序、高风险开关的二次确认、
+  开关的键盘可达和读屏接口）：改样式时逐段保留。验证交互用"进程内 + 设置目录重定向到临时目录"的办法
+  （Settings.DirectoryOverride），别拿真实的 settings.json 试。
+- 文字对比度、等宽数字、坏数值不崩，由 Island.Tests 的 DesignSystemTests 守着（改主题色先跑它）。
+- 换主题：IslandWindow.UpdatePanelResources → ExpandedPanel.ApplyTheme 写全套令牌 → Retint 重取选中态。
+  新增面板资源要在这里登记，浅色主题（IsDark = false）要有对应的取值。
+- 验证界面改动的方法：用真实控件离屏渲染（每套主题 × 收起态各视图 × 面板各页），对比改前改后，
+  再单独看三种边界状态（高负载告警 / 非管理员 / 没有 GPU 读数）会不会叠字或溢出。
 
 【Mac 版】
 src/Island.Avalonia/ —— Avalonia 11 跨平台实现，详见 README-Mac.md

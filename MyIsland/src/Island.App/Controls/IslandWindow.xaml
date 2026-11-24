@@ -1,9 +1,14 @@
+<!-- 窗口背景必须是 null（不能是 Transparent）：
+     Transparent 会让 WPF 模板的 Border 铺满整片 640×500 并参与命中，
+     岛体没画到的位置会把点击和滚轮吃掉（底层应用收不到）。
+     离屏探针验证：Background={x:Null} 时窗口空白处不再命中，自绘控件画到的位置仍然命中。 -->
 <Window x:Class="Island.App.Controls.IslandWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:controls="clr-namespace:Island.App.Controls"
         Title="Island" Width="600" Height="440"
-        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        WindowStyle="None" AllowsTransparency="True"
+        Background="{x:Null}"
         ShowInTaskbar="False" ShowActivated="False" Topmost="True"
         ResizeMode="NoResize">
     <Grid x:Name="Root">
@@ -15,9 +20,9 @@
                                MouseRightButtonDown="OnMouseRightDown"
                                MouseWheel="OnMouseWheel"/>
 
-        <!-- 展开面板 -->
-        <controls:ExpandedPanel x:Name="expandedPanel" Opacity="0" IsHitTestVisible="False"
-                                HorizontalAlignment="Center" VerticalAlignment="Center"
-                                Width="540" Height="380" Margin="0,0,0,0"/>
+        <!-- 展开面板：不在 XAML 里声明 —— 那会在启动时就把 540×380 的整棵可视树
+             （含主题资源、中文字体、监控页/设备页控件）实例化并常驻内存，
+             而用户绝大多数时间只看收起态的小胶囊。改为首次展开时在代码里创建，
+             收起动画结束后释放（见 IslandWindow.EnsurePanel / ReleasePanel）。 -->
     </Grid>
 </Window>
