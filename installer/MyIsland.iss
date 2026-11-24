@@ -2,7 +2,7 @@
 #define AppName "MyIsland"
 ; 版本可由命令行注入：ISCC /DAppVersion=1.0.2 MyIsland.iss
 #ifndef AppVersion
-#define AppVersion "1.0.4"
+#define AppVersion "1.0.5"
 #endif
 ; 发布者 = 证书 Subject 之外的展示名；用户端"发布者"那一行取自签名证书的 Subject
 #define AppPublisher "MyIsland"

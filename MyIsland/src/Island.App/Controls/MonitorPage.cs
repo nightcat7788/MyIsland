@@ -328,6 +328,48 @@ public sealed class MonitorPage : FrameworkElement
             y += 48;
         }
 
+        // ---------- 外设电量（2026-11-25 设备电量监控模块）：每台外设一行，读数右对齐、名字吃剩余宽度。
+        // 本机电池不在这一组（页脚已经有"电池"），蓝牙设备 / GATT 直读 / 手柄档位都在这里。
+        // 排不下就不画（页脚还要留位），与页脚同一套规矩。
+        if (Want("devices"))
+        {
+            var externals = new List<DeviceInfo>();
+            foreach (var d in DeviceService.Snapshot)
+                if (d.Name != "笔记本电池") externals.Add(d);
+            int devRows = Math.Min(externals.Count, 3);
+            if (devRows > 0 && y + devRows * 22 + 30 <= H)
+            {
+                foreach (var d in externals.Take(devRows))
+                {
+                    double bl = y + 15;
+                    Color vc = d.Charging ? Color.FromRgb(0x3F, 0xC1, 0x5E)
+                        : d.LevelText is { } lv ? (lv is "空" or "低" ? pal.Up : lv == "中" ? pal.Warning : pal.Text)
+                        : d.Percent <= 20 ? pal.Up
+                        : d.Percent <= 40 ? pal.Warning : pal.Text;
+                    var glyphT = RenderKit.Text(DeviceService.Glyph(d.Kind), 11, pal.TextDim, true, ppd);
+                    RenderKit.Baseline(dc, glyphT, x0, bl);
+                    // 读数先占位（右对齐），名字吃剩余宽度（进程榜同款排法）
+                    double right = lw - 6;
+                    double valueW;
+                    if (d.LevelText is { } levelText)
+                    {
+                        var lvT = RenderKit.Text(levelText, 13, vc, true, ppd);
+                        valueW = lvT.WidthIncludingTrailingWhitespace;
+                        RenderKit.Baseline(dc, lvT, right - valueW, bl);
+                    }
+                    else
+                    {
+                        valueW = RenderKit.NumWidth($"{d.Percent}%", 13, true, ppd);
+                        RenderKit.Num(dc, $"{d.Percent}%", right - valueW, bl, 13, vc, true, ppd);
+                    }
+                    var name = RenderKit.MonoTrimmed(d.Name, 11.5, pal.Text,
+                        right - valueW - 14 - (x0 + 16), false, ppd);
+                    RenderKit.Baseline(dc, name, x0 + 16, bl);
+                    y += 22;
+                }
+            }
+        }
+
         // ---------- 页脚：从左往右排，排不下就不画 ----------
         // 右栏进程榜关着时，今日流量落在这里的右端（开着时由右栏自己画在它的页脚）。
         if (Want("power"))

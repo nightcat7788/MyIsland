@@ -1649,7 +1649,7 @@ public partial class IslandWindow : Window
             {
                 new("cpu", "CPU 行"), new("cores", "核心柱"), new("mem", "内存行"),
                 new("gpu", "GPU 行"), new("disk", "硬盘行"), new("net", "网速行"),
-                new("power", "功耗/主板行"), new("topproc", "进程榜"),
+                new("power", "功耗/主板行"), new("devices", "外设电量"), new("topproc", "进程榜"),
             },
             preview,
             () => _settings.MonitorItems,
