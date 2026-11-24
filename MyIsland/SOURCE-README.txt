@@ -158,7 +158,8 @@ D:\YQDESK\MyIsland-改进记录.md 第十节。规则只有下面这几条，别
 - 设备图标统一走 `Glyphs.IconOf(kind)`（鼠标/键盘/耳机/手柄剪影，认不出给电池轮廓），设备页电量环与收起态
   设备行共用；不要再写单字"鼠/键/耳/柄"。
 - 展开页顶栏 = 左页签 + 中时钟 + 右齿轮(设置中心, btnSettings) + ✕。整体 UI/UE 的参照是 BrimDeck
-  （官方截图在 brimdeck-ref；进程榜排序的分段药丸、顶栏齿轮、设备剪影图标都是 2026-11-25 对齐它的）。
+  （官方截图在 branding/ref/，源码参考在 D:\YQDESK\BrimDeck-ref\BrimDeck-upstream；进程榜排序的分段药丸、
+  顶栏齿轮、设备剪影图标都是 2026-11-25 对齐它的）。
 - 设置窗口（SettingsWindow）与面板共用同一套：构造时合并 PanelStyles.xaml，令牌由 ExpandedPanel.ApplyTheme 写进
   窗口资源（SettingsWindow.Res<T>("Fg") 取用）。给设置窗口加控件先找 PanelStyles 里有没有；面板按钮的尺寸是按
   小面板定的，设置窗口里用 SettingsWindow.WindowButton 放大一号。别的窗口要跟主题走也照这个做，不要各写一套颜色。
