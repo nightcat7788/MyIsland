@@ -6,9 +6,13 @@
     [string]$TsaUrl = "http://timestamp.digicert.com",
     [string]$OutDir = "",
     [string]$Stage = "",
+    [string]$Dotnet = "",
+    [string]$Iscc = "",
     [switch]$SkipPublish,
     [switch]$SkipTests,
     [switch]$SkipZip,
+    [switch]$SkipInstaller,
+    [switch]$RequireInstaller,
     [switch]$StopRunning
 )
 
@@ -19,6 +23,12 @@
 #   powershell -ExecutionPolicy Bypass -File release.ps1 -Version 1.0.2
 #   powershell -ExecutionPolicy Bypass -File release.ps1 -CertPfx D:\keys\mine.pfx   # 密码取自 MYISLAND_SIGN_PWD
 #   powershell -ExecutionPolicy Bypass -File release.ps1 -CertThumbprint <HEX>
+#   powershell -ExecutionPolicy Bypass -File release.ps1 -SkipInstaller             # 没装 Inno Setup：只出便携包
+#   powershell -ExecutionPolicy Bypass -File release.ps1 -RequireInstaller          # 必须有安装包；缺 ISCC 直接失败
+#   powershell -ExecutionPolicy Bypass -File release.ps1 -Dotnet D:\sdk\dotnet.exe # 指定带 SDK 的 dotnet
+#
+# 没装 Inno Setup 7 时脚本不会在第 0 步就退出：自动降级为「只出已签名的便携 zip + 校验清单」，
+# 并在日志和最终输出里明确写出本次没有安装包；用 -RequireInstaller 可以要求缺 ISCC 时直接失败。
 #
 # 证书来源与 sign.ps1 一致：PFX / 证书库 thumbprint / 默认自签 CN=MyIsland。
 # 换公有 CA 证书时只改这两个参数，流程不动。
@@ -62,24 +72,92 @@ function Step($n, $m) { Write-Host ""; Write-Host "=== [$n] $m ===" -ForegroundC
 
 # ---- 0. 工具定位 ----
 Step '0/7' '定位工具链'
-$dotnet = 'C:\Program Files\dotnet\dotnet.exe'
-if (-not (Test-Path $dotnet) -or -not (& $dotnet --list-sdks 2>$null)) {
-    $dotnet = "$env:USERPROFILE\dotnet-sdk\dotnet.exe"
+
+# dotnet 发现：可配置 + 必须真的有 SDK。
+# 只看 exe 存在不够 —— 很多机器的 C:\Program Files\dotnet 只装了运行时没有 SDK，
+# 而 dotnet --list-sdks 对这种机器返回空输出（这正是判据，不能改成"文件在不在"）。
+# 顺序：显式 -Dotnet → $env:DOTNET_ROOT → PATH 上的 dotnet → 仓库及上级的 .dotnet 目录 → 原有两个候选。
+function Resolve-DotnetSdk {
+    $tried = New-Object System.Collections.ArrayList
+    $candidates = New-Object System.Collections.ArrayList
+    if ($Dotnet) {
+        [void]$candidates.Add($Dotnet)
+    } else {
+        if ($env:DOTNET_ROOT) { [void]$candidates.Add((Join-Path $env:DOTNET_ROOT 'dotnet.exe')) }
+        $cmd = Get-Command 'dotnet' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($cmd) { [void]$candidates.Add($cmd.Source) }
+        # 仓库根及上级的 .dotnet 目录：SDK 常放在仓库外的同级/上级目录里
+        $d = $root
+        for ($i = 0; $i -lt 6; $i++) {
+            [void]$candidates.Add((Join-Path $d '.dotnet\dotnet.exe'))
+            $parent = Split-Path -Parent $d
+            if (-not $parent -or $parent -eq $d) { break }
+            $d = $parent
+        }
+        [void]$candidates.Add('C:\Program Files\dotnet\dotnet.exe')
+        [void]$candidates.Add((Join-Path $env:USERPROFILE 'dotnet-sdk\dotnet.exe'))
+    }
+    foreach ($c in $candidates) {
+        if (-not $c) { continue }
+        if ($tried -contains $c) { continue }
+        if (-not (Test-Path -LiteralPath $c -PathType Leaf)) {
+            [void]$tried.Add("$c （文件不存在）"); continue
+        }
+        $sdks = @()
+        $prev = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $sdks = @(& $c --list-sdks 2>&1 | Where-Object { $_ -is [string] -and $_.Trim() -ne '' })
+        } catch {
+            $sdks = @()
+        } finally {
+            $ErrorActionPreference = $prev
+        }
+        if ($sdks.Count -eq 0) {
+            [void]$tried.Add("$c （存在，但没有安装 SDK）"); continue
+        }
+        return [pscustomobject]@{ Path = $c; Sdks = $sdks }
+    }
+    throw ("找不到带 SDK 的 dotnet。已尝试：" + ($tried -join ' | ') + "。可用 -Dotnet <dotnet.exe 路径> 显式指定。")
 }
-if (-not (Test-Path $dotnet)) { throw "找不到 dotnet SDK" }
-$iscc = "$env:LOCALAPPDATA\Programs\Inno Setup 7\ISCC.exe"
-if (-not (Test-Path $iscc)) {
-    foreach ($c in 'C:\Program Files (x86)\Inno Setup 7\ISCC.exe', 'C:\Program Files\Inno Setup 7\ISCC.exe') {
-        if (Test-Path $c) { $iscc = $c; break }
+$dotnetInfo = Resolve-DotnetSdk
+$dotnetExe = $dotnetInfo.Path
+
+# ISCC（Inno Setup 7）是**可选**的：没装也能出已签名的便携 zip + 校验清单。
+$isccExe = $Iscc
+if (-not $isccExe) {
+    $isccExe = "$env:LOCALAPPDATA\Programs\Inno Setup 7\ISCC.exe"
+    if (-not (Test-Path $isccExe)) {
+        foreach ($c in 'C:\Program Files (x86)\Inno Setup 7\ISCC.exe', 'C:\Program Files\Inno Setup 7\ISCC.exe') {
+            if (Test-Path $c) { $isccExe = $c; break }
+        }
     }
 }
-if (-not (Test-Path $iscc)) { throw "找不到 ISCC.exe（Inno Setup 7）" }
+$isccFound = Test-Path -LiteralPath $isccExe -PathType Leaf
+if ($SkipInstaller -and $RequireInstaller) {
+    throw "-SkipInstaller 与 -RequireInstaller 不能同时使用（一个要求跳过安装包，一个要求必须有安装包）"
+}
+$buildInstaller = $true
+if ($RequireInstaller -and -not $isccFound) {
+    throw ("找不到 ISCC.exe（Inno Setup 7），而你要求本次必须产出安装包（-RequireInstaller）。" +
+           "已尝试：$isccExe。请安装 Inno Setup 7，或去掉 -RequireInstaller 改为只出便携包（-SkipInstaller）。")
+}
+if ($SkipInstaller) {
+    $buildInstaller = $false
+    Write-Host "按 -SkipInstaller 跳过安装包编译" -ForegroundColor Yellow
+} elseif (-not $isccFound) {
+    $buildInstaller = $false
+    Write-Host ""
+    Write-Host "警告：找不到 ISCC.exe（Inno Setup 7）—— 本次发布不会产出安装包。" -ForegroundColor Yellow
+    Write-Host "      只会产出已签名的便携 zip + SHA256SUMS.txt。装好 Inno Setup 7 后重跑即可出安装包。" -ForegroundColor Yellow
+}
 $pf86 = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86)
 $signTool = (Get-ChildItem (Join-Path $pf86 'Windows Kits\10\bin') -Recurse -Filter 'signtool.exe' -ErrorAction SilentlyContinue |
              Where-Object { $_.DirectoryName -match 'x64$' } | Sort-Object FullName -Descending | Select-Object -First 1).FullName
 if (-not $signTool) { throw "找不到 signtool.exe（请先装 Windows SDK）" }
-Write-Host "dotnet  : $dotnet"
-Write-Host "ISCC    : $iscc"
+$isccDisplay = if ($isccFound) { $isccExe } else { '(未找到 —— 本次不产出安装包)' }
+Write-Host "dotnet  : $dotnetExe  (SDK: $($dotnetInfo.Sdks -join ', '))"
+Write-Host "ISCC    : $isccDisplay"
 Write-Host "signtool: $signTool"
 Write-Host "暂存目录: $Stage"
 Write-Host "输出    : $OutDir"
@@ -134,7 +212,7 @@ if ($StopRunning) {
 # ---- 3. 测试（门禁）----
 if (-not $SkipTests) {
     Step '3/7' '运行测试'
-    & $dotnet run --project (Join-Path $root 'tests\Island.Tests\Island.Tests.csproj') -c Release 2>&1 |
+    & $dotnetExe run --project (Join-Path $root 'tests\Island.Tests\Island.Tests.csproj') -c Release 2>&1 |
         Select-Object -Last 3 | ForEach-Object { Write-Host "  $_" }
     if ($LASTEXITCODE -ne 0) { throw "测试失败（exit $LASTEXITCODE），发布中止" }
 }
@@ -143,7 +221,7 @@ if (-not $SkipTests) {
 if (-not $SkipPublish) {
     Step '4/7' 'publish 主程序（到暂存目录）'
     New-Item -ItemType Directory -Path $Stage -Force | Out-Null
-    & $dotnet publish (Join-Path $root 'src\Island.App\Island.App.csproj') -c Release -r win-x64 --self-contained true -p:DebugType=None -p:DebugSymbols=false -o $Stage 2>&1 |
+    & $dotnetExe publish (Join-Path $root 'src\Island.App\Island.App.csproj') -c Release -r win-x64 --self-contained true -p:DebugType=None -p:DebugSymbols=false -o $Stage 2>&1 |
         Select-String -Pattern 'error|-> ' | Select-Object -Last 3 | ForEach-Object { Write-Host "  $($_.Line)" }
     if ($LASTEXITCODE -ne 0) { throw "publish 失败" }
     # 非 zh/en 的卫星资源由 installer\MyIsland.iss 的 Excludes 排除
@@ -170,28 +248,35 @@ $thumb = [System.IO.File]::ReadAllText($tpFile).Trim()
 Write-Host "证书指纹：$thumb"
 
 # ---- 6. ISCC：编译安装包（编译期由 .iss 的 SignTool= 签名）----
-Step '6/7' '编译并签名安装包'
 New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
-# Inno 7 的 SignTool= 只认"命名工具"：名字必须在 ISCC 命令行用 --signtool=名字=命令 定义。
-# 工具路径用 8.3 短路径（没有空格，避免 Inno 解析命令行的坑）；短路径不可用时退回加引号的长路径。
-$short = & {
-    $sb = New-Object System.Text.StringBuilder 260
-    if (-not ('SP3' -as [type])) {
-        Add-Type -TypeDefinition 'using System;using System.Text;using System.Runtime.InteropServices;public class SP3{[DllImport("kernel32.dll",CharSet=CharSet.Auto)]public static extern int GetShortPathName(string l,StringBuilder s,int c);}' -ErrorAction SilentlyContinue
+$setup = $null
+if (-not $buildInstaller) {
+    # 降级路径：明说"这次没有安装包"，不让人以为出了却找不到
+    Step '6/7' '编译并签名安装包（本次跳过）'
+    Write-Host "本次跳过安装包编译 —— 不会生成 MyIsland-Setup-$Version.exe" -ForegroundColor Yellow
+} else {
+    Step '6/7' '编译并签名安装包'
+    # Inno 7 的 SignTool= 只认"命名工具"：名字必须在 ISCC 命令行用 --signtool=名字=命令 定义。
+    # 工具路径用 8.3 短路径（没有空格，避免 Inno 解析命令行的坑）；短路径不可用时退回加引号的长路径。
+    $short = & {
+        $sb = New-Object System.Text.StringBuilder 260
+        if (-not ('SP3' -as [type])) {
+            Add-Type -TypeDefinition 'using System;using System.Text;using System.Runtime.InteropServices;public class SP3{[DllImport("kernel32.dll",CharSet=CharSet.Auto)]public static extern int GetShortPathName(string l,StringBuilder s,int c);}' -ErrorAction SilentlyContinue
+        }
+        if ([SP3]::GetShortPathName($signTool, $sb, 260) -gt 0) { $sb.ToString() } else { $signTool }
     }
-    if ([SP3]::GetShortPathName($signTool, $sb, 260) -gt 0) { $sb.ToString() } else { $signTool }
+    if ($short -match '\s') { $short = '"' + $short + '"' }
+    # 单引号拼接：$f 必须原样传给 Inno（它是 Inno 的文件占位符，不是 PowerShell 变量）
+    $signDef = '--signtool=myisland=' + $short + ' sign /sha1 ' + $thumb + ' /fd sha256 /tr ' + $TsaUrl + ' /td sha256 $f'
+    $isccArgs = @($signDef, "/DMyIslandSignTool=myisland", "/DAppVersion=$Version",
+                  "/DOutDir=$OutDir", "/DSrcDir=$Stage", $issFile)
+    Assert-SafeStage $Stage
+    & $isccExe $isccArgs
+    if ($LASTEXITCODE -ne 0) { throw "ISCC 失败（exit $LASTEXITCODE）" }
+    $setup = Join-Path $OutDir "MyIsland-Setup-$Version.exe"
+    if (-not (Test-Path $setup)) { throw "安装包没生成：$setup" }
+    Write-Host "安装包：$setup"
 }
-if ($short -match '\s') { $short = '"' + $short + '"' }
-# 单引号拼接：$f 必须原样传给 Inno（它是 Inno 的文件占位符，不是 PowerShell 变量）
-$signDef = '--signtool=myisland=' + $short + ' sign /sha1 ' + $thumb + ' /fd sha256 /tr ' + $TsaUrl + ' /td sha256 $f'
-$isccArgs = @($signDef, "/DMyIslandSignTool=myisland", "/DAppVersion=$Version",
-              "/DOutDir=$OutDir", "/DSrcDir=$Stage", $issFile)
-Assert-SafeStage $Stage
-& $iscc $isccArgs
-if ($LASTEXITCODE -ne 0) { throw "ISCC 失败（exit $LASTEXITCODE）" }
-$setup = Join-Path $OutDir "MyIsland-Setup-$Version.exe"
-if (-not (Test-Path $setup)) { throw "安装包没生成：$setup" }
-Write-Host "安装包：$setup"
 
 # ---- 7. 便携 zip ----
 $zip = Join-Path $OutDir "MyIsland-$Version-portable.zip"
@@ -236,13 +321,20 @@ function SigLine([string]$p) {
         Stamp    = $stamp
     }
 }
-$artifacts = @($setup)
+# 清单只列**实际存在**的产物：降级（没装 Inno Setup）时不含安装包，
+# 也不得因为缺安装包而报错 —— 门禁只对列出来的产物判定。
+$artifacts = @()
+if ($setup) { $artifacts += $setup }
 if (-not $SkipZip) { $artifacts += $zip }
 $artifacts += $mainExe
 $report = $artifacts | ForEach-Object { SigLine $_ }
 $report | Format-Table -AutoSize | Out-String -Width 220 | Write-Host
 
 $lines = @('# MyIsland 发布校验清单', '', "版本：$Version", "生成时间：$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')", '')
+if (-not $buildInstaller) {
+    $lines += "# 注意：本次发布没有安装包（MyIsland-Setup-$Version.exe 未生成）；下面只有便携 zip 与主 exe"
+    $lines += ''
+}
 foreach ($r in $report) {
     $lines += "$($r.SHA256)  $($r.File)  [签名=$($r.Status) 签名者=$($r.Signer) 时间戳=$($r.Stamp)]"
 }
@@ -262,3 +354,9 @@ if ($bad) {
 }
 Write-Host ""
 Write-Host "门禁通过：全部产物均已签名且带 RFC3161 时间戳" -ForegroundColor Green
+if ($buildInstaller) {
+    Write-Host "产物：安装包 + 便携 zip + 校验清单（$OutDir）"
+} else {
+    Write-Host "注意：本次发布**没有安装包** —— MyIsland-Setup-$Version.exe 未生成（未找到 ISCC.exe 或指定了 -SkipInstaller）" -ForegroundColor Yellow
+    Write-Host "产物：便携 zip + 校验清单（$OutDir）"
+}

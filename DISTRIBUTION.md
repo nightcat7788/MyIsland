@@ -16,9 +16,44 @@ powershell -ExecutionPolicy Bypass -File release.ps1
 
 | 产物 | 签名 | 说明 |
 |---|---|---|
-| `MyIsland-Setup-<版本>.exe` | ✅ 可签名 | Inno 安装包（当前用户安装，免管理员） |
+| `MyIsland-Setup-<版本>.exe` | ✅ 可签名 | Inno 安装包（当前用户安装，免管理员）；**没装 Inno Setup 时不产出**，见下节 |
 | `MyIsland-<版本>-portable.zip` | ❌ 格式不支持 | 便携版；里面是**已签名**的 Island.App.exe |
 | `SHA256SUMS.txt` | — | 每个产物的 SHA256 + 签名状态 + 签名者 + 时间戳 |
+
+## 没装 Inno Setup 时：只出便携包
+
+流水线里只有**安装包**这一步依赖 Inno Setup 7（`ISCC.exe`）；测试 → publish → 签名 →
+便携 zip → 校验清单 → 门禁**完全不依赖**它。所以没装 Inno Setup 的机器照样能产出
+**已签名的便携 zip + `SHA256SUMS.txt`**：
+
+```powershell
+# 显式跳过安装包（意图清楚，推荐）
+powershell -ExecutionPolicy Bypass -File release.ps1 -SkipInstaller -OutDir D:\out
+
+# 不加参数也行：找不到 ISCC.exe 时脚本自动降级为"只出便携包"，
+# 并在日志与脚本结尾明确写出「本次发布没有安装包」，不会假装安装包出了
+powershell -ExecutionPolicy Bypass -File release.ps1 -OutDir D:\out
+```
+
+反过来，**要求必须有安装包**时（CI 里防止静默少产物）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File release.ps1 -RequireInstaller
+# 找不到 ISCC.exe → 直接失败，退出码非 0（不会把失败吞成降级）
+```
+
+工具链相关的开关：
+
+| 参数 | 作用 |
+|---|---|
+| `-Dotnet <路径>` | 指定带 SDK 的 dotnet。不给就依次找：`$env:DOTNET_ROOT` → PATH 上的 `dotnet` → 仓库及上级的 `.dotnet\` 目录 → 旧的两个默认路径。每个候选都要用 `--list-sdks` 确认**真的有 SDK**（很多机器的系统 dotnet 只有运行时、没有 SDK） |
+| `-Iscc <路径>` | 指定 `ISCC.exe`（装在非默认位置时用） |
+| `-SkipInstaller` | 跳过安装包编译，只出便携包 |
+| `-RequireInstaller` | 必须出安装包；缺 ISCC 时直接失败（退出码非 0） |
+
+降级时 `SHA256SUMS.txt` 里**只有便携 zip 与主 exe**，门禁也只对**实际存在**的产物判定
+（exe/dll 必须 `Status=Valid` 且带 RFC3161 时间戳，zip 不参与签名判定）；
+清单文件里也会写明「本次发布没有安装包」。
 
 ## 签名工具链
 
@@ -103,7 +138,10 @@ powershell -ExecutionPolicy Bypass -File sign.ps1 -Target <文件> -VerifyOnly
    可选参数必须"非空才传"。
 5. **所有 .ps1 必须是 UTF-8 with BOM**：Windows PowerShell 5.1 按 ANSI 读无 BOM 文件，
    中文串乱码会吃掉引号变成语法错误，而且**没有任何报错输出**（进程秒退）。
-6. **`start-admin.ps1` 里凡是 `$变量` 后面接反斜杠的路径**（如 `"$root\publish\win-x64"`）
+6. **"有 dotnet ≠ 有 SDK"**：`C:\Program Files\dotnet\dotnet.exe` 常常只装了运行时，
+   `dotnet --list-sdks` 返回空输出。发布脚本因此对每个候选都跑一次 `--list-sdks`，
+   空输出即视为不可用（只判文件存在会选到一个装不了 SDK 的 dotnet）。
+7. **`start-admin.ps1` 里凡是 `$变量` 后面接反斜杠的路径**（如 `"$root\publish\win-x64"`）
    都必须是**真反斜杠**。这个文件历史上被模板处理吃掉过反斜杠（`\r` 被当成换行、其余 `\x` 被吞掉），
    结果 `"$env:LOCALAPPDATAMyIsland\nun.log"` 这类路径全部失效、脚本静默失败。
    改这个文件后请逐条核对插值路径里有没有反斜杠。
