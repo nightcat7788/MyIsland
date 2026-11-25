@@ -210,23 +210,31 @@ public sealed class ThermalService : IDisposable
 
                     if (hw.HardwareType == HardwareType.Cpu)
                     {
-                        // 取值顺序 = 优先级。AMD（LHM Amd17Cpu）的传感器名：Core (Tctl) / Core (Tdie) / Core (Tctl/Tdie)。
-                        // 1600X/1700X/1800X/2700X 与初代 Threadripper 同时有 Tctl 和 Tdie，Tctl 比真实核心温度高 10–27°C；
-                        // 以前 "Tctl" 排在前面会先命中它 ⇒ 读数虚高、容易误触高温告警。所以 "Tdie" 必须排在 "Tctl" 之前
-                        // （其它 Zen 只暴露 Core (Tctl/Tdie)，同样被 "Tdie" 命中；Intel 的传感器名不含 Tdie，不受影响）。
-                        // 依据：LibreHardwareMonitor v0.9.6 Hardware/Cpu/Amd17Cpu.cs（2026-11-24 核对）。
-                        cpuTemp ??= Pick(hw, SensorType.Temperature, "Core Average", "CPU Package", "Package", "Tdie", "Tctl");
-                        cpuPower = Pick(hw, SensorType.Power, "CPU Package", "Package") ?? cpuPower;
-                        cpuFan ??= FirstOf(hw, SensorType.Fan);
+                        // 取值走规则类（HardwareSensorRules），不再用"名字白名单 + Contains"。
+                        // 分层口径与 Services/CpuTemperatureRule.cs 完全一致（那里是既有结论）：
+                        //   package → tdie（不含 tctl）→ tctl/tdie → tctl → ccd → core max → 逐核取最大 → average 兜底，
+                        // 同层取最大值（多核 / 多 CCD 时取最热的那一个）。
+                        // Tctl 比真实核心温度高 10–27°C，绝不能让它排在 Tdie 前面
+                        // （依据：LibreHardwareMonitor v0.9.6 Hardware/Cpu/Amd17Cpu.cs，2026-11-24 核对）。
+                        // "Distance to TjMax"（离最高温还有多远，不是温度）等干扰项由规则类统一排除。
+                        if (cpuTemp is null)
+                        {
+                            var cpuTempPick = HardwareSensorRules.Pick(HardwareSensorKind.CpuTemperature, Collect(hw, SensorType.Temperature));
+                            cpuTemp = cpuTempPick?.Value;
+                            cpuTempSource = cpuTempPick?.SensorName;   // 诊断日志：这次温度是从哪个传感器读出来的
+                        }
+                        cpuPower = HardwareSensorRules.Pick(HardwareSensorKind.CpuPower, Collect(hw, SensorType.Power))?.Value ?? cpuPower;
+                        cpuFan ??= HardwareSensorRules.Pick(HardwareSensorKind.CpuFan, Collect(hw, SensorType.Fan))?.Value;
                     }
                     else if (hw.HardwareType is HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel)
                     {
-                        var t = Pick(hw, SensorType.Temperature, "GPU Core", "GPU Hot Spot", "GPU");
+                        // 名字 → 语义的判定交给规则类：GPU Core → 温度，GPU Package / Chip Power → 功耗。
+                        var t = HardwareSensorRules.Pick(HardwareSensorKind.GpuTemperature, Collect(hw, SensorType.Temperature))?.Value;
                         // 多 GPU（核显+独显）：优先"正在耗电"的那块（独显），其次取先遇到的那块。
                         // 注意 0W 也是合法读数（空闲显卡），但拿 0W 当"独显"判据会把核显选上来，
                         // 所以判据用 p > 0，显示值仍允许 0。
-                        var p = Pick(hw, SensorType.Power, "GPU Package", "GPU Chip Power", "GPU Core");
-                        var f = FirstOf(hw, SensorType.Fan);
+                        var p = HardwareSensorRules.Pick(HardwareSensorKind.GpuPower, Collect(hw, SensorType.Power))?.Value;
+                        var f = HardwareSensorRules.Pick(HardwareSensorKind.GpuFan, Collect(hw, SensorType.Fan))?.Value;
                         if (t is not null)
                         {
                             bool thisActive = p is not null && p > 0;
@@ -239,25 +247,29 @@ public sealed class ThermalService : IDisposable
                         }
                         gpuFan ??= f;
                         // 显存（LiteMonitor 同款：NVIDIA 专用显存 / Intel·AMD 走 D3D 共享显存）
-                        gpuMemUsed ??= Pick(hw, SensorType.SmallData,
-                            "GPU Memory Used", "D3D Dedicated Memory Used", "D3D Shared Memory Used");
-                        gpuMemTotal ??= Pick(hw, SensorType.SmallData,
-                            "GPU Memory Total", "D3D Dedicated Memory Total", "D3D Shared Memory Total");
+                        // 语义判定交给规则类：厂商显存（GPU Memory Used）→ D3D 专用显存 → D3D 共享显存。
+                        gpuMemUsed ??= HardwareSensorRules.Pick(HardwareSensorKind.GpuMemoryUsed, Collect(hw, SensorType.SmallData))?.Value;
+                        gpuMemTotal ??= HardwareSensorRules.Pick(HardwareSensorKind.GpuMemoryTotal, Collect(hw, SensorType.SmallData))?.Value;
                         // GPU 核心频率
-                        gpuClock ??= Pick(hw, SensorType.Clock, "GPU Core");
+                        gpuClock ??= HardwareSensorRules.Pick(HardwareSensorKind.GpuClock, Collect(hw, SensorType.Clock))?.Value;
                     }
                     else if (hw.HardwareType == HardwareType.Storage)
                     {
                         // SSD 温度：NVMe 用户态 IOCTL 一般免提权；读不到保持 null 显示 "--"
-                        ssdTemp ??= Pick(hw, SensorType.Temperature, "Temperature", "Composite Temperature", "NAND");
+                        // 语义判定交给规则类：SMART 合成温度（Composite）优先，其次驱动给的温度，最后 NAND。
+                        ssdTemp ??= HardwareSensorRules.Pick(HardwareSensorKind.StorageTemperature, Collect(hw, SensorType.Temperature))?.Value;
                     }
                     else if (hw.HardwareType == HardwareType.Motherboard)
                     {
+                        // 主板/SuperIO 的温度与风扇：逐个子硬件收集，语义判定交给规则类。
+                        var mbTemps = new List<HardwareSensor>();
                         foreach (IHardware sub in hw.SubHardware)
                         {
-                            mbTemp ??= FirstOf(sub, SensorType.Temperature);
-                            cpuFan ??= Pick(sub, SensorType.Fan, "CPU", "CPU #1");
+                            mbTemps.AddRange(Collect(sub, SensorType.Temperature));
+                            // CPU 风扇挂在主板 SuperIO 上（"CPU Fan" / "CPU #1"）；机箱风扇不算 CPU 风扇。
+                            cpuFan ??= HardwareSensorRules.Pick(HardwareSensorKind.CpuFan, Collect(sub, SensorType.Fan))?.Value;
                         }
+                        mbTemp ??= HardwareSensorRules.Pick(HardwareSensorKind.MotherboardTemperature, mbTemps)?.Value;
                     }
                 }
                 if (dump)
@@ -387,20 +399,20 @@ public sealed class ThermalService : IDisposable
         return value.Value > 0.01;
     }
 
-    private static double? Pick(IHardware hw, SensorType type, params string[] names)
+    /// <summary>
+    /// 把某块硬件上某种类型的传感器收集成规则类要的候选列表（名字 + 读数）。
+    /// 读数有效性沿用 <see cref="IsValidReading"/>：风扇/功耗允许 0（停转/空闲是真实读数），
+    /// 其余必须 &gt; 0.01；没有读数与读数为 0 是两回事。
+    /// 选哪个传感器由 HardwareSensorRules 决定，这里只负责"把候选收齐"。
+    /// </summary>
+    private static List<HardwareSensor> Collect(IHardware hw, SensorType type)
     {
-        var sensors = hw.Sensors.Where(s => s.SensorType == type && IsValidReading(type, s.Value));
-        foreach (var n in names)
-        {
-            var hit = sensors.FirstOrDefault(s =>
-                s.Name.Contains(n, StringComparison.OrdinalIgnoreCase));
-            if (hit is not null) return hit.Value;
-        }
-        return null;
+        var list = new List<HardwareSensor>();
+        foreach (ISensor s in hw.Sensors)
+            if (s.SensorType == type && IsValidReading(type, s.Value))
+                list.Add(new HardwareSensor(s.Name, s.Value!.Value));
+        return list;
     }
-
-    private static double? FirstOf(IHardware hw, SensorType type) =>
-        hw.Sensors.FirstOrDefault(s => s.SensorType == type && IsValidReading(type, s.Value))?.Value;
 
     public void Dispose()
     {

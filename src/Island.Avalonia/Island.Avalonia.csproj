@@ -47,6 +47,8 @@
     <Compile Include="..\Island.App\Animation\Spring.cs" Link="Merged\Spring.cs" />
     <!-- 温度服务是纯 .NET + LHM（无 WPF 依赖）：Windows 上提供 CPU/GPU/SSD 温度；Mac 上自动无数据 -->
     <Compile Include="..\Island.App\Services\ThermalService.cs" Link="Merged\ThermalService.cs" />
+    <!-- 硬件传感器取值规则：ThermalService 的依赖（2026-11-26，名字白名单 → 分层规则）；纯 .NET、无 WPF/Win32 依赖 -->
+    <Compile Include="..\Island.App\Services\HardwareSensorRules.cs" Link="Merged\HardwareSensorRules.cs" />
     <!-- 温度快照：ThermalService 的依赖（2026-11-24 起 ThermalService 改为产快照）；纯 .NET、无 WPF 依赖 -->
     <Compile Include="..\Island.App\Services\ThermalSnapshot.cs" Link="Merged\ThermalSnapshot.cs" />
     <!-- PawnIO 自举与 Intel GCL 拦截：ThermalService 的依赖，纯 .NET（注册表/SHA-256/反射），无 WPF 依赖 -->

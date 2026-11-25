@@ -64,6 +64,36 @@ public sealed class SystemMonitor : IDisposable
         _timer.Elapsed += OnTick;
     }
 
+    /// <summary>
+    /// 运行时长计数器（PDH "System" / "System Up Time"）。
+    /// 比 Environment.TickCount64 准：后者把**休眠**时间也算进去（合盖一夜后显示"运行了 12 小时"）。
+    /// LiteMonitor 同款口径。
+    /// </summary>
+    private void InitUptime()
+    {
+        try
+        {
+            _uptimeCounter = new PerformanceCounter("System", "System Up Time", true);
+            _uptimeCounter.NextValue();   // 原始值计数器：第一次读就是当前值
+        }
+        catch { _uptimeCounter = null; }
+    }
+
+    /// <summary>运行时长（小时）：PDH 优先，回退 Environment.TickCount64。</summary>
+    private double SampleUptimeHours()
+    {
+        if (_uptimeCounter is not null)
+        {
+            try
+            {
+                float seconds = _uptimeCounter.NextValue();
+                if (seconds > 0) return seconds / 3600.0;
+            }
+            catch { _uptimeCounter = null; }
+        }
+        return Environment.TickCount64 / 3600000.0;
+    }
+
     /// <summary>进程数/线程数计数器（PDH "System" 分类）—— 后台初始化时建。</summary>
     private void InitProcCounters()
     {
@@ -170,6 +200,7 @@ public sealed class SystemMonitor : IDisposable
             LoadTraffic();               // 恢复今日累计（重启不归零）
             InitNetworkBaseline();
             InitProcCounters();
+            InitUptime();
             InitCpu();
             InitDisk();
             _gpuCache = new CounterSampleCache();   // 打开 PDH 查询 + WMI 查显卡名（最慢的一步）
@@ -252,29 +283,93 @@ public sealed class SystemMonitor : IDisposable
         catch { }
     }
 
+    /// <summary>
+    /// CPU 占用计数器：优先 "Processor Information" 的 **"% Processor Utility"**
+    /// （Win8+，任务管理器口径，按实际频率折算）；回退 "% Processor Time"；再回退 legacy 类别。
+    /// LiteMonitor 同款回退链。
+    /// </summary>
+    private static PerformanceCounter? CreateCpuLoadCounter()
+    {
+        string[][] candidates =
+        {
+            new[] { "Processor Information", "% Processor Utility", "_Total" },
+            new[] { "Processor Information", "% Processor Time", "_Total" },
+            new[] { "Processor", "% Processor Time", "_Total" },
+        };
+        foreach (string[] c in candidates)
+        {
+            try
+            {
+                var counter = new PerformanceCounter(c[0], c[1], c[2], true);
+                counter.NextValue();   // 预热：第一次 NextValue 永远返回 0
+                return counter;
+            }
+            catch { /* 换下一个候选 */ }
+        }
+        return null;
+    }
+
     private void InitCpu()
     {
         try
         {
-            _cpuCounter = new PerformanceCounter("Processor", "% Processor Time", "_Total", true);
-            _cpuCounter.NextValue(); // 预热
+            // CPU 占用：LiteMonitor 口径（2026-11-26）——
+            // 用 "Processor Information" 的 **"% Processor Utility"**：它按**实际频率**折算，与任务管理器一致。
+            // 旧的 "% Processor Time" 是"占用时间占比"，在会睿频的机器上**只有它的一半左右**
+            // （本机实测：Utility 47–54% vs Time 26–28%）⇒ 岛体显示的 CPU 占用明显偏低。
+            // 回退链同 LiteMonitor：Utility → (Processor Information) Time → (legacy Processor) Time。
+            _cpuCounter = CreateCpuLoadCounter();
+            if (_cpuCounter is null) throw new InvalidOperationException("CPU 占用计数器不可用");
             int cores = Environment.ProcessorCount;
             // 核心柱：一次通配符查询读全部逻辑核（旧的逐核 PerformanceCounter 每秒 14 次 PDH collect）。
             // 通配符开不起来时再退回逐核计数器。
+            // 核心柱也用 Utility（与总占用同口径，否则"柱子的均值"和"总占用"对不上）。
+            // "Processor Information" 的实例名是 "0,0".."0,N"（组号,逻辑核号），另有 "0,_Total" 要跳过。
             try
             {
                 var query = new PdhWildcardQuery();
-                if (query.Open(@"\Processor(*)\% Processor Time")) _coreQuery = query;
+                if (query.Open(@"\Processor Information(*)\% Processor Utility")) _coreQuery = query;
                 else query.Dispose();
             }
             catch { _coreQuery = null; }
+            // 回退：legacy "Processor" 类别只有 "% Processor Time"
             if (_coreQuery is null)
             {
-                _coreCounters = new PerformanceCounter[cores];
-                for (int i = 0; i < cores; i++)
+                try
                 {
-                    _coreCounters[i] = new PerformanceCounter("Processor", "% Processor Time", i.ToString(), true);
-                    _coreCounters[i].NextValue();
+                    var legacy = new PdhWildcardQuery();
+                    if (legacy.Open(@"\Processor(*)\% Processor Time")) _coreQuery = legacy;
+                    else legacy.Dispose();
+                }
+                catch { _coreQuery = null; }
+            }
+            if (_coreQuery is null)
+            {
+                // 逐核计数器：按类别里**实际存在的数字实例**建，而不是 Environment.ProcessorCount ——
+                // 后者是进程可见的核数，受 CPU 分组/亲和性影响，可能与 PDH 的实例数不一致
+                // （一致时就等价，但不一致时按实例数建不会丢核）。
+                try
+                {
+                    string[] instances = new PerformanceCounterCategory("Processor").GetInstanceNames();
+                    var numeric = new List<string>();
+                    foreach (string inst in instances)
+                        if (int.TryParse(inst, out _)) numeric.Add(inst);
+                    numeric.Sort((a, b) => int.Parse(a).CompareTo(int.Parse(b)));
+                    _coreCounters = new PerformanceCounter[numeric.Count];
+                    for (int i = 0; i < numeric.Count; i++)
+                    {
+                        _coreCounters[i] = new PerformanceCounter("Processor", "% Processor Time", numeric[i], true);
+                        _coreCounters[i].NextValue();
+                    }
+                }
+                catch
+                {
+                    _coreCounters = new PerformanceCounter[cores];
+                    for (int i = 0; i < cores; i++)
+                    {
+                        _coreCounters[i] = new PerformanceCounter("Processor", "% Processor Time", i.ToString(), true);
+                        _coreCounters[i].NextValue();
+                    }
                 }
             }
             _cpuOk = true;
@@ -283,7 +378,16 @@ public sealed class SystemMonitor : IDisposable
         {
             _cpuOk = false;
         }
-        // CPU 实际频率：Processor Performance(% of 最大值) × 基频
+        // CPU 实际频率：优先 **"Actual Frequency"**（直接就是 MHz，LiteMonitor 同款）。
+        // 本机实测：Actual Frequency ≈ 2355–2585 MHz，而旧的估算路径（% Processor Performance × 基频）
+        // 会低 15–20%（睿频越高差得越多）。
+        try
+        {
+            _actualFreqCounter = new PerformanceCounter("Processor Information", "Actual Frequency", "_Total", true);
+            _actualFreqCounter.NextValue();
+        }
+        catch { _actualFreqCounter = null; }
+        // 估算路径（Actual Frequency 不可用时）：Processor Performance(% of 最大值) × 基频
         try
         {
             _freqCounter = new PerformanceCounter("Processor Information", "% Processor Performance", "_Total", true);
@@ -297,6 +401,8 @@ public sealed class SystemMonitor : IDisposable
     }
 
     private PerformanceCounter? _freqCounter;
+    private PerformanceCounter? _actualFreqCounter;
+    private PerformanceCounter? _uptimeCounter;
     private int _baseFreqMHz;
 
     // ---------- 磁盘（LiteMonitor 同款：PDH PhysicalDisk；_Total + 逐盘实例） ----------
@@ -541,9 +647,18 @@ public sealed class SystemMonitor : IDisposable
         return old.Start == start;
     }
 
-    /// <summary>当前 CPU 平均实际频率 GHz（PDH % Performance × 基频）。</summary>
+    /// <summary>当前 CPU 平均实际频率 GHz：优先真实读数（Actual Frequency, MHz），回退估算。</summary>
     private double SampleFreqGHz()
     {
+        if (_actualFreqCounter is not null)
+        {
+            try
+            {
+                float mhz = _actualFreqCounter.NextValue();
+                if (mhz > 0 && mhz < 10000) return mhz / 1000.0;
+            }
+            catch { _actualFreqCounter = null; }
+        }
         if (_freqCounter is null || _baseFreqMHz == 0) return 0;
         try
         {
@@ -662,13 +777,23 @@ public sealed class SystemMonitor : IDisposable
             var values = _coreQuery.ReadAll();
             if (values.Count > 0)
             {
-                var result = new double[Math.Max(1, Environment.ProcessorCount)];
+                // 长度按**数据里最大的核号**定，不用 Environment.ProcessorCount：
+                // 后者是进程可见的核数（受 CPU 分组/亲和性影响），按数据定更贴合实际。
+                var indexed = new Dictionary<int, double>();
                 foreach (var (name, value) in values)
                 {
-                    if (!int.TryParse(name, out int index)) continue;
-                    if ((uint)index >= (uint)result.Length) continue;
-                    result[index] = Math.Clamp(value, 0, 100);
+                    // 实例名两种形态："Processor Information" 是 "0,3"（组号,逻辑核号），
+                    // legacy "Processor" 是 "3"；"_Total" / "0,_Total" 这类会被跳过。
+                    string idxText = name;
+                    int comma = name.IndexOf(',');
+                    if (comma >= 0) idxText = name.Substring(comma + 1);
+                    if (!int.TryParse(idxText, out int index)) continue;
+                    indexed[index] = Math.Clamp(value, 0, 100);
                 }
+                if (indexed.Count == 0) return null;
+                int max = indexed.Keys.Max();
+                var result = new double[Math.Max(1, max + 1)];
+                foreach (var kv in indexed) result[kv.Key] = kv.Value;
                 return result;
             }
             return null;
@@ -926,6 +1051,10 @@ public sealed class SystemMonitor : IDisposable
             try
             {
                 if (nic.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up) continue;
+                // 排除虚拟网卡（LiteMonitor 同款清单）：Hyper-V / VMware / VirtualBox / WSL / 隧道 / 容器。
+                // "有网关"那一条挡不住它们（虚拟交换机、Docker 网桥都有网关）⇒ 会把它们的流量算进来，
+                // 网速虚高。实体网卡名里出现这些特征词的一律不计。
+                if (IsVirtualAdapter(nic)) continue;
                 // 手动选择网卡（LiteMonitor PreferredNetwork 同款）：只统计选定网卡
                 if (!string.IsNullOrEmpty(PreferredNicId) && nic.Id != PreferredNicId) continue;
                 var stats = nic.GetIPStatistics();
@@ -952,6 +1081,22 @@ public sealed class SystemMonitor : IDisposable
             }
         _nicPrev.Clear();
         foreach (var kv in current) _nicPrev[kv.Key] = kv.Value;
+    }
+
+    /// <summary>虚拟网卡名字特征（LiteMonitor 的清单 + 容器/隧道）。命中即不计入网速。</summary>
+    private static readonly string[] VirtualAdapterHints =
+    {
+        "hyper-v", "vethernet", "vmware", "virtualbox", "vbox", "wsl",
+        "tailscale", "zerotier", "docker", "wintun", "tap-", "npcap",
+    };
+
+    /// <summary>是不是虚拟网卡（名字/描述命中特征词）。</summary>
+    private static bool IsVirtualAdapter(System.Net.NetworkInformation.NetworkInterface nic)
+    {
+        string name = (nic.Name + " " + nic.Description).ToLowerInvariant();
+        foreach (string hint in VirtualAdapterHints)
+            if (name.Contains(hint)) return true;
+        return false;
     }
 
     /// <summary>手动选择的网卡 Id（空=自动聚合所有物理网卡；设置中心"网卡"选项）。</summary>
