@@ -492,6 +492,176 @@ internal static class PeripheralBatteryTests
             HidValueCapsGuard.UsableLength(0x00110000, 0, 8) == 0
             && HidValueCapsGuard.UsableLength(0x00110000, 9, 8) == 0
             && HidValueCapsGuard.UsableLength(0x00110000, 3, 8) == 3);
+
+        // ================= 八、表结构扩展：表达能力 + 验证状态（2026-11-26 task6）=================
+        // 守的是两条线：
+        //   ① 新字段真的能表达新协议（回显位置、充电位号），且**不放松**三层校验；
+        //   ② 每条表项都带明确的验证状态，未验证的绝不进内置表（不输出没验证过的读数）。
+
+        // ---- 8.1 回显位置（echoOffset）：回显必须精确落在指定偏移 ----
+        var echoAtProto = Proto("echo-at") with { Echo = new byte[] { 0x05, 0x02 }, EchoOffset = 2 };
+        bool echoAtOk = PeripheralProtocolReader.TryParse(echoAtProto,
+            new byte[] { 0xC1, 58, 0x05, 0x02 }, out PeripheralReading? echoAtRead);
+        bool echoElsewhereOk = PeripheralProtocolReader.TryParse(echoAtProto,
+            new byte[] { 0xC1, 58, 0x00, 0x05, 0x02 }, out PeripheralReading? echoElsewhereRead);
+        check("表结构扩展：echoOffset 指定回显位置时，回显落在该位置 → 解析成功（58%）",
+            echoAtOk && echoAtRead is { Percent: 58 });
+        check("表结构扩展：回显出现在别处（不在这条表项指定的偏移）→ 失败（不认错回包）",
+            !echoElsewhereOk && echoElsewhereRead is null);
+
+        // ---- 8.2 充电位号（chargingBitOffset）：充电位不在字节最低位也能表达 ----
+        var chargeBitProto = Proto("charge-bit") with
+        {
+            ValueMask = 0x0F,
+            ValueMax = 4,
+            ChargingOffset = 1,
+            ChargingBitOffset = 4,
+        };
+        bool chargeBitOn = PeripheralProtocolReader.TryParse(chargeBitProto,
+            new byte[] { 0xC1, 0x33 }, out PeripheralReading? chargeBitOnRead);
+        bool chargeBitOff = PeripheralProtocolReader.TryParse(chargeBitProto,
+            new byte[] { 0xC1, 0x23 }, out PeripheralReading? chargeBitOffRead);
+        check("表结构扩展：chargingBitOffset 取字节里的第 4 位（0x33 → 在充电；0x23 → 未充电）",
+            chargeBitOn && chargeBitOnRead is { Charging: true }
+            && chargeBitOff && chargeBitOffRead is { Charging: false });
+
+        // 位号越界 → 判失败（不猜充电状态）
+        var badBitProto = Proto("charge-bit-bad") with { ChargingOffset = 1, ChargingBitOffset = 9 };
+        bool badBitOk = PeripheralProtocolReader.TryParse(badBitProto,
+            new byte[] { 0xC1, 0x33 }, out PeripheralReading? badBitRead);
+        check("表结构扩展：chargingBitOffset 越界（9 > 7）→ 失败（不猜充电状态）",
+            !badBitOk && badBitRead is null);
+
+        // ---- 8.3 不写 chargingBitOffset 时，老路径（chargingMask）行为不变 ----
+        var legacyChargeProto = Proto("charge-legacy") with { ChargingOffset = 2, ChargingMask = 0x01 };
+        bool legacyOn = PeripheralProtocolReader.TryParse(legacyChargeProto,
+            new byte[] { 0xC1, 58, 0x01 }, out PeripheralReading? legacyOnRead);
+        bool legacyOff = PeripheralProtocolReader.TryParse(legacyChargeProto,
+            new byte[] { 0xC1, 58, 0x00 }, out PeripheralReading? legacyOffRead);
+        check("表结构扩展：不写 chargingBitOffset 时仍走 chargingMask 老路（0x01 → 在充电 / 0x00 → 未充电）",
+            legacyOn && legacyOnRead is { Charging: true } && legacyOff && legacyOffRead is { Charging: false });
+
+        // ---- 8.4 验证状态字段：JSON 解析 ----
+        var verifiedLoaded = TryLoad("""[ { "key": "v1", "valueOffset": 1, "verification": "verified" } ]""",
+            out string? verifiedErr);
+        var upperLoaded = TryLoad("""[ { "key": "v2", "valueOffset": 1, "verification": "VERIFIED" } ]""",
+            out string? upperErr);
+        var unverifiedLoaded = TryLoad("""[ { "key": "v3", "valueOffset": 1, "verification": "unverified" } ]""",
+            out string? unverifiedErr);
+        check("验证状态：JSON 的 verification 解析成已实机验证 / 未验证（大小写不敏感）",
+            verifiedErr is null && verifiedLoaded is { Count: 1 }
+            && verifiedLoaded[0].Verification == PeripheralVerification.Verified
+            && upperErr is null && upperLoaded is { Count: 1 }
+            && upperLoaded[0].Verification == PeripheralVerification.Verified
+            && unverifiedErr is null && unverifiedLoaded is { Count: 1 }
+            && unverifiedLoaded[0].Verification == PeripheralVerification.Unverified);
+
+        // 写错的验证状态 → 装载失败并指出写错的值（不当成"未验证"蒙混过关）
+        var badVerification = TryLoad("""[ { "key": "v4", "valueOffset": 1, "verification": "verifiedd" } ]""",
+            out string? badVerificationErr);
+        check("验证状态：写错的验证状态 → 装载失败并指出写错的值（不当成未验证蒙混过关）",
+            badVerification is null && badVerificationErr is not null
+            && badVerificationErr.Contains("验证状态"));
+
+        // ---- 8.5 旧 JSON 向后兼容：没有新字段的表照常装载、照常读数 ----
+        const string LegacyJson = """
+        [ { "key": "legacy", "vid": 4660, "pid": 62723, "command": "05 02", "echo": "05 02",
+            "valueOffset": 1, "valueMask": 255, "valueMin": 0, "valueMax": 100 } ]
+        """;
+        var legacyLoaded = TryLoad(LegacyJson, out string? legacyErr);
+        bool legacyParsed = legacyLoaded is { Count: 1 }
+            && PeripheralProtocolReader.TryParse(legacyLoaded[0],
+                new byte[] { 0xC1, 58, 0x05, 0x02 }, out PeripheralReading? legacyRead)
+            && legacyRead is { Percent: 58 };
+        check("向后兼容：旧格式 JSON（没有新字段）照常装载、照常读出 58%",
+            legacyErr is null && legacyLoaded is { Count: 1 } && legacyParsed);
+        check("向后兼容：旧格式 JSON 的新字段取默认值（echoOffset=-1、chargingBitOffset=-1、未验证）",
+            legacyLoaded is { Count: 1 } && legacyLoaded[0].EchoOffset == -1
+            && legacyLoaded[0].ChargingBitOffset == -1
+            && legacyLoaded[0].Verification == PeripheralVerification.Unverified);
+
+        // ---- 8.6 内置表只装载"已实机验证"的条目 ----
+        bool builtinAllVerified = PeripheralProtocols.DeclaredBuiltinTable.Count > 0;
+        foreach (PeripheralProtocol entry in PeripheralProtocols.DeclaredBuiltinTable)
+            if (entry.Verification != PeripheralVerification.Verified) builtinAllVerified = false;
+        check("验证状态：内置表声明的每一条都是「已实机验证」（内置表不许混进未验证条目）",
+            builtinAllVerified);
+        check("验证状态：内置表装载的条目 == 声明的条目（没有条目被悄悄丢掉）",
+            PeripheralProtocols.BuiltinTable.Count == PeripheralProtocols.DeclaredBuiltinTable.Count);
+        check("验证状态：未验证的条目不能进内置表（IsBuiltInEligible = false），已验证的可以",
+            !PeripheralProtocols.IsBuiltInEligible(new PeripheralProtocol { Key = "x" })
+            && PeripheralProtocols.IsBuiltInEligible(new PeripheralProtocol
+            { Key = "x", Verification = PeripheralVerification.Verified }));
+
+        // 联想内置条目必须带验证证据（日期 + 设备 + 说明）
+        PeripheralProtocol? lenovoEntry = null;
+        foreach (PeripheralProtocol entry in PeripheralProtocols.DeclaredBuiltinTable)
+            if (entry.Key == "lenovo-idea5003") lenovoEntry = entry;
+        check("验证状态：联想内置条目带验证证据（日期 + 设备 + 说明）并标成已实机验证",
+            lenovoEntry is not null && lenovoEntry.Verification == PeripheralVerification.Verified
+            && lenovoEntry.VerifiedOn.Length > 0 && lenovoEntry.VerifiedDevice.Length > 0
+            && lenovoEntry.VerificationNote.Length > 0);
+
+        // ---- 8.7 候选条目：未验证，且不进匹配表（不参与读数）----
+        bool candidatesUnverified = PeripheralProtocolCandidates.All.Count > 0;
+        foreach (PeripheralProtocol candidate in PeripheralProtocolCandidates.All)
+            if (candidate.Verification != PeripheralVerification.Unverified) candidatesUnverified = false;
+        bool candidatesNotInTable = true;
+        foreach (PeripheralProtocol candidate in PeripheralProtocolCandidates.All)
+            foreach (PeripheralProtocol effective in PeripheralProtocols.All)
+                if (string.Equals(candidate.Key, effective.Key, StringComparison.OrdinalIgnoreCase))
+                    candidatesNotInTable = false;
+        check("候选条目：罗技 / 雷蛇等候选一律「未验证」，且**不进匹配表**（不参与读数）",
+            candidatesUnverified && candidatesNotInTable);
+
+        // ---- 8.8 校验层：验证状态要有结论，新字段要有字段级结论 ----
+        bool unverifiedWarn = false, verifiedNoNoteWarn = false;
+        foreach (PeripheralProtocolIssue issue in PeripheralProtocolTable.ValidateEntry(Proto("unverified-entry")))
+            if (issue.Severity == PeripheralProtocolSeverity.Warning
+                && issue.Field.Contains("verification", StringComparison.OrdinalIgnoreCase)) unverifiedWarn = true;
+        foreach (PeripheralProtocolIssue issue in PeripheralProtocolTable.ValidateEntry(
+            Proto("verified-no-note") with { Verification = PeripheralVerification.Verified }))
+            if (issue.Severity == PeripheralProtocolSeverity.Warning
+                && issue.Field.Contains("verification", StringComparison.OrdinalIgnoreCase)) verifiedNoNoteWarn = true;
+        check("验证状态：未验证的表项 → 警告（提醒先实机验证）；标成已验证却没写证据 → 警告",
+            unverifiedWarn && verifiedNoNoteWarn);
+
+        check("验证状态：MatchSummary 带上验证状态（自检报告里逐条显示）",
+            PeripheralProtocolTable.MatchSummary(lenovoEntry).Contains("验证=已实机验证")
+            && PeripheralProtocolTable.MatchSummary(Proto("summary-unverified")).Contains("验证=未验证"));
+
+        var echoOffsetJson = """[ { "key": "k", "valueOffset": 1, "echoOffset": 2 } ]""";
+        var echoOffsetReport = PeripheralProtocolTable.ValidateUserJson(echoOffsetJson, "用户表");
+        check("表结构扩展：JSON 写了 echoOffset 却没有 echo → 错误（等于没有回显校验）",
+            echoOffsetReport.HasErrors && echoOffsetReport.Issues.Any(i => i.IsError
+                && i.Field.Contains("echoOffset", StringComparison.OrdinalIgnoreCase)));
+        var chargingBitJson = """[ { "key": "k", "valueOffset": 1, "chargingBitOffset": 4 } ]""";
+        var chargingBitReport = PeripheralProtocolTable.ValidateUserJson(chargingBitJson, "用户表");
+        check("表结构扩展：JSON 写了 chargingBitOffset 却没有 chargingOffset → 错误",
+            chargingBitReport.HasErrors && chargingBitReport.Issues.Any(i => i.IsError
+                && i.Field.Contains("chargingBitOffset", StringComparison.OrdinalIgnoreCase)));
+        var badVerificationJson = """[ { "key": "k", "valueOffset": 1, "verification": "maybe" } ]""";
+        var badVerificationReport = PeripheralProtocolTable.ValidateUserJson(badVerificationJson, "用户表");
+        check("验证状态：JSON 写错的 verification → 错误（并写出写错的值）",
+            badVerificationReport.HasErrors && badVerificationReport.Issues.Any(i => i.IsError
+                && i.Field.Contains("verification", StringComparison.OrdinalIgnoreCase)));
+
+        // ---- 8.9 用户表里未验证的条目照常生效（用户表是纠错通道，不能变成死路）----
+        PeripheralProtocol? unverifiedUserHit = null;
+        try
+        {
+            PeripheralProtocols.AddUserProtocols(new[]
+            {
+                new PeripheralProtocol { Key = "user-unverified", Vid = 0x5A5A, Pid = 0x6B6B, ValueOffset = 1 },
+            });
+            unverifiedUserHit = PeripheralProtocols.Match(0x5A5A, 0x6B6B, 0x0001, 0x0002, 8);
+        }
+        finally
+        {
+            PeripheralProtocols.ClearUserProtocols();
+        }
+        check("向后兼容：用户自己填的未验证条目照常匹配（用户表不能变成死路）",
+            unverifiedUserHit is not null && unverifiedUserHit.Key == "user-unverified");
     }
 
     /// <summary>

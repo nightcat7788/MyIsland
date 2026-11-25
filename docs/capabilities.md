@@ -50,7 +50,7 @@
 | `network` | 网速 | 两端都有 | 口径已对齐：排除虚拟网卡（Hyper-V/WSL/容器等） |
 | `runtime` | 运行时长 | 两端都有 | 口径已对齐：PDH System Up Time（不含休眠） |
 | `battery-bt` | 蓝牙设备电量 | 两端都有（两端实现不同源） | Windows 走 BLE GATT 0x180F/0x2A19；mac 走 IOKit 电池属性 |
-| `battery-hid` | 2.4G 接收器电量 | 两端都有 | 两端共用同一份协议表与三层校验；mac 侧原生探针待实机验证 |
+| `battery-hid` | 2.4G 接收器电量 | 两端都有 | 两端共用同一份协议表与三层校验；mac 侧原生探针待实机验证；内置表只收**已实机验证**的条目（见 §9） |
 | `battery-internal` | 本机内置电池 | 两端都有（两端实现不同源） | Windows 走 WMI Win32_Battery；mac 走 AppleSmartBattery |
 | `storage-temp` | SSD 温度 | 仅 macOS | Windows 不可用：LHM 的 NVMe SMART IOCTL 在本机触发 0x1EA 蓝屏两次；mac 走 IOHID NAND 传感器 |
 
@@ -160,6 +160,27 @@
 `ThemeTokenTests` 断言：清单键唯一且每个 token 都有语义说明；两端 Palette 源码里**声明了的每个颜色/开关 token
 都已登记进清单**，且**清单登记的每个属性在源码里真的存在**
 ⇒ **新增或删除一个 token 而不登记 ⇒ 门禁红**（与 `CapabilityManifestTests` 同一范式）。
+
+---
+
+## 9. 外设协议表（2.4G 接收器电量）
+
+**真相源**：`src/Island.App/Services/Peripheral/PeripheralProtocol.cs`（表结构 + 三层校验）
+· `src/Island.App/Services/Peripheral/PeripheralProtocolTable.cs`（校验层）
+· **完整文档**：[`docs/peripheral-protocols.md`](peripheral-protocols.md)（怎么加一条品牌、怎么验证、验证不过怎么排查）
+
+| 项 | 现状（2026-11-26） |
+|---|---|
+| 内置表条数 | **1 条**：`lenovo-idea5003`（联想 Idea5003 2.4G 接收器） |
+| 该条验证状态 | **已实机验证**：读出 58%（**推断值**：偏移 5；依据同型号蓝牙鼠标系统缓存 59%、差 1pp、闲置衰减一致；**未做同刻交叉验证**） |
+| 其它品牌 | 罗技 / 雷蛇 / VGN 等 **未实机验证** ⇒ 只提供**候选模板**（`docs/peripheral-protocols.md` §7），**不进匹配表、不输出读数** |
+| 内置表准入 | 只装载 `verification = verified` 的条目 —— 没验过的协议**不会生效**（设备显示"未知"，而不是一个假读数） |
+| L1 标准 usage | 设备描述符里声明了标准电量 usage 的**不需要写表项**（支持更多接收器最省事的一条路） |
+| 覆盖语义 | 用户条目在前、内置条目一条不删；**逐设备逐字段匹配** ⇒ 同 key 但字段不同 ⇒ 覆盖**不生效**（工具会指出哪里对不上） |
+
+> **底线**：没实机验证过的协议，**宁可显示"未知"，也不显示一个看着很正常的假百分比**。
+> 每条表项都带验证状态（`verification` / `verificationNote` / `verifiedOn` / `verifiedDevice`），
+> 自检工具（`hid-probe --selftest`）会逐条打印出来。
 
 ---
 

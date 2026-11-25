@@ -174,6 +174,16 @@ public static class PeripheralProtocolTable
                 protocol.MinReportLength.ToString(CultureInfo.InvariantCulture),
                 "minReportLength 不能为负"));
 
+        // ---- 回显位置（echoOffset）：回显必须精确落在指定偏移 ----
+        if (protocol.EchoOffset < -1)
+            issues.Add(new PeripheralProtocolIssue("echoOffset",
+                protocol.EchoOffset.ToString(CultureInfo.InvariantCulture),
+                "echoOffset 必须是 -1（不限位置）或 ≥ 0（回显必须精确落在那个偏移）"));
+        else if (protocol.EchoOffset >= 0 && protocol.Echo.Length == 0)
+            issues.Add(new PeripheralProtocolIssue("echoOffset",
+                protocol.EchoOffset.ToString(CultureInfo.InvariantCulture),
+                "指定了回显位置却没有回显字节（echo 为空）—— 这条表项等于没有回显校验"));
+
         // ---- 直读 Feature 报告 ----
         if (protocol.FeatureReportId < -1 || protocol.FeatureReportId > 255)
             issues.Add(new PeripheralProtocolIssue("featureReportId",
@@ -229,6 +239,16 @@ public static class PeripheralProtocolTable
                         + "大于 1 会取到 2/3 让整帧作废"));
         }
 
+        // ---- 充电位号（chargingBitOffset）：充电位常常不是字节最低位 ----
+        if (protocol.ChargingBitOffset < -1 || protocol.ChargingBitOffset > 7)
+            issues.Add(new PeripheralProtocolIssue("chargingBitOffset",
+                protocol.ChargingBitOffset.ToString(CultureInfo.InvariantCulture),
+                "chargingBitOffset 必须是 -1（不用位号，走 chargingMask）或 0..7（字节里的第几位）"));
+        else if (protocol.ChargingBitOffset >= 0 && protocol.ChargingOffset is null)
+            issues.Add(new PeripheralProtocolIssue("chargingBitOffset",
+                protocol.ChargingBitOffset.ToString(CultureInfo.InvariantCulture),
+                "指定了充电位的位号却没有 chargingOffset（不知道是哪个字节的哪一位）"));
+
         // ---- 电压字段 ----
         if (protocol.MilliVoltsOffset is { } mvOffset)
         {
@@ -250,6 +270,23 @@ public static class PeripheralProtocolTable
             issues.Add(new PeripheralProtocolIssue("milliVoltsScale",
                 protocol.MilliVoltsScale.ToString(CultureInfo.InvariantCulture),
                 "milliVoltsScale 必须 ≥ 1（0 会让电压恒为 0，等于报假电压）"));
+
+        // ---- 验证状态：这条协议到底验没验过 ----
+        if (protocol.Verification == PeripheralVerification.Verified)
+        {
+            if (string.IsNullOrWhiteSpace(protocol.VerificationNote))
+                issues.Add(new PeripheralProtocolIssue("verification", "verified",
+                    "标成\"已实机验证\"却没写验证证据（verificationNote）—— 别人没法判断这条是不是真验过",
+                    PeripheralProtocolSeverity.Warning));
+        }
+        else
+        {
+            issues.Add(new PeripheralProtocolIssue("verification", "unverified",
+                "这条表项**未实机验证**：没有在真机上回包确认过。"
+                    + "内置表只装载已实机验证的条目；用户表里的未验证条目产品也会照用，"
+                    + "但请先用 hid-probe --selftest 实机确认，再采信它的读数",
+                PeripheralProtocolSeverity.Warning));
+        }
 
         // ---- 这条表项有没有"读法" ----
         // 读不到电量的表项 = 无效表项（Error）：留着只会让人以为"这条配了"。
@@ -826,7 +863,23 @@ public static class PeripheralProtocolTable
             + " pid=" + protocol.Pid.ToString("X4")
             + " usage=" + usage
             + " minReportLength=" + protocol.MinReportLength
-            + " transport=" + protocol.Transport;
+            + " transport=" + protocol.Transport
+            + " 验证=" + VerificationText(protocol);
+    }
+
+    /// <summary>
+    /// 验证状态的人读写法。自检报告里逐条显示它 —— 别让人猜这条协议到底验没验过。
+    /// </summary>
+    public static string VerificationText(PeripheralProtocol? protocol)
+    {
+        if (protocol is null) return "(无)";
+        if (protocol.Verification != PeripheralVerification.Verified) return "未验证";
+        string text = "已实机验证";
+        string tail = (protocol.VerifiedOn.Length > 0 ? protocol.VerifiedOn : "")
+            + (protocol.VerifiedOn.Length > 0 && protocol.VerifiedDevice.Length > 0 ? " / " : "")
+            + (protocol.VerifiedDevice.Length > 0 ? protocol.VerifiedDevice : "");
+        if (tail.Length > 0) text += "（" + tail + "）";
+        return text;
     }
 
     // ==================== 六、JSON 字段级检查 ====================
@@ -902,6 +955,26 @@ public static class PeripheralProtocolTable
                     CheckBytes(value, field, issues);
                     break;
 
+                case "echooffset":
+                    CheckInt(value, field, "echoOffset", -1, int.MaxValue, issues);
+                    break;
+
+                case "chargingbitoffset":
+                    CheckInt(value, field, "chargingBitOffset", -1, 7, issues);
+                    break;
+
+                case "verification":
+                    CheckVerification(value, field, issues);
+                    break;
+
+                case "verificationnote":
+                case "verifiedon":
+                case "verifieddevice":
+                    if (value.ValueKind != JsonValueKind.String)
+                        issues.Add(new PeripheralProtocolIssue(field, value.GetRawText(),
+                            name + " 必须是字符串"));
+                    break;
+
                 case "featurereportid":
                     CheckInt(value, field, "featureReportId", -1, 255, issues);
                     break;
@@ -972,10 +1045,32 @@ public static class PeripheralProtocolTable
     {
         var issues = new List<PeripheralProtocolIssue>();
         var ints = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        bool hasEcho = false;
+        bool hasVerificationNote = false;
+        string verificationText = "";
         foreach (JsonProperty prop in entry.EnumerateObject())
         {
             if (prop.Value.ValueKind == JsonValueKind.Number && prop.Value.TryGetInt32(out int v))
+            {
                 ints[prop.Name] = v;
+                continue;
+            }
+            if (prop.Name.Equals("echo", StringComparison.OrdinalIgnoreCase))
+            {
+                hasEcho = true;
+                continue;
+            }
+            if (prop.Name.Equals("verificationNote", StringComparison.OrdinalIgnoreCase))
+            {
+                hasVerificationNote = prop.Value.ValueKind == JsonValueKind.String
+                    && !string.IsNullOrWhiteSpace(prop.Value.GetString());
+                continue;
+            }
+            if (prop.Name.Equals("verification", StringComparison.OrdinalIgnoreCase)
+                && prop.Value.ValueKind == JsonValueKind.String)
+            {
+                verificationText = prop.Value.GetString() ?? "";
+            }
         }
 
         // 未出现的字段按记录默认值算（与 PeripheralProtocol 的默认值一致），
@@ -985,6 +1080,8 @@ public static class PeripheralProtocolTable
         int valueMax = ints.TryGetValue("valueMax", out int vmax) ? vmax : 100;
         int valueMask = ints.TryGetValue("valueMask", out int vmask) ? vmask : 0xFF;
         bool hasChargingOffset = ints.TryGetValue("chargingOffset", out _);
+        int echoOffset = ints.TryGetValue("echoOffset", out int eo) ? eo : -1;
+        int chargingBitOffset = ints.TryGetValue("chargingBitOffset", out int cbo) ? cbo : -1;
         int chargingMask = ints.TryGetValue("chargingMask", out int cmask) ? cmask : 1;
         bool hasMilliVoltsOffset = ints.TryGetValue("milliVoltsOffset", out _);
         int mvMask = ints.TryGetValue("milliVoltsMask", out int mvm) ? mvm : 0xFFFF;
@@ -1014,6 +1111,31 @@ public static class PeripheralProtocolTable
                 chargingMask.ToString(CultureInfo.InvariantCulture),
                 "chargingMask 必须是 1（0x01）：充电位只认明确的 0/1；0 会永远读成「未充电」（谎报），"
                     + "大于 1 会取到 2/3 让整帧作废"));
+        }
+
+        // 回显位置：指定了位置就必须有回显字节，否则等于没有回显校验
+        if (echoOffset >= 0 && !hasEcho)
+        {
+            issues.Add(new PeripheralProtocolIssue(path + ".echoOffset",
+                echoOffset.ToString(CultureInfo.InvariantCulture),
+                "指定了回显位置却没有 echo 字节 —— 这条表项等于没有回显校验"));
+        }
+
+        // 充电位号：指定了位号就必须知道是哪个字节
+        if (chargingBitOffset >= 0 && !hasChargingOffset)
+        {
+            issues.Add(new PeripheralProtocolIssue(path + ".chargingBitOffset",
+                chargingBitOffset.ToString(CultureInfo.InvariantCulture),
+                "指定了充电位的位号却没有 chargingOffset（不知道是哪个字节的哪一位）"));
+        }
+
+        // 标成"已实机验证"就该留下证据
+        if (verificationText.Trim().Equals("verified", StringComparison.OrdinalIgnoreCase)
+            && !hasVerificationNote)
+        {
+            issues.Add(new PeripheralProtocolIssue(path + ".verificationNote", "(缺失)",
+                "标成 \"verified\" 却没有写验证证据（verificationNote）—— 别人没法判断这条是不是真验过",
+                PeripheralProtocolSeverity.Warning));
         }
 
         // 电压字段（只有声明了 milliVoltsOffset 才谈得上掩码；缩放系数无条件校验）
@@ -1051,6 +1173,39 @@ public static class PeripheralProtocolTable
             issues.Add(new PeripheralProtocolIssue(field, value.GetRawText(),
                 name + " = " + parsed.ToString(CultureInfo.InvariantCulture)
                     + " 超出允许范围 " + min + ".." + max));
+    }
+
+    /// <summary>验证状态字段的取值检查（认英文名、中文名与 0/1）。</summary>
+    private static void CheckVerification(JsonElement value, string field,
+        List<PeripheralProtocolIssue> issues)
+    {
+        if (value.ValueKind == JsonValueKind.Number)
+        {
+            if (!value.TryGetInt32(out int parsed))
+            {
+                issues.Add(new PeripheralProtocolIssue(field, value.GetRawText(),
+                    "verification 不是 32 位整数"));
+                return;
+            }
+            if (parsed is not (0 or 1))
+                issues.Add(new PeripheralProtocolIssue(field, value.GetRawText(),
+                    "verification = " + parsed + " 不是合法的验证状态（0=未验证 / 1=已实机验证）"));
+            return;
+        }
+        if (value.ValueKind != JsonValueKind.String)
+        {
+            issues.Add(new PeripheralProtocolIssue(field, value.GetRawText(),
+                "verification 必须是字符串（\"verified\" / \"unverified\"）或整数 0/1"));
+            return;
+        }
+        string text = (value.GetString() ?? "").Trim();
+        bool ok = text.Equals("verified", StringComparison.OrdinalIgnoreCase)
+            || text.Equals("unverified", StringComparison.OrdinalIgnoreCase)
+            || text == "已实机验证" || text == "已验证" || text == "实机验证"
+            || text == "未验证" || text == "未实机验证";
+        if (!ok)
+            issues.Add(new PeripheralProtocolIssue(field, value.GetRawText(),
+                "verification 不是合法的验证状态（写 \"verified\" / \"unverified\"）"));
     }
 
     private static void CheckTransport(JsonElement value, string field,
