@@ -1068,25 +1068,30 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: combo 重排为 mac 的四组�
         var groups = new List<CompactGroup>();
 
         // 单行项：标签（9.5px 三级文字）+ 间距 3 + 数值（13px 等宽）
-        void InlineItem(string label, string value, string sample, Color? valueColor, ref double x)
+        // 数值槽按**实画宽**推进，窄值再按最小槽宽 21 兜底（mac 的 max(实画宽, CompactValueMinW) 同口径）：
+        // 预留宽与实画宽必须同口径，否则组尾比墨迹尾多出一截，分隔线整体右移、且随读数跳变
+        // （2026-11-25 复审 Must-fix 1：曾用样本宽 "125°"/"100%" 预留，每项空出 7.1px）。
+        void InlineItem(string label, string value, Color? valueColor, ref double x)
         {
             var icon = Text(label, 9.5, pal.TextTertiary, ppd: ppd);
             Baseline(dc, icon, x, Math.Round(cy + 13 * 0.36));
             x += icon.Width + CompactSpec.ArrowValueGap;
-            x = Num(dc, value, x, Math.Round(cy + 13 * 0.36), 13, valueColor ?? pal.Text, true, ppd);
+            double vx = x;
+            x = Num(dc, value, vx, Math.Round(cy + 13 * 0.36), 13, valueColor ?? pal.Text, true, ppd);
+            x = vx + Math.Max(x - vx, CompactSpec.ValueMinW);   // 窄值按最小槽兜底（与组宽预留同口径）
             x += CompactSpec.GaugeGap;
         }
 
         // 一个组：若干单行项，组内用 GaugeGap 隔开
-        void AddItemGroup(List<(string Label, string Value, string Sample, Color? Color)> items, bool dividerAfter)
+        // 组宽按**实画文本宽**预留（不是样本宽）：组宽必须等于这一组真正画出来的宽度，
+        // 否则组尾（分隔线的定位基准）会离最后一个字形远一截 —— 与 mac 的 DashLayout.TempW/UsageW 同口径
+        // （mac 量的是 max(实画文本宽, CompactValueMinW)）。
+        void AddItemGroup(List<(string Label, string Value, Color? Color)> items, bool dividerAfter)
         {
             if (items.Count == 0) return;
             var labels = items.Select(i => (double)Text(i.Label, 9.5, pal.TextTertiary, ppd: ppd).Width).ToArray();
-            var values = items.Select(i => (double)RenderKit.NumWidth(i.Sample, 13, true, ppd)).ToArray();
-            double groupW = 0;
-            for (int i = 0; i < items.Count; i++)
-                groupW += CompactSpec.InlineItemWidth(labels[i], values[i]) + CompactSpec.GaugeGap;
-            groupW -= CompactSpec.GaugeGap;
+            var values = items.Select(i => (double)RenderKit.NumWidth(i.Value, 13, true, ppd)).ToArray();
+            double groupW = CompactSpec.InlineGroupWidth(items.Count, i => labels[i], i => values[i]);
             groups.Add(new CompactGroup
             {
                 Width = groupW,
@@ -1095,7 +1100,7 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: combo 重排为 mac 的四组�
                     double ix = x;
                     for (int i = 0; i < items.Count; i++)
                     {
-                        InlineItem(items[i].Label, items[i].Value, items[i].Sample, items[i].Color, ref ix);
+                        InlineItem(items[i].Label, items[i].Value, items[i].Color, ref ix);
                     }
                 },
                 DividerAfter = dividerAfter,
@@ -1130,20 +1135,20 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: combo 重排为 mac 的四组�
 
         // ---- 组 2：温度项组（CPU/GPU/SSD）----
         double? ct = thermal?.CpuTemp, gt = thermal?.GpuTemp, st = thermal?.SsdTemp;
-        var temps = new List<(string Label, string Value, string Sample, Color? Color)>();
-        if (Want("cputemp")) temps.Add(("CPU", ct is { } c1 ? $"{Math.Round(c1)}°" : "--", "125°", TempColor(ct, pal)));
-        if (Want("gputemp")) temps.Add(("GPU", gt is { } g1 ? $"{Math.Round(g1)}°" : "--", "125°", TempColor(gt, pal)));
-        if (Want("ssd")) temps.Add(("SSD", st is { } s1 ? $"{Math.Round(s1)}°" : "--", "125°", TempColor(st, pal)));
+        var temps = new List<(string Label, string Value, Color? Color)>();
+        if (Want("cputemp")) temps.Add(("CPU", ct is { } c1 ? $"{Math.Round(c1)}°" : "--", TempColor(ct, pal)));
+        if (Want("gputemp")) temps.Add(("GPU", gt is { } g1 ? $"{Math.Round(g1)}°" : "--", TempColor(gt, pal)));
+        if (Want("ssd")) temps.Add(("SSD", st is { } s1 ? $"{Math.Round(s1)}°" : "--", TempColor(st, pal)));
         AddItemGroup(temps, dividerAfter: density != CompactDensity.Minimal);
 
         // ---- 组 3：占用项组（内存/GPU%/磁盘）----
         // Minimal 档不显示占用组（规格 §3.2 的密度表：Minimal = 核心柱 + 温度组 + 网速）。
         if (density != CompactDensity.Minimal)
         {
-            var usage = new List<(string Label, string Value, string Sample, Color? Color)>();
-            if (Want("mem")) usage.Add(("MEM", $"{snap.MemoryUsagePercent:F0}%", "100%", LevelColor(snap.MemoryUsagePercent, pal.Text, pal)));
-            if (Want("gpu")) usage.Add(("GPU%", $"{snap.GpuUsage:F0}%", "100%", LevelColor(snap.GpuUsage, pal.Text, pal)));
-            if (Want("disk")) usage.Add(("DISK", $"{snap.DiskUsagePercent:F0}%", "100%", LevelColor(snap.DiskUsagePercent, pal.Text, pal)));
+            var usage = new List<(string Label, string Value, Color? Color)>();
+            if (Want("mem")) usage.Add(("MEM", $"{snap.MemoryUsagePercent:F0}%", LevelColor(snap.MemoryUsagePercent, pal.Text, pal)));
+            if (Want("gpu")) usage.Add(("GPU%", $"{snap.GpuUsage:F0}%", LevelColor(snap.GpuUsage, pal.Text, pal)));
+            if (Want("disk")) usage.Add(("DISK", $"{snap.DiskUsagePercent:F0}%", LevelColor(snap.DiskUsagePercent, pal.Text, pal)));
             AddItemGroup(usage, dividerAfter: true);
         }
 
@@ -1151,10 +1156,10 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: combo 重排为 mac 的四组�
         // 电池读数不在这里：设备收起视图已经有一份，dash 不重复（修复轮 2 裁决）。
         if (Want("net"))
         {
-            AddItemGroup(new List<(string, string, string, Color?)>
+            AddItemGroup(new List<(string, string, Color?)>
             {
-                ("↓", MonitorSnapshot.FormatSpeedFixed(snap.DownloadSpeed), "  0.0B", null),
-                ("↑", MonitorSnapshot.FormatSpeedFixed(snap.UploadSpeed), "  0.0B", null),
+                ("↓", MonitorSnapshot.FormatSpeedFixed(snap.DownloadSpeed), null),
+                ("↑", MonitorSnapshot.FormatSpeedFixed(snap.UploadSpeed), null),
             }, dividerAfter: false);
         }
 
@@ -1229,7 +1234,8 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: dash 改单行（组间分隔�
 > - **组间距**：按硬性要求传 `gap: CompactSpec.SeparatorBand`(24)、`padding: CompactSpec.DashPadX`(14)、`drawDividers: true`；
 >   分隔线固定画在「组尾 + 18px」，落在 24px 总带里偏后 6px（下一组从「组尾 + 24」开始），与 mac 的 `Gap()` 同构。
 > - **XML 注释里的 `<` 写成 `&lt;`**：`阈值 &lt;390 / &lt;560` 这类写法将来开启文档生成时不会触发 CS1570；
->   计划里的代码块与实现逐字一致，可直接复制。
+>   计划里的代码块与实现一致（Task 2 的 WPF 改写与 Task 5 的 dash 实画宽改写除外，已在对应位置标注；
+>   落地以 `src/Island.App/Controls/` 的实际代码为准）。
 >   （唯一例外是 Task 2 的 `RenderKit.Ring`：那一段是 mac 同款几何的 **WPF 改写** —— WPF 的
 >   `StreamGeometryContext` 只有三参 `BeginFigure`、没有 `EndFigure`，`ArcTo` 也多两个参数 ——
 >   语义与 mac 等价，落地代码以 `src/Island.App/Controls/RenderKit.cs` 为准。）
