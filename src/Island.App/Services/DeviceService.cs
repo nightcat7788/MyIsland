@@ -18,9 +18,11 @@ namespace Island.App.Services;
 ///  ⑤ HID 外设（Services/Peripheral/，2026-11-26）—— 2.4G 接收器 / 无线键鼠：
 ///     SetupAPI 枚举 + 独占集合 0 权限打开 + 分层探测（L1 标准 HID 电量 / L3 厂商协议表 /
 ///     L4 通用识别兜底）。读不到就是"未知"，不换算、不充数。
-/// ⚠️ 仍然没有的数据源：厂商自定义 HID 协议（罗技 HID++ / ROG / 雷蛇等）——
-///     每条都要按 VID/PID+接口+报文适配并实机回包验证（ai-periph-monitor 的做法），
-///     没有对应硬件前不写。标准 HID 电池字段（Usage Page 0x85）同样没有，别按它们写代码。
+/// ⚠️ 仍然没有的数据源：罗技 HID++ / ROG / 雷蛇等厂商私有协议 ——
+///     每条都要按 VID/PID+集合+报文适配并实机回包验证，
+///     没有对应硬件前不写（协议表见 Services/Peripheral/PeripheralProtocol.cs）。
+///     标准 HID 电池 usage（0x85:0x0065 等）本机没有设备暴露，但**规则已实现**：
+///     Services/Peripheral/StandardHidBattery.cs 按 Usage 表白名单读，读不到就是「未知」。
 /// 采样线程 30s 一轮（低电量提醒开着且没人看设备页时 5 分钟一轮，见 BackgroundWatch），
 /// 失败静默（列表为空 UI 显示"未检测到"），失败原因写 thermal-diag.log。
 /// Win32_Battery 查询失败后冷却 5 分钟（冷却期里沿用最近的读数），见 SampleWmiBattery。
@@ -55,20 +57,26 @@ public static class DeviceService
     }
 
     /// <summary>
-    /// 合并各数据源并按显示名去重：同一台设备被两个数据源报上来时只留一条
-    ///（例如蓝牙路径与 HID 路径都报了同一个键鼠）。
+    /// 合并各数据源并去重。
+    ///
+    /// 去重条件是"**显示名相同 且 来源族不同**"：前者表示多半是同一台设备被两个数据源报上来
+    /// （例如蓝牙路径与 MSBatteryClass 路径），后者保证**两台同型号的真设备不会被吃掉一台**
+    /// —— 只按名字去重会让同名的第二台静默消失（审查发现）。
+    /// 来源族未知（空串）的一律不折叠，宁可多列一行也不隐藏设备。
     /// </summary>
     private static List<DeviceInfo> MergeSources(List<DeviceInfo> nonBle)
     {
         var all = nonBle
-            .Concat(BleBatteryService.Snapshot())
-            .Concat(Peripheral.PeripheralBatteryService.Snapshot());
+            .Concat(BleBatteryService.Snapshot().Select(d => d with { Source = "ble" }))
+            .Concat(Peripheral.PeripheralBatteryService.Snapshot().Select(d => d with { Source = "hid" }));
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var result = new List<DeviceInfo>();
         foreach (var d in all)
         {
             string key = NormalizeName(d.Name);
-            if (key.Length == 0 || seen.Add(key)) result.Add(d);
+            bool collapsible = key.Length > 0 && d.Source.Length > 0;
+            if (collapsible && !seen.Add(key)) continue;   // 同名且同族 = 两台真设备，都留着
+            result.Add(d);
         }
         return result;
     }
@@ -313,7 +321,9 @@ public static class DeviceService
 
             if (IsChargingStatus(ToInt(GetProp(o, "BatteryStatus")))) anyCharging = true;
         }
-        return lowest is null ? null : new DeviceInfo("笔记本电池", "battery", lowest.Value, anyCharging);
+        return lowest is null
+            ? null
+            : new DeviceInfo("笔记本电池", "battery", lowest.Value, anyCharging) { Source = "wmi" };
     }
 
     /// <summary>
@@ -349,7 +359,7 @@ public static class DeviceService
                 int? pct = ReadPercent(o, "EstimatedChargePercent");
                 if (pct is null) continue;
                 string kind = Classify(instance);
-                list.Add(new DeviceInfo(PrettyName(instance, kind), kind, pct.Value, false));
+                list.Add(new DeviceInfo(PrettyName(instance, kind), kind, pct.Value, false) { Source = "msbattery" });
             }
         }
         catch (Exception ex)

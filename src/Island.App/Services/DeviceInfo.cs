@@ -19,6 +19,15 @@ public sealed record DeviceInfo(string Name, string Kind, int Percent, bool Char
     /// <summary>BLE 实际读到电量的时刻；有缓存读数不代表设备当前仍连接。</summary>
     public System.DateTime? ObservedAt { get; init; }
 
+    /// <summary>
+    /// 数据来源族（wmi / msbattery / ble / xinput / hid）。
+    /// 用途只有一个：**去重时区分"同一台设备被两个数据源报上来"与"两台同型号的真设备"**。
+    /// 只按显示名去重会把两台同型号设备吃掉一台（同名的真设备会静默消失）；
+    /// 只在"名字相同**且**来源族不同"时才折叠，才是安全的那一种。
+    /// 空串 = 来源未知 ⇒ 不参与折叠。
+    /// </summary>
+    public string Source { get; init; } = "";
+
     internal static int? ParsePercent(object? raw)
     {
         if (raw is null) return null;

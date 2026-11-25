@@ -41,8 +41,10 @@ public sealed class DevicesPage : FrameworkElement
 
     private static string StatusText(DeviceInfo d) =>
         d.Charging ? "充电中" :
-        d.ObservedAt is { } at ? $"读取于 {at:HH:mm}" :
+        // "未知"必须排在 ObservedAt 前面：档位设备永远带 ObservedAt，
+        // 以前这个分支永远走不到，外设读不到电量时显示的是"读取于 02:19"而不是"电量未知"（审查发现）。
         d.LevelText == "未知" ? "电量未知" :
+        d.ObservedAt is { } at ? $"读取于 {at:HH:mm}" :
         d.Kind == "gamepad" ? (d.LevelText == "有线" ? "有线" : "无线") :
         d.Percent <= 20 ? "电量低" :
         d.Percent <= 40 ? "电量偏低" : KindLabel(d.Kind);
