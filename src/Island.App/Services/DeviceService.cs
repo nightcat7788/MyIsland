@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Windows;
 
@@ -14,7 +15,10 @@ namespace Island.App.Services;
 ///  ③ BLE GATT 直读（Services/BleBatteryService.cs，2026-11-25）—— MSBatteryClass 不上报的
 ///     蓝牙设备（如本机的联想 BLE HID 设备）；缓存最多 6 分钟，读取失败即失效，不伪装
 ///  ④ XInput 手柄档位（Services/XInputService.cs，2026-11-25）—— 空/低/中/满，不换算百分比
-/// ⚠️ 仍然没有的数据源：厂商自定义 HID 协议（2.4G 接收器，罗技 HID++ / ROG / 雷蛇等）——
+///  ⑤ HID 外设（Services/Peripheral/，2026-11-26）—— 2.4G 接收器 / 无线键鼠：
+///     SetupAPI 枚举 + 独占集合 0 权限打开 + 分层探测（L1 标准 HID 电量 / L3 厂商协议表 /
+///     L4 通用识别兜底）。读不到就是"未知"，不换算、不充数。
+/// ⚠️ 仍然没有的数据源：厂商自定义 HID 协议（罗技 HID++ / ROG / 雷蛇等）——
 ///     每条都要按 VID/PID+接口+报文适配并实机回包验证（ai-periph-monitor 的做法），
 ///     没有对应硬件前不写。标准 HID 电池字段（Usage Page 0x85）同样没有，别按它们写代码。
 /// 采样线程 30s 一轮（低电量提醒开着且没人看设备页时 5 分钟一轮，见 BackgroundWatch），
@@ -36,11 +40,46 @@ public static class DeviceService
     static DeviceService()
     {
         BleBatteryService.Updated += PublishBleSnapshot;
+        Peripheral.PeripheralBatteryService.Updated += PublishPeripheralSnapshot;
     }
 
     private static void PublishBleSnapshot()
     {
-        lock (_gate) _devices = _nonBleDevices.Concat(BleBatteryService.Snapshot()).ToList();
+        lock (_gate) _devices = MergeSources(_nonBleDevices);
+    }
+
+    /// <summary>2.4G 接收器 / 无线键鼠的外设电量（Services/Peripheral/，2026-11-26）。</summary>
+    private static void PublishPeripheralSnapshot()
+    {
+        lock (_gate) _devices = MergeSources(_nonBleDevices);
+    }
+
+    /// <summary>
+    /// 合并各数据源并按显示名去重：同一台设备被两个数据源报上来时只留一条
+    ///（例如蓝牙路径与 HID 路径都报了同一个键鼠）。
+    /// </summary>
+    private static List<DeviceInfo> MergeSources(List<DeviceInfo> nonBle)
+    {
+        var all = nonBle
+            .Concat(BleBatteryService.Snapshot())
+            .Concat(Peripheral.PeripheralBatteryService.Snapshot());
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var result = new List<DeviceInfo>();
+        foreach (var d in all)
+        {
+            string key = NormalizeName(d.Name);
+            if (key.Length == 0 || seen.Add(key)) result.Add(d);
+        }
+        return result;
+    }
+
+    /// <summary>名字归一化（去空白、转小写）后用于去重比较。</summary>
+    private static string NormalizeName(string name)
+    {
+        var sb = new StringBuilder(name.Length);
+        foreach (char c in name)
+            if (char.IsLetterOrDigit(c)) sb.Append(char.ToLowerInvariant(c));
+        return sb.ToString();
     }
     private static Timer? _timer;
     private static bool _wanted;
@@ -178,10 +217,13 @@ public static class DeviceService
         try { BleBatteryService.Warm(); } catch { }
         // XInput 手柄档位（空/低/中/满）：没有手柄 / 没有 xinput dll 时是空列表，UI 自然不显示。
         try { list.AddRange(XInputService.Snapshot()); } catch { }
+        // 2.4G 接收器 / 无线键鼠（Services/Peripheral/，2026-11-26）：HID 访问层 + 分层探测。
+        // 扫描在后台异步跑，这里只触发并取缓存里已验证的读数（读不到就不显示，不伪装）。
+        try { Peripheral.PeripheralBatteryService.Warm(); } catch { }
         lock (_gate)
         {
             _nonBleDevices = list;
-            _devices = list.Concat(BleBatteryService.Snapshot()).ToList();
+            _devices = MergeSources(list);
         }
     }
 

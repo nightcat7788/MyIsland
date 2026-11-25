@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>hid-probe</AssemblyName>
+    <RootNamespace>Island.Tools.HidProbe</RootNamespace>
+    <!-- 外设电量的真机侦察工具（不属于 Island.sln：与 tools/DumpTypes 同例） -->
+  </PropertyGroup>
+
+  <!-- 直接链接主工程的 HID 访问层源码，保证工具与产品用的是同一套实现 -->
+  <ItemGroup>
+    <Compile Include="..\..\src\Island.App\Services\Peripheral\*.cs" Link="Merged\Hid\%(Filename)%(Extension)" />
+    <Compile Include="..\..\src\Island.App\Services\DeviceInfo.cs" Link="Merged\DeviceInfo.cs" />
+  </ItemGroup>
+
+</Project>

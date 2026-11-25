@@ -50,7 +50,7 @@ public sealed class DevicesPage : FrameworkElement
     private static string KindLabel(string kind) => kind switch
     {
         "mouse" => "鼠标", "keyboard" => "键盘", "headset" => "耳机",
-        "gamepad" => "手柄", "ble" => "蓝牙设备", "battery" => "本机电池", _ => kind,
+        "gamepad" => "手柄", "ble" => "蓝牙设备", "battery" => "本机电池", "other" => "外设", _ => kind,
     };
 
     protected override void OnRender(DrawingContext dc)

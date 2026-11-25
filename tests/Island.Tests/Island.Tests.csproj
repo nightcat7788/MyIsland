@@ -64,6 +64,12 @@
     <Compile Include="..\..\src\Island.App\Services\PawnIoInstaller.cs" Link="Merged\App\PawnIoInstaller.cs" />
     <!-- 注意：Island.Native 依赖 System.Management / System.Diagnostics.PerformanceCounter 两个 NuGet 包，
          测试项目保持零包依赖，故不链接 Native 的源文件 -->
+    <!-- Windows 外设电量（2026-11-26）：纯逻辑层，无 Win32/WinRT 依赖，可链进零包测试工程 -->
+    <Compile Include="..\..\src\Island.App\Services\Peripheral\PeripheralReading.cs" Link="Merged\Peripheral\PeripheralReading.cs" />
+    <Compile Include="..\..\src\Island.App\Services\Peripheral\PeripheralProtocol.cs" Link="Merged\Peripheral\PeripheralProtocol.cs" />
+    <Compile Include="..\..\src\Island.App\Services\Peripheral\StandardHidBattery.cs" Link="Merged\Peripheral\StandardHidBattery.cs" />
+    <Compile Include="..\..\src\Island.App\Services\Peripheral\PeripheralClassifier.cs" Link="Merged\Peripheral\PeripheralClassifier.cs" />
+    <Compile Include="..\..\src\Island.App\Services\Peripheral\HidModels.cs" Link="Merged\Peripheral\HidModels.cs" />
     <!-- PDH 通配符读取器（GPU Engine 分组聚合）：纯 P/Invoke，无 NuGet 依赖，可链进测试工程 -->
     <Compile Include="..\..\src\Island.Native\PdhWildcardQuery.cs" Link="Merged\PdhWildcardQuery.cs" />
   </ItemGroup>

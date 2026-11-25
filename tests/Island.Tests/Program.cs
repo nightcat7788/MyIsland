@@ -31,6 +31,7 @@ try
     ThermalChannelTests.Run(Check);
     SmnChannelTests.Run(Check);
     DeviceBatteryTests.Run(Check);  // 2026-11-25 设备电量增强：档位语义 / 提醒设置
+    PeripheralBatteryTests.Run(Check); // 2026-11-26 Windows 外设电量：协议解析三层校验 / 协议表匹配 / 标准 HID 换算 / 识别兜底
     ThemeTests.Run(Check);
     DesignSystemTests.Run(Check);   // 2026-11-24 视觉重做：等宽数字 / 对比度 / 坏数值防线
     MonitorModelTests.Run(Check);
