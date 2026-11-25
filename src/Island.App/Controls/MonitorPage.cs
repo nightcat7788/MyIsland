@@ -179,6 +179,7 @@ public sealed class MonitorPage : FrameworkElement
         //   B 让位档 304 = 160 + 12 + 132（只有 CPU 占用行保留走势曲线）
         //   C 紧凑档 290 = 146 + 12 + 132（全部读数行不带曲线）
         double rowH, firstRowH, topH, speedRowH, botH;
+        double procGap = ExpandedPanelSpec.ProcessRowGap;
         int procRows;
         bool speedCurve;      // 速度两行的走势曲线（只有完整档放得下）
         if (H >= TopCardH + GridGap + BotCardH)
@@ -202,6 +203,14 @@ public sealed class MonitorPage : FrameworkElement
             procRows = 4;
             speedCurve = false;
         }
+
+        // 进程榜：行数与行距都从**卡内可用高度**倒推（先给卡底信息行留出位置）——
+        // 固定行距 + 固定行数会撞上卡底那行：末行文字底边会压到「进程/线程 · 今日流量」那行
+        // （2026-11-26 离屏渲染实测到的压字缺陷，monitor-page.png 与 expanded-panel.png 都能看见）。
+        // 这里改成「可用高度 ÷ 行数 = 行距，向下取整」，让重叠在构造上就不可能发生。
+        double procAvail = botH - CardHeadH - ExpandedPanelSpec.ProcessFooterReserve;
+        procRows = ExpandedPanelSpec.ProcessRowsFor(procAvail, procRows);
+        procGap = ExpandedPanelSpec.ProcessRowGapFor(procAvail, procRows);
 
         double x1 = pad, x2 = pad + cardW + GridGap;
         double y1 = 0, y2 = topH + GridGap;
@@ -486,7 +495,7 @@ public sealed class MonitorPage : FrameworkElement
             // 这里补回 —— 这些读数在收起态没有对应项，删了就等于功能回退）。
             if (s is not null)
             {
-                double bl = y2 + botH - 8;
+                double bl = y2 + botH - ExpandedPanelSpec.ProcessFooterBaselineInset;
                 double fx = T($"{s.ProcessCount} 进程 · {s.ThreadCount} 线程",
                     x2 + CardPadX, bl, ExpandedPanelSpec.StatusFont, pal.TextTertiary);
                 var tt = RenderKit.Text(
@@ -542,7 +551,7 @@ public sealed class MonitorPage : FrameworkElement
                             ExpandedPanelSpec.StatusFont, pal.TextDim, true, ppd);
                         dc.DrawText(ini, new Point(rx0 + c - ini.Width / 2, ry + c - ini.Height / 2));
                     }
-                    ry += ExpandedPanelSpec.ProcessRowGap;
+                    ry += procGap;
                 }
             }
         }

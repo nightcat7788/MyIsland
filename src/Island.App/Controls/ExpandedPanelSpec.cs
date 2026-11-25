@@ -1,3 +1,5 @@
+using System;
+
 namespace Island.App.Controls;
 
 /// <summary>
@@ -116,6 +118,39 @@ public static class ExpandedPanelSpec
 
     /// <summary>进程榜行距（mac：21）。</summary>
     public const double ProcessRowGap = 21;
+
+    /// <summary>
+    /// 进程榜卡的**卡底信息行**（进程/线程数 + 今日流量）基线离卡底的距离。
+    /// 这行是 2026-11-26 补回来的（2×2 栅格重排时一度被删，删了等于功能回退），
+    /// 所以它必须留在卡里 —— 排版要给它**预留位置**，而不是让它去挤榜体。
+    /// </summary>
+    public const double ProcessFooterBaselineInset = 8;
+
+    /// <summary>
+    /// 进程榜卡内给**卡底信息行**预留的高度（文字 + 上方留白 + 余量）。
+    /// 榜体的行数与行距都从这里倒推 —— 固定行距 + 固定行数会撞上卡底那行
+    /// （2026-11-26 离屏渲染实测到的压字缺陷：最后一行与卡底行叠在一起）。
+    /// </summary>
+    public const double ProcessFooterReserve = 18;
+
+    /// <summary>进程榜行距下限：15px 图标 + 3px 间隔，再小图标就连成一片。</summary>
+    public const double ProcessRowGapMin = 18;
+
+    /// <summary>进程榜在给定可用高度里排得下的行数（不超过上限，至少 1 行）。</summary>
+    public static int ProcessRowsFor(double availH, int maxRows)
+    {
+        if (availH <= 0) return 1;
+        int fit = (int)Math.Floor(availH / ProcessRowGapMin);
+        return Math.Max(1, Math.Min(maxRows, fit));
+    }
+
+    /// <summary>进程榜行距：可用高度 ÷ 行数，向下取整 —— 保证最后一行不压到卡底信息行。</summary>
+    public static double ProcessRowGapFor(double availH, int rows)
+    {
+        if (rows <= 0) return ProcessRowGap;
+        double gap = Math.Floor(availH / rows);
+        return Math.Max(1, Math.Min(ProcessRowGap, Math.Max(ProcessRowGapMin, gap)));
+    }
 
     /// <summary>进程榜最多显示的行数（mac：5）。</summary>
     public const int ProcessMaxRows = 5;

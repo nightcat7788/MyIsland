@@ -344,6 +344,38 @@ public static class VisualProbeCore
             inside,
             $"内容区 {w}×{h}；卡片底边 y={y2 + botH}"));
 
+        // ---- 3b. 进程榜卡：榜体末行与卡底信息行必须互不压字 ----
+        // 2026-11-26 离屏渲染实测到的真实缺陷：末行（Teams.exe）与卡底那行
+        // 「213 进程 · 1580 线程   今日 ↓4.40 GB ↑15.0 GB」叠在一起（monitor-page.png 可见）。
+        // 根因：行数与行距写死，卡底信息行是后补回来的，没有给它留位置。
+        // 修法：行数/行距从卡内可用高度倒推（见 ExpandedPanelSpec.ProcessRowsFor / ProcessRowGapFor）。
+        double procAvail = botH - head - ExpandedPanelSpec.ProcessFooterReserve;
+        int expectedRows = ExpandedPanelSpec.ProcessRowsFor(procAvail, ExpandedPanelSpec.ProcessMaxRows);
+        double expectedGap = ExpandedPanelSpec.ProcessRowGapFor(procAvail, expectedRows);
+        double lastRowBottom = head + (expectedRows - 1) * expectedGap + ExpandedPanelSpec.ProcessIconSize;
+        double footerTextTop = botH - ExpandedPanelSpec.ProcessFooterBaselineInset - ExpandedPanelSpec.StatusFont * 0.85;
+        report.Checks.Add(new ProbeCheck(
+            "监控页：进程榜末行不压卡底信息行（几何，间隙 ≥ 2px）",
+            lastRowBottom + 2 <= footerTextTop,
+            $"卡内可用 {procAvail:F0} ⇒ 榜体 {expectedRows} 行 / 行距 {expectedGap}；" +
+            $"末行内容底边 y={lastRowBottom:F0}，卡底信息行文字顶边 y={footerTextTop:F1}"));
+
+        // 像素判定：卡内（卡头之下、卡底之上）的高亮内容必须分成「榜体行数 + 1」条带，
+        // 带与带之间至少留 2px 空行 —— 压字就会连成一片（带数变少）或带间空行为 0。
+        int px0 = (int)(x2 + padX);
+        int px1 = (int)(x2 + cardW - padX) - 1;
+        int py0 = (int)(y2 + head) + 1;
+        int py1 = (int)(y2 + botH) - 2;
+        var inkRows = pixels.ContentRows(px0, py0, px1, py1, 25);
+        var bands = InkBands(inkRows);
+        int minGap = bands.Count < 2 ? 0 : int.MaxValue;
+        for (int i = 1; i < bands.Count; i++) minGap = Math.Min(minGap, bands[i].Item1 - bands[i - 1].Item2 - 1);
+        report.Checks.Add(new ProbeCheck(
+            "监控页：进程榜卡内各行与卡底信息行互不压字（像素带）",
+            bands.Count == expectedRows + 1 && minGap >= 2,
+            $"卡内 y∈[{py0},{py1}] 有 {bands.Count} 条高亮带（期望 {expectedRows + 1} = {expectedRows} 行榜体 + 1 条卡底行），" +
+            $"带间最小空行 {minGap}（下限 2）"));
+
         // ---- 4. 像素探针：卡片边界真的落在规格位置上 ----
         // 左边距必须干净（面板左侧留白 18）。
         // 注意：卡片的 1px 描边**骑在**矩形边上（覆盖 e-1 与 e 两个像素），所以"干净区"从 e+1 算起。
@@ -696,6 +728,20 @@ public static class VisualProbeCore
         return d;
     }
 
+    /// <summary>把逐行布尔数组切成连续的高亮带（[起始行, 结束行]）。</summary>
+    private static List<(int Start, int End)> InkBands(bool[] rows)
+    {
+        var bands = new List<(int Start, int End)>();
+        int start = -1;
+        for (int i = 0; i < rows.Length; i++)
+        {
+            if (rows[i] && start < 0) start = i;
+            else if (!rows[i] && start >= 0) { bands.Add((start, i - 1)); start = -1; }
+        }
+        if (start >= 0) bands.Add((start, rows.Length - 1));
+        return bands;
+    }
+
     private static bool Overlaps(
         (string Name, double X, double Y, double W, double H) a,
         (string Name, double X, double Y, double W, double H) b)
@@ -737,6 +783,56 @@ public static class VisualProbeCore
 
         /// <summary>该像素是不是"有绘制"（与底色有可见差别）。</summary>
         public bool IsPainted(int x, int y) => Delta(x, y) >= PaintedDelta;
+
+        /// <summary>
+        /// 指定矩形里的"有内容"逐行判定：先取该区域**最常见的颜色**当底色（卡片自身的底），
+        /// 再把与它差得够远的像素算作有内容（文字/图标/分隔线）。
+        /// 为什么不用全局底色：卡片底色与页面底色不同，用全局底色会把整张卡判成"有内容"；
+        /// 为什么不用高亮阈值：卡底那行是三级色（偏暗），按高亮阈值会整行被判漏 —— 而它正是要判的那行。
+        /// </summary>
+        public bool[] ContentRows(int x0, int y0, int x1, int y1, int minDelta)
+        {
+            int n = Math.Max(0, y1 - y0 + 1);
+            var rows = new bool[n];
+            int rx0 = Math.Max(0, x0), rx1 = Math.Min(x1, _width - 1);
+            int ry0 = Math.Max(0, y0), ry1 = Math.Min(y1, _height - 1);
+            if (rx1 < rx0 || ry1 < ry0) return rows;
+
+            // 最常见颜色 = 卡片底色（文字只占极小比例）
+            var hist = new Dictionary<int, int>();
+            for (int y = ry0; y <= ry1; y++)
+                for (int x = rx0; x <= rx1; x++)
+                {
+                    var (b, g, r) = At(x, y);
+                    int key = (r << 16) | (g << 8) | b;
+                    hist.TryGetValue(key, out int c);
+                    hist[key] = c + 1;
+                }
+            int modal = 0, modalCount = -1;
+            foreach (var kv in hist)
+                if (kv.Value > modalCount) { modalCount = kv.Value; modal = kv.Key; }
+            int mr = (modal >> 16) & 0xFF, mg = (modal >> 8) & 0xFF, mb = modal & 0xFF;
+
+            for (int y = ry0; y <= ry1; y++)
+                for (int x = rx0; x <= rx1; x++)
+                {
+                    var (b, g, r) = At(x, y);
+                    int d = Math.Max(Math.Abs(r - mr), Math.Max(Math.Abs(g - mg), Math.Abs(b - mb)));
+                    if (d >= minDelta) { rows[y - y0] = true; break; }
+                }
+            return rows;
+        }
+
+        /// <summary>指定矩形里每一行有没有"高亮内容"（文字/图标/强调色）。</summary>
+        public bool[] InkRows(int x0, int y0, int x1, int y1)
+        {
+            int n = Math.Max(0, y1 - y0 + 1);
+            var rows = new bool[n];
+            for (int y = Math.Max(0, y0); y <= Math.Min(y1, _height - 1); y++)
+                for (int x = Math.Max(0, x0); x <= Math.Min(x1, _width - 1); x++)
+                    if (IsInk(x, y)) { rows[y - y0] = true; break; }
+            return rows;
+        }
 
         /// <summary>该像素是不是"高亮内容"（文字/图标/强调色）。</summary>
         public bool IsInk(int x, int y)
