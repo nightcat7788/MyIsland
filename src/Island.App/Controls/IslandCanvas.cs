@@ -1012,10 +1012,10 @@ public sealed class IslandCanvas : FrameworkElement
                 : bat.Percent <= 20 ? pal.Up
                 : bat.Percent <= 40 ? pal.Warning
                 : pal.Text;
-            // 标签统一「电」：充电中 / 低电量靠颜色区分（充电绿 / ≤20% 红 / ≤40% 橙）。
+            // 充电时标签带「+」（旧版两行网格的「电+」标记，改造里不丢信息）；配色仍是充电绿。
             AddItemGroup(new List<(string, string, string, Color?)>
             {
-                ("电", $"{bat.Percent}%", "100%", bc),
+                (bat.Charging ? "电+" : "电", $"{bat.Percent}%", "100%", bc),
             }, dividerAfter: true);
         }
 
