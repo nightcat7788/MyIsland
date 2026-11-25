@@ -26,6 +26,9 @@
     <Compile Include="..\..\src\Island.App\Services\Settings.cs" Link="Merged\App\Settings.cs" />
     <Compile Include="..\..\src\Island.Core\Monitoring\*.cs" Link="Merged\Core\%(Filename)%(Extension)" />
     <Compile Include="..\..\src\Island.App\Themes\Theme.cs" Link="Merged\App\Theme.cs" />
+
+    <!-- 收起态排版规格（纯计算）：Windows 与 mac 两端一致性的唯一契约 -->
+    <Compile Include="..\..\src\Island.App\Controls\CompactSpec.cs" Link="Merged\CompactSpec.cs" />
     <!-- 温度通道：SMN 直读服务（2026-11-23 的 0x1EA 蓝屏回归用例要用到厂商判定与拒绝逻辑） -->
     <Compile Include="..\..\src\Island.App\Services\InpOutSmnService.cs" Link="Merged\App\InpOutSmnService.cs" />
     <!-- SMN 高风险通道的所有者：把"要不要碰驱动"的决策收拢到可被测试链接的地方

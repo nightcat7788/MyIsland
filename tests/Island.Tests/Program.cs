@@ -39,6 +39,7 @@ try
     MemoryReclaimTests.Run(Check);
     IntelComputePolicyTests.Run(Check);
     PawnIoInstallerTests.Run(Check);
+    CompactSpecTests.Run(Check);   // 2026-11-25 收起态对齐：规格常量与宽度公式锁死
 }
 catch (Exception ex)
 {
