@@ -87,7 +87,10 @@ DrawGaugeCenter(dc, pal, g.Icon, g.Res, x, cy, L.Dial, g.Arc);
 时间(13px) │ 占用环组(C/M/G) │ 温度磁盘环组(C/G/D) │ 网速(↓值 ↑值)
 ```
 
-分隔线画在：时间│占用组、占用组│温度磁盘组、温度磁盘组│网速 三处。
+分隔线只画在**两处**：占用组│温度磁盘组、温度磁盘组│网速。
+时间│占用组之间**没有线**，只有 `ClockGap=12` 的留白（mac 的 `Gap()` 只调用两次：
+`IslandCanvas.cs:694` 与 `:696`；时间后面是 `x += L.ClockW + L.ClockGap`，见 `:677`）。
+两处分隔线的总带都是 24px（= 2 × `CompactGroupGap`），线画在「组尾 + 18px」，偏后 6px、不在正中。
 网速：箭头与数值间距 3，↓值 与 ↑ 之间 7，数值用 `FormatSpeedFixed`（定宽 6 字符）、中性色。
 
 ### 2.5 dash 分组顺序（mac）
@@ -236,7 +239,7 @@ dash 从两行变单行后，元素排布规则改变，宽度过渡期间可能
 
 ## 8. 验收标准
 
-1. Windows combo 收起态：时间 │ 占用环组 │ 温度磁盘环组 │ 网速，**三处 Hairline 分隔线**，
+1. Windows combo 收起态：时间 │ 占用环组 │ 温度磁盘环组 │ 网速，**两处 Hairline 分隔线**（时间与占用环组之间无线，只有 12px 留白），
    环为 360° 闭环、环心字母、环外数值 13px、时间 13px、槽宽 21px。
 2. Windows dash 收起态：单行，组间分隔线，高度 44px，内容项与密度分级语义不变。
 3. `dotnet build Island.sln -c Release`：0 警告 0 错误。

@@ -318,6 +318,10 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: 抽出收起态排版规格 Com
         double share, Color track, Color arc)
     {
         double radius = CompactSpec.RingRadius(diameter, thickness);
+        // CompactSpec.RingRadius 按 mac 取消了 0.5 下限（RenderKit.Ring:187），
+        // 于是 thickness > diameter 时半径为负 —— WPF 的 DrawEllipse 会因负半径抛异常，
+        // 而 mac 的 Avalonia 路径不会。参数不合法的调用直接不画，交给调用方保证 thickness <= diameter。
+        if (radius <= 0) return;
         // 底环：整圈
         dc.DrawEllipse(null, PenOf(track, thickness, 0.9), center, radius, radius);
         double sweep = CompactSpec.RingSweep(share);
@@ -368,19 +372,21 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: 新增 360° 闭环 RenderKit.R
 - Modify: `src/Island.App/Controls/IslandCanvas.cs`（新增嵌套类型 `CompactGroup`；替换 `DrawCompactGroups`；改 4 个调用点）
 
 **Interfaces:**
-- Consumes: `CompactSpec.SeparatorBand / PadX / DividerHalfHeight / DividerXAfter`（Task 1）
+- Consumes: `CompactSpec.SeparatorBand / PadX / ClockGap / DividerHalfHeight / DividerXAfter / GroupAdvance`（Task 1；`GroupAdvance` 在本任务 Step 3 新增）
 - Produces:
-  - `private sealed class IslandCanvas.CompactGroup`：`double Width { get; init; }`、`Action<double> Draw { get; init; }`、`bool DividerAfter { get; init; }`
-  - `private double DrawCompactGroups(DrawingContext dc, Palette pal, Rect r, double cy, List<CompactGroup> groups, double band = CompactSpec.SeparatorBand, double padding = CompactSpec.PadX, bool drawDividers = false)`
+  - `private sealed class IslandCanvas.CompactGroup`：`double Width { get; init; }`、`Action<double> Draw { get; init; }`、`bool DividerAfter { get; init; }`、`double? TrailingGap { get; init; }`（null = 用渲染层默认组间距）
+  - `private double DrawCompactGroups(DrawingContext dc, Palette pal, Rect r, double cy, List<CompactGroup> groups, double gap = 16, double padding = 14, bool drawDividers = false)`
+  - **本任务是纯重构**：默认值保持旧的 `gap=16 / padding=14`，保证 monitor/devices/clipboard 等视图外观不变；combo 的新规格由 Task 4 显式传参实现。
 
 - [ ] **Step 1: 写失败的测试**
 
-在 `tests/Island.Tests/CompactSpecTests.cs` 的 `Run` 方法末尾追加：
+在 `tests/Island.Tests/CompactSpecTests.cs` 的 `Run` 方法末尾追加（**分隔线位置的断言已在 Task 1 落盘，不要重复添加**；本任务新增的是「组间距」规则）：
 
 ```csharp
-        // ---- 分隔线位置（mac Gap() 语义：组尾 + 18，渲染层用这个纯函数定位）----
-        check("分隔线 x = 组尾 + 18（mac：Gap() 推进两次 GroupGap，线在 1.5×处）", CompactSpec.DividerXAfter(200) == 218);
-        check("分隔线 x 可用自定义组间距（gap=16 → 组尾 + 24）", CompactSpec.DividerXAfter(200, 16) == 224);
+        // ---- 组到下一组的间距：组自带 TrailingGap 优先，否则用渲染层默认组间距 ----
+        check("组间距默认取渲染层默认值", CompactSpec.GroupAdvance(null, 24) == 24);
+        check("组自带 TrailingGap 时优先用它（combo 的 时间│占用组 = ClockGap 12）",
+            CompactSpec.GroupAdvance(12, 24) == 12);
 ```
 
 - [ ] **Step 2: 运行测试，确认失败**
@@ -388,16 +394,28 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: 新增 360° 闭环 RenderKit.R
 ```powershell
 & 'D:\YQDESK\.dotnet\dotnet.exe' run --project 'D:\YQDESK\MyIsland-src\tests\Island.Tests\Island.Tests.csproj' -c Release --nologo
 ```
-预期：`FAIL: 分隔线 x = 组尾 + 组间距/2`（`DividerXAfter` 还不存在 → 编译错误）。
+预期：编译失败（`CompactSpec.GroupAdvance` 还不存在）。
 
 - [ ] **Step 3: 加嵌套类型与新的 DrawCompactGroups**
 
-在 `src/Island.App/Controls/IslandCanvas.cs` 的 `DrawCompactGroups` 方法之前插入：
+先给 `src/Island.App/Controls/CompactSpec.cs` 补一个纯函数（Task 1 已落盘，本任务追加）：
 
 ```csharp
     /// <summary>
-    /// 收起态的一个视觉组：组内可放多个元素（彼此紧挨），组与组之间留 GroupGap 并画一条 Hairline 竖线。
-    /// 对应 mac 版 DrawCombo 的 DrawGaugeGroup + Gap()。
+    /// 组到下一组的间距：组自带 TrailingGap 优先，否则用渲染层默认组间距。
+    /// mac 的 combo 有两种边界：有分隔线的边界 = 24px 总带（SeparatorBand），
+    /// 没有分隔线的边界（时间│占用组）= 12px（ClockGap）。
+    /// </summary>
+    public static double GroupAdvance(double? trailingGap, double defaultGap)
+        => trailingGap ?? defaultGap;
+```
+
+再在 `src/Island.App/Controls/IslandCanvas.cs` 的 `DrawCompactGroups` 方法之前插入：
+
+```csharp
+    /// <summary>
+    /// 收起态的一个视觉组：组内可放多个元素（彼此紧挨），组与组之间按 TrailingGap 留白，
+    /// 需要时再在留白里画一条 Hairline 竖线（mac 的 DrawGaugeGroup + Gap()）。
     /// </summary>
     private sealed class CompactGroup
     {
@@ -407,6 +425,12 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: 新增 360° 闭环 RenderKit.R
         public Action<double> Draw { get; init; } = _ => { };
         /// <summary>本组之后是否画分隔线（mac 的 Gap()）。最后一个可见组不画（其后是 +N 或空白）。</summary>
         public bool DividerAfter { get; init; }
+        /// <summary>
+        /// 到下一组的间距；null = 用渲染层默认组间距（gap 参数）。
+        /// mac 的 combo 有两种边界：有分隔线的边界 = 24px 总带（SeparatorBand），
+        /// 没有分隔线的边界（时间│占用组）= 12px（ClockGap）。
+        /// </summary>
+        public double? TrailingGap { get; init; }
     }
 ```
 
@@ -414,24 +438,26 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: 新增 360° 闭环 RenderKit.R
 
 ```csharp
     /// <summary>
-    /// 收起态分组排版：组与组之间留出 SeparatorBand（= 2 × GroupGap = 24px），
-    /// 可选在这条总带里画 Hairline 竖线（mac 的 Gap()：线在「组尾 + 18px」，偏后 6px，不在正中）。
+    /// 收起态分组排版：组与组之间按「上一组的 TrailingGap（缺省用 gap 参数）」留白，
+    /// 需要时在留白里画 Hairline 竖线（mac 的 Gap()：线在「组尾 + 18px」，偏后 6px，不在正中）。
     /// 宽度不够时截断尾部并显示 "+N"；被截断时最后一个可见组**不**画分隔线。
     /// </summary>
     private double DrawCompactGroups(DrawingContext dc, Palette pal, Rect r, double cy,
-        List<CompactGroup> groups, double band = CompactSpec.SeparatorBand, double padding = CompactSpec.PadX,
+        List<CompactGroup> groups, double gap = 16, double padding = 14,
         bool drawDividers = false)
     {
         double available = Math.Max(0, CompactWidthBudget - padding * 2);
         double used = 0;
         int shown = 0;
+        double prevGap = 0;   // 上一组到本组的间距（本组之后用本组的 TrailingGap）
         for (int i = 0; i < groups.Count; i++)
         {
-            double next = used + (shown > 0 ? band : 0) + groups[i].Width;
+            double next = used + (shown > 0 ? prevGap : 0) + groups[i].Width;
             int remaining = groups.Count - i - 1;
-            double suffix = remaining > 0 ? band + Text($"+{remaining}", 11, pal.TextDim, ppd: Ppd).Width : 0;
+            double suffix = remaining > 0 ? prevGap + Text($"+{remaining}", 11, pal.TextDim, ppd: Ppd).Width : 0;
             if (next + suffix > available) break;
             used = next;
+            prevGap = CompactSpec.GroupAdvance(groups[i].TrailingGap, gap);
             shown++;
         }
         double x = r.X + padding;
@@ -440,12 +466,13 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: 新增 360° 闭环 RenderKit.R
             double groupStart = x;
             groups[i].Draw(groupStart);
             double groupEnd = groupStart + groups[i].Width;
-            x = groupEnd + band;
+            bool hasNext = i < shown - 1;
+            x = groupEnd + (hasNext ? CompactSpec.GroupAdvance(groups[i].TrailingGap, gap) : 0);
             // 组间分隔线：mac 的 Gap() 在总带里画线（组尾 + 18px = 组尾 + 1.5 × 单侧组间距）；
             // 最后一个可见组后面不画（其后是 +N 或空白）
-            if (drawDividers && groups[i].DividerAfter && i < shown - 1)
+            if (drawDividers && groups[i].DividerAfter && hasNext)
             {
-                double lineX = CompactSpec.DividerXAfter(groupEnd, band / 2);
+                double lineX = CompactSpec.DividerXAfter(groupEnd);
                 dc.DrawLine(RenderKit.PenOf(pal.Hairline, 1, 0.8),
                     new Point(lineX, cy - CompactSpec.DividerHalfHeight),
                     new Point(lineX, cy + CompactSpec.DividerHalfHeight));
@@ -455,7 +482,7 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: 新增 360° 闭环 RenderKit.R
         {
             var more = Text($"+{groups.Count - shown}", 11, pal.TextDim, ppd: Ppd);
             dc.DrawText(more, new Point(x, cy - more.Height / 2));
-            used += (shown > 0 ? gap : 0) + more.Width;
+            used += (shown > 0 ? prevGap : 0) + more.Width;
         }
         return Math.Min(CompactWidthBudget, Math.Max(80, padding * 2 + used));
     }
@@ -642,10 +669,11 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "refactor: 收起态排版器升级为
         // ---- combo 的组结构：时间│占用组│温度磁盘组│网速（对应 mac LayoutCombo）----
         check("combo 占用组 = 3 环（C/M/G）总宽 185", CompactSpec.GaugeGroupWidth(3, _ => 30) == 185);
         check("combo 系统组 = 3 环（C/G/D）总宽 185", CompactSpec.GaugeGroupWidth(3, _ => 30) == 185);
-        // 四组之间有 3 处分隔线 → 内容宽里含 3 段 GroupGap*2
+        // mac 的 combo 只有 **两处** 分隔线（占用组│温度磁盘组、温度磁盘组│网速）；
+        // 时间│占用组之间没有线，只有 ClockGap=12 的留白。
         double content = CompactSpec.ComboContentWidth(40, 185, 185, 60, 60);
-        check("combo 内容宽含 3 段组间距",
-            content == 40 + 12 + 185 + (12 * 2 + 185) + 12 * 2 + 60 + 7 + 60);
+        check("combo 内容宽 = 时钟12 + 占用组 + (24+系统组) + 24 + 网速",
+            content == 40 + 12 + 185 + (24 + 185) + 24 + 60 + 7 + 60);
 ```
 
 - [ ] **Step 2: 运行测试，确认失败**
@@ -653,7 +681,7 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "refactor: 收起态排版器升级为
 ```powershell
 & 'D:\YQDESK\.dotnet\dotnet.exe' run --project 'D:\YQDESK\MyIsland-src\tests\Island.Tests\Island.Tests.csproj' -c Release --nologo
 ```
-预期：断言 `FAIL`（当前 combo 的组间距段数不是 3 段）。
+预期：断言 `FAIL`（`ComboContentWidth` 已存在但本条断言的期望值按 mac 的两分隔线口径写；确认它在改动前后能区分）。
 
 - [ ] **Step 3: 重写 DrawCombo**
 
@@ -661,9 +689,12 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "refactor: 收起态排版器升级为
 
 ```csharp
     /// <summary>
-    /// 信息胶囊（combo）：时间 │ 占用环组(C/M/G) │ 温度磁盘环组(C/G/D) │ 网速，组间画 Hairline 分隔线。
+    /// 信息胶囊（combo）：时间 │ 占用环组(C/M/G) │ 温度磁盘环组(C/G/D) │ 网速。
     /// 对应 mac 版 LayoutCombo + DrawCombo（src/Island.Avalonia/IslandCanvas.cs L612-L707）。
-    /// 规格：环 20px 闭环（RenderKit.Ring），环心字母，数值 13px 等宽放环外，槽宽 21px，组间距 12px。
+    /// 分隔线只有**两处**（占用组│温度磁盘组、温度磁盘组│网速，mac 的 Gap() 只调用两次：:694/:696）；
+    /// 时间│占用组之间没有线，只有 ClockGap=12 的留白（mac :677 的 x += L.ClockW + L.ClockGap）。
+    /// 规格：环 20px 闭环（RenderKit.Ring），环心字母，数值 13px 等宽放环外，槽宽 21px，
+    /// 有分隔线的边界总带 24px（SeparatorBand），线在「组尾 + 18px」。
     /// 配色沿用 Windows 的「暗色科技」口径（见 Global Constraints），不是 mac 的每资源一色。
     /// </summary>
     private double DrawCombo(DrawingContext dc, Palette pal, Rect r, double cy,
@@ -718,7 +749,9 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "refactor: 收起态排版器升级为
             {
                 Width = clock.WidthIncludingTrailingWhitespace,
                 Draw = x => Baseline(dc, clock, x, Math.Round(cy + CompactSpec.FigureFont * 0.36)),
-                DividerAfter = true,
+                // 时间后面**没有分隔线**（mac 只在占用组│系统组、系统组│网速两处画线），只有 12px 留白
+                DividerAfter = false,
+                TrailingGap = CompactSpec.ClockGap,
             });
         }
 
@@ -745,6 +778,7 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "refactor: 收起态排版器升级为
                     LevelColor(snap.GpuUsage, pal.Text, pal)));
             }
         }
+        // 占用组之后有分隔线（mac :694）
         AddGaugeGroup(dials, dividerAfter: true);
 
         // ---- 组 3：温度 / 磁盘环组（C/G/D）----
@@ -772,6 +806,7 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "refactor: 收起态排版器升级为
                     LevelColor(snap.DiskUsagePercent, pal.Text, pal)));
             }
         }
+        // 系统组之后有分隔线（mac :696）
         AddGaugeGroup(sys, dividerAfter: true);
 
         // ---- 组 4：网速（↓值 ↑值，中性色）----
@@ -785,7 +820,9 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "refactor: 收起态排版器升级为
             });
         }
 
-        return DrawCompactGroups(dc, pal, r, cy, groups, drawDividers: true);
+        // 组间距：mac 的 combo 有分隔线的边界总带 24px（SeparatorBand），左右内边距 10px（ComboPadX）
+        return DrawCompactGroups(dc, pal, r, cy, groups,
+            gap: CompactSpec.SeparatorBand, padding: CompactSpec.PadX, drawDividers: true);
     }
 ```
 
