@@ -229,7 +229,11 @@ internal static class Program
     /// <summary>厂商协议命中时的信息（读数 + 来源描述）。</summary>
     private sealed record VendorHit(PeripheralReading Reading, string Source);
 
-    /// <summary>工具这一侧对某台设备的判定（用于与产品路径逐设备对齐）。</summary>
+    /// <summary>
+    /// 工具这一侧对某台设备的判定。
+    /// <c>Layer</c> / <c>EntryKey</c> 只是**展示**用（给人看命中了哪一层、哪一条），
+    /// **不参与**与产品路径的比较 —— 产品的 DeviceInfo 不带这两项，比不了就不假装比。
+    /// </summary>
     private sealed record ToolResult(
         string DeviceKey, string Layer, string? EntryKey, int? Percent, string? ProductName);
 
@@ -288,6 +292,10 @@ internal static class Program
             try { user = PeripheralProtocols.LoadFromJson(json); }
             catch (Exception ex) { userLoadError = ex.GetType().Name + ": " + ex.Message; }
         }
+
+        // 用户表按 key 去重（同 key 只保留最后一条）—— 与产品 AddUserProtocols 一致，
+        // 否则工具的"生效表"与产品的 All 会对不上（产品装载时同 key 只留最后一条）。
+        user = PeripheralProtocolTable.EffectiveUserEntries(user).ToList();
 
         // 装进生产协议表（与产品同一套装载路径：用户条目在前，同 key 覆盖内置条目）
         PeripheralProtocols.ClearUserProtocols();
@@ -500,9 +508,12 @@ internal static class Program
 
         // ---- 逐设备对齐：产品路径 vs 工具路径 ----
         // 之前这里只是把产品快照打印出来，没有任何比较 —— 报告却写着"两个数字一致才算通了"。
-        // 现在真的比：判定层/有没有读数对不上 = 硬不一致（拦门禁）；
-        // 只是百分比不同 = 两次独立读取期间设备读数可能变了（只提示）。
-        Console.WriteLine("  逐设备对齐（产品快照不带 VID:PID 与命中层 ⇒ 按设备名对齐）：");
+        // 现在真的比，但**只比较读数**：产品的 DeviceInfo 不带命中层、也不带命中的表项 key
+        // （比不了，也不该假装比了）。具体：
+        //   · 一路有读数、另一路没有（或是多/少了一台设备）= 不一致（拦门禁）；
+        //   · 两路都有读数、只是数值不同 = 两次独立读取期间设备读数可能变了（只提示）。
+        Console.WriteLine("  逐设备对齐（只比较读数：有没有读数 + 数值。产品的 DeviceInfo 不带 VID:PID、"
+            + "命中层与命中的表项 ⇒ 那些比不了，按设备名对齐）：");
         int hardMismatch = 0, softMismatch = 0;
         List<DeviceInfo> pool = new List<DeviceInfo>(snapshot);
         foreach (ToolResult r in toolResults)
@@ -525,7 +536,7 @@ internal static class Program
                 if (r.ProductName is null)
                 {
                     Console.WriteLine("    · " + r.DeviceKey + "：工具=" + toolText
-                        + "；产品=（无条目）⇒ ✓ 一致（两路都没产出读数）");
+                        + "；产品=（无条目）⇒ ✓ 读数一致（两路都没产出读数）");
                 }
                 else
                 {
@@ -541,7 +552,7 @@ internal static class Program
             if (productPercent == r.Percent)
             {
                 Console.WriteLine("    · " + r.DeviceKey + "：工具=" + toolText
-                    + "；产品=" + productText + " ⇒ ✓ 一致");
+                    + "；产品=" + productText + " ⇒ ✓ 读数一致");
             }
             else if (r.Percent is not null && productPercent is not null)
             {
@@ -573,11 +584,12 @@ internal static class Program
             + "（错误 " + userReport.ErrorCount + "，警告 " + userReport.WarningCount + "）");
         Console.WriteLine("  设备命中：共 " + groups.Count + " 台 —— L1 " + l1Count
             + " 台 / L3 " + l3Count + " 台 / L4 " + l4Count + " 台 / 未命中 " + noneCount + " 台");
-        Console.WriteLine("  两路复核（工具 vs 产品）："
+        Console.WriteLine("  两路复核（工具 vs 产品，只比较读数）："
             + (hardMismatch == 0
                 ? "一致"
-                : "⚠ 不一致 " + hardMismatch + " 处（判定/有无读数）")
-            + (softMismatch > 0 ? "，另有 " + softMismatch + " 处只是读数不同" : ""));
+                : "⚠ 不一致 " + hardMismatch + " 处（有没有读数 / 设备多寡）")
+            + (softMismatch > 0 ? "，另有 " + softMismatch + " 处只是读数数值不同" : "")
+            + "（命中层与命中的表项产品侧不带 ⇒ 不比较）");
 
         bool failed = builtinReport.HasErrors || userReport.HasErrors || hardMismatch > 0;
         Console.WriteLine(failed

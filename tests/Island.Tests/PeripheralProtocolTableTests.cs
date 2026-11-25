@@ -458,6 +458,75 @@ internal static class PeripheralProtocolTableTests
             !noDeviceIssues.Any(i => i.IsError)
             && noDeviceIssues.Any(i => i.Severity == PeripheralProtocolSeverity.Info));
 
+        // 部分覆盖：用户条目指向**同一台设备的另一个 HID 集合**（复审实测场景）——
+        // 这时用户条目是生效的（它确实匹配上了那个集合），只是没覆盖内置条目能匹配的全部设备。
+        // 早先这里被误判成「覆盖不生效 / 用户以为改了」并拦门禁 ⇒ 误报，已修。
+        var otherCollection = Good("lenovo-idea5003") with
+        {
+            UsagePage = 0xFF50,
+            Usage = 0x0003,
+            MinReportLength = 0,
+            ValueOffset = 12,
+        };
+        var partialDevices = new List<PeripheralDeviceKey>
+        {
+            new PeripheralDeviceKey(0x17EF, 0xF006, 0xFFCF, 0x00A0, 137),
+            new PeripheralDeviceKey(0x17EF, 0xF006, 0xFF50, 0x0003, 0),
+        };
+        var partialDeviceIssues = PeripheralProtocolTable.ValidateOverrideAgainstDevices(
+            new List<PeripheralProtocol> { otherCollection }, builtin, partialDevices);
+        check("覆盖生效性：用户条目指向同一设备的另一个集合（只生效一部分）→ 警告，不报错",
+            !partialDeviceIssues.Any(i => i.IsError)
+            && partialDeviceIssues.Any(i => i.Severity == PeripheralProtocolSeverity.Warning
+                && i.Message.Contains("只生效一部分")));
+        check("覆盖生效性：部分生效的结论里不再出现「用户以为改了」的断言式措辞",
+            !partialDeviceIssues.Any(i => i.Message.Contains("用户以为改了")));
+        check("覆盖生效性：完全没生效（一条设备都匹配不上）→ 仍是错误，且说明「用户以为改了、产品其实没改」",
+            mismatchIssues.Any(i => i.IsError && i.Message.Contains("用户以为改了")));
+
+        // 用户表 key 重复：生效表要与产品一致（同 key 只保留最后一条）
+        var dupUser = new List<PeripheralProtocol>
+        {
+            Good("dup-key") with { ValueOffset = 11 },
+            Good("dup-key") with { ValueOffset = 22 },
+        };
+        var dupEffective = PeripheralProtocolTable.EffectiveTable(builtin, dupUser);
+        check("生效表：用户表同 key 重复时只保留最后一条（与产品 AddUserProtocols 一致）",
+            dupEffective.Count == 2 && dupEffective[0].Key == "dup-key"
+            && dupEffective[0].ValueOffset == 22 && dupEffective[1].Key == "lenovo-idea5003");
+
+        List<PeripheralProtocol>? productAll = null;
+        try
+        {
+            PeripheralProtocols.AddUserProtocols(dupUser);
+            productAll = PeripheralProtocols.All.ToList();
+        }
+        finally
+        {
+            PeripheralProtocols.ClearUserProtocols();
+        }
+        bool allAgrees = productAll is not null && productAll.Count == dupEffective.Count;
+        if (allAgrees)
+        {
+            for (int i = 0; i < productAll!.Count; i++)
+            {
+                if (productAll[i].Key != dupEffective[i].Key
+                    || productAll[i].ValueOffset != dupEffective[i].ValueOffset)
+                {
+                    allAgrees = false;
+                }
+            }
+        }
+        check("生效表：与产品的 PeripheralProtocols.All 条目与顺序完全一致（去重口径对齐）", allAgrees);
+
+        var dupKeyJson = """
+        [ { "key": "dup", "vid": 1, "pid": 2, "featureReportId": 193, "valueOffset": 8 },
+          { "key": "dup", "vid": 3, "pid": 4, "featureReportId": 193, "valueOffset": 9 } ]
+        """;
+        var dupKeyReport = PeripheralProtocolTable.ValidateUserJson(dupKeyJson, "用户表");
+        check("用户 JSON：key 重复 → 错误（产品装载时同 key 只保留最后一条）",
+            dupKeyReport.HasErrors && Mentions(dupKeyReport.Issues, "key 重复"));
+
         // ==================== 八、歧义、缩放、候选表项 ====================
 
         // usage 宽窄不同（有重叠）也算歧义
