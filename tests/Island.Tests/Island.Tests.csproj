@@ -91,6 +91,9 @@
     <!-- 能力清单漂移检查（2026-11-26 阶段 4/5）：清单改了、两端没跟着改 ⇒ 门禁红 -->
     <Compile Remove="CapabilityManifestTests.cs" />
     <Compile Include="CapabilityManifestTests.cs" />
+    <!-- 主题 token 语义清单漂移检查（2026-11-26 task9）：两端同名 token 必须指同一语义角色 -->
+    <Compile Remove="ThemeTokenTests.cs" />
+    <Compile Include="ThemeTokenTests.cs" />
     <!-- 展开面板规格（2026-11-26 阶段 2：Windows 展开面板对齐 mac 版）：纯常量类，可链进测试工程 -->
     <Compile Include="..\..\src\Island.App\Controls\ExpandedPanelSpec.cs" Link="Merged\ExpandedPanelSpec.cs" />
     <!-- PDH 通配符读取器（GPU Engine 分组聚合）：纯 P/Invoke，无 NuGet 依赖，可链进测试工程 -->
