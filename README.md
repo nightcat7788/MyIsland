@@ -12,6 +12,10 @@ MyIsland 是一款 Windows 与 macOS 菜单栏系统监控工具，以轻量胶�
 - 8 种小形象款式，支持视线、表情、眨眼、呼吸、互动弹跳和待机动作。
 - 主题与紧凑视图自定义。
 
+## 界面截图
+
+![MyIsland macOS 监控胶囊](docs/screenshots/macos-capsule.png)
+
 ## 构建
 
 需要 .NET 8 SDK。详细的 macOS 环境和原生工具说明见 [README-Mac.md](README-Mac.md)。
