@@ -90,6 +90,14 @@ public static class CompactSpec
     public static double DividerXAfter(double groupEndX, double gap = GroupGap) => groupEndX + gap * 1.5;
 
     /// <summary>
+    /// 组到下一组的间距：组自带 TrailingGap 优先，否则用渲染层默认组间距。
+    /// mac 的 combo 有两种边界：有分隔线的边界 = 24px 总带（SeparatorBand），
+    /// 没有分隔线的边界（时间│占用组）= 12px（ClockGap）。
+    /// </summary>
+    public static double GroupAdvance(double? trailingGap, double defaultGap)
+        => trailingGap ?? defaultGap;
+
+    /// <summary>
     /// dash 单行项宽：标签 + 箭头/数值间距 + 数值槽（窄数值按最小槽兜底）。
     ///
     /// 注意：这是 **Windows 侧**的组合，mac dash 里没有对应公式，别去 mac 找「同步对象」：

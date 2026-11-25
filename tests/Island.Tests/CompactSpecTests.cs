@@ -68,5 +68,10 @@ internal static class CompactSpecTests
         check("环扫角 = 占比 * 2π", Math.Abs(CompactSpec.RingSweep(0.25) - Math.PI / 2) < 1e-9);
         check("环占比夹到 0..1", CompactSpec.RingSweep(2) == 2 * Math.PI);
         check("环 NaN 占比按 0 处理", CompactSpec.RingSweep(double.NaN) == 0);
+
+        // ---- 组到下一组的间距：组自带 TrailingGap 优先，否则用渲染层默认组间距 ----
+        check("组间距默认取渲染层默认值", CompactSpec.GroupAdvance(null, 24) == 24);
+        check("组自带 TrailingGap 时优先用它（combo 的 时间│占用组 = ClockGap 12）",
+            CompactSpec.GroupAdvance(12, 24) == 12);
     }
 }

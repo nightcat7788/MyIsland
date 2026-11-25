@@ -76,6 +76,13 @@ internal static class DesignSystemTests
                 RenderKit.Dial(dc, new Point(20, 20), 40, 3, 0.5, Colors.Black, Colors.White, Colors.White, "", 1, glow: double.NaN);
                 RenderKit.Dial(dc, new Point(20, 20), 40, 3, 0.5, Colors.Black, Colors.White, Colors.White, "", 1, glow: -4);
                 RenderKit.Dial(dc, new Point(20, 20), 40, 3, 2, Colors.Black, Colors.White, Colors.White, "", 1, glow: 3);
+                // 360° 闭环环（收起态用）：负半径（线宽 > 直径）/ 零直径 / 坏直径 / 坏占比都不抛异常
+                RenderKit.Ring(dc, new Point(20, 20), 40, 3, 0.5, Colors.Black, Colors.White);
+                RenderKit.Ring(dc, new Point(20, 20), 40, 60, 0.5, Colors.Black, Colors.White);
+                RenderKit.Ring(dc, new Point(20, 20), 0, 3, 0.5, Colors.Black, Colors.White);
+                RenderKit.Ring(dc, new Point(20, 20), double.NaN, 3, 0.5, Colors.Black, Colors.White);
+                RenderKit.Ring(dc, new Point(20, 20), 40, 3, double.NaN, Colors.Black, Colors.White);
+                RenderKit.Ring(dc, new Point(20, 20), 40, 3, 2, Colors.Black, Colors.White);
                 var spot = RenderKit.Spotlight(Palette.Dark.Accent, double.NaN, double.PositiveInfinity);
                 ok &= spot.IsFrozen && RenderKit.ReferenceEquals(spot, RenderKit.Spotlight(Palette.Dark.Accent, double.NaN, double.PositiveInfinity));
                 ok &= RenderKit.Halo(Colors.White, 7).A == 255 && RenderKit.Halo(Colors.White, -1).A == 0;

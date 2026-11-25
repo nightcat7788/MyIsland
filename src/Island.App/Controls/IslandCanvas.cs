@@ -518,32 +518,72 @@ public sealed class IslandCanvas : FrameworkElement
 
     public double CompactContentWidth { get; private set; }
 
+    /// <summary>
+    /// 收起态的一个视觉组：组内可放多个元素（彼此紧挨），组与组之间按 TrailingGap 留白，
+    /// 需要时再在留白里画一条 Hairline 竖线（mac 的 DrawGaugeGroup + Gap()）。
+    /// </summary>
+    private sealed class CompactGroup
+    {
+        /// <summary>本组占用宽度（组内所有元素 + 组内间距）。</summary>
+        public double Width { get; init; }
+        /// <summary>绘制本组；参数是本组左边缘 x。</summary>
+        public Action<double> Draw { get; init; } = _ => { };
+        /// <summary>本组之后是否画分隔线（mac 的 Gap()）。最后一个可见组不画（其后是 +N 或空白）。</summary>
+        public bool DividerAfter { get; init; }
+        /// <summary>
+        /// 到下一组的间距；null = 用渲染层默认组间距（gap 参数）。
+        /// mac 的 combo 有两种边界：有分隔线的边界 = 24px 总带（SeparatorBand），
+        /// 没有分隔线的边界（时间│占用组）= 12px（ClockGap）。
+        /// </summary>
+        public double? TrailingGap { get; init; }
+    }
+
+    /// <summary>
+    /// 收起态分组排版：组与组之间按「上一组的 TrailingGap（缺省用 gap 参数）」留白，
+    /// 需要时在留白里画 Hairline 竖线（mac 的 Gap()：线在「组尾 + 18px」，偏后 6px，不在正中）。
+    /// 宽度不够时截断尾部并显示 "+N"；被截断时最后一个可见组**不**画分隔线。
+    /// </summary>
     private double DrawCompactGroups(DrawingContext dc, Palette pal, Rect r, double cy,
-        List<(double Width, Action<double> Draw)> groups, double gap = 16, double padding = 14)
+        List<CompactGroup> groups, double gap = 16, double padding = 14,
+        bool drawDividers = false)
     {
         double available = Math.Max(0, CompactWidthBudget - padding * 2);
         double used = 0;
         int shown = 0;
+        double prevGap = 0;   // 上一组到本组的间距（本组之后用本组的 TrailingGap）
         for (int i = 0; i < groups.Count; i++)
         {
-            double next = used + (shown > 0 ? gap : 0) + groups[i].Width;
+            double next = used + (shown > 0 ? prevGap : 0) + groups[i].Width;
             int remaining = groups.Count - i - 1;
-            double suffix = remaining > 0 ? gap + Text($"+{remaining}", 11, pal.TextDim, ppd: Ppd).Width : 0;
+            double suffix = remaining > 0 ? prevGap + Text($"+{remaining}", 11, pal.TextDim, ppd: Ppd).Width : 0;
             if (next + suffix > available) break;
             used = next;
+            prevGap = CompactSpec.GroupAdvance(groups[i].TrailingGap, gap);
             shown++;
         }
         double x = r.X + padding;
         for (int i = 0; i < shown; i++)
         {
-            groups[i].Draw(x);
-            x += groups[i].Width + gap;
+            double groupStart = x;
+            groups[i].Draw(groupStart);
+            double groupEnd = groupStart + groups[i].Width;
+            bool hasNext = i < shown - 1;
+            x = groupEnd + (hasNext ? CompactSpec.GroupAdvance(groups[i].TrailingGap, gap) : 0);
+            // 组间分隔线：mac 的 Gap() 在总带里画线（组尾 + 18px = 组尾 + 1.5 × 单侧组间距）；
+            // 最后一个可见组后面不画（其后是 +N 或空白）
+            if (drawDividers && groups[i].DividerAfter && hasNext)
+            {
+                double lineX = CompactSpec.DividerXAfter(groupEnd);
+                dc.DrawLine(RenderKit.PenOf(pal.Hairline, 1, 0.8),
+                    new Point(lineX, cy - CompactSpec.DividerHalfHeight),
+                    new Point(lineX, cy + CompactSpec.DividerHalfHeight));
+            }
         }
         if (shown < groups.Count)
         {
             var more = Text($"+{groups.Count - shown}", 11, pal.TextDim, ppd: Ppd);
             dc.DrawText(more, new Point(x, cy - more.Height / 2));
-            used += (shown > 0 ? gap : 0) + more.Width;
+            used += (shown > 0 ? prevGap : 0) + more.Width;
         }
         return Math.Min(CompactWidthBudget, Math.Max(80, padding * 2 + used));
     }
@@ -609,7 +649,7 @@ public sealed class IslandCanvas : FrameworkElement
         DrawCapsuleBase(dc, pal);
 
         Color neutral = Neutral(pal);
-        var groups = new List<(double Width, Action<double> Draw)>();
+        var groups = new List<CompactGroup>();
 
         // ---- 细核心柱群（2.6px 细柱、2px 间距、最多 16 核，垂直居中） ----
         var cores = snap.CoreUsages;
@@ -617,31 +657,41 @@ public sealed class IslandCanvas : FrameworkElement
         {
             int n = Math.Min(16, cores.Length);
             double bw = 2.6, gap = 2, maxH = Math.Max(0, Math.Min(24, r.Height - 18));
-            groups.Add((n * (bw + gap), x =>
+            groups.Add(new CompactGroup
             {
-                for (int i = 0; i < n; i++)
+                Width = n * (bw + gap),
+                Draw = x =>
                 {
-                    double v = Easing.Clamp(cores[i] / 100.0, 0, 1);
-                    dc.DrawRoundedRectangle(BrushOf(pal.Track), null,
-                        RenderKit.SafeRect(x + i * (bw + gap), cy - maxH / 2, bw, maxH), 1.2, 1.2);
-                    double h = 1.6 + v * (maxH - 1.6);
-                    dc.DrawRoundedRectangle(BrushOf(LevelColor(v * 100, pal.Accent, pal)), null,
-                        RenderKit.SafeRect(x + i * (bw + gap), cy + maxH / 2 - h, bw, h), 1.2, 1.2);
-                }
-            }));
+                    for (int i = 0; i < n; i++)
+                    {
+                        double v = Easing.Clamp(cores[i] / 100.0, 0, 1);
+                        dc.DrawRoundedRectangle(BrushOf(pal.Track), null,
+                            RenderKit.SafeRect(x + i * (bw + gap), cy - maxH / 2, bw, maxH), 1.2, 1.2);
+                        double h = 1.6 + v * (maxH - 1.6);
+                        dc.DrawRoundedRectangle(BrushOf(LevelColor(v * 100, pal.Accent, pal)), null,
+                            RenderKit.SafeRect(x + i * (bw + gap), cy + maxH / 2 - h, bw, h), 1.2, 1.2);
+                    }
+                },
+            });
         }
 
         // ---- 表盘读数（数字按 "100%" 预留，跳数不动布局） ----
         const double dialSize = 20, dialFont = 12.5;
         void Gauge(double value, Color color, string letter)
-            => groups.Add((dialSize + 5 + Math.Ceiling(RenderKit.NumWidth("100%", dialFont, true, ppd)),
-                x => DrawDialGauge(dc, pal, x, cy, ppd, value, color, letter, dialSize, dialFont)));
+            => groups.Add(new CompactGroup
+            {
+                Width = dialSize + 5 + Math.Ceiling(RenderKit.NumWidth("100%", dialFont, true, ppd)),
+                Draw = x => DrawDialGauge(dc, pal, x, cy, ppd, value, color, letter, dialSize, dialFont),
+            });
         Gauge(snap.CpuUsage, pal.Accent, "C");
         Gauge(snap.MemoryUsagePercent, neutral, "M");
         if (snap.GpuUsage > 0) Gauge(snap.GpuUsage, neutral, "G");
         Gauge(snap.DiskUsagePercent, neutral, "D");
-        groups.Add((NetWidth(11, snap, ppd),
-            x => DrawNet(dc, pal, x, Math.Round(cy + 11 * 0.38), 11, snap, ppd)));
+        groups.Add(new CompactGroup
+        {
+            Width = NetWidth(11, snap, ppd),
+            Draw = x => DrawNet(dc, pal, x, Math.Round(cy + 11 * 0.38), 11, snap, ppd),
+        });
         return DrawCompactGroups(dc, pal, r, cy, groups);
     }
 
@@ -655,18 +705,24 @@ public sealed class IslandCanvas : FrameworkElement
         if (r.Width < 40 || r.Height < 20) return 0;
         double ppd = Ppd;
         DrawCapsuleBase(dc, pal);
-        var groups = new List<(double Width, Action<double> Draw)>();
+        var groups = new List<CompactGroup>();
         Color neutral = Neutral(pal);
         void Gauge(double? value, string letter, string sample = "100%", string? text = null, Color? color = null, double? fill = null)
-            => groups.Add((25 + Math.Ceiling(RenderKit.NumWidth(sample, 12.5, true, ppd)),
-                x => DrawDialGauge(dc, pal, x, cy, ppd, value, letter == "C" && text is null ? pal.Accent : neutral,
-                    letter, 20, 12.5, fill, text, color, sample)));
+            => groups.Add(new CompactGroup
+            {
+                Width = 25 + Math.Ceiling(RenderKit.NumWidth(sample, 12.5, true, ppd)),
+                Draw = x => DrawDialGauge(dc, pal, x, cy, ppd, value, letter == "C" && text is null ? pal.Accent : neutral,
+                    letter, 20, 12.5, fill, text, color, sample),
+            });
 
         // ① 时间（按样本 "00:00" 预留宽度，分针跳变不推挤右侧读数；数字等宽）
         if (WantCombo("clock"))
         {
-            groups.Add((Math.Ceiling(RenderKit.NumWidth("00:00", 16, true, ppd)),
-                x => Num(dc, DateTime.Now.ToString("HH:mm"), x, Math.Round(cy + 15 * 0.36), 16, pal.Text, true, ppd)));
+            groups.Add(new CompactGroup
+            {
+                Width = Math.Ceiling(RenderKit.NumWidth("00:00", 16, true, ppd)),
+                Draw = x => Num(dc, DateTime.Now.ToString("HH:mm"), x, Math.Round(cy + 15 * 0.36), 16, pal.Text, true, ppd),
+            });
         }
 
         // ② 系统读数表盘（开口环 + 字母）：CPU 强调色，其余中性色
@@ -693,8 +749,11 @@ public sealed class IslandCanvas : FrameworkElement
 
         // ④ 右缘：紧凑网速单行（先量宽度，才能贴右缘放置）
         if (WantCombo("net") && snap is not null)
-            groups.Add((NetWidth(11, snap, ppd),
-                x => DrawNet(dc, pal, x, Math.Round(cy + 11 * 0.38), 11, snap, ppd)));
+            groups.Add(new CompactGroup
+            {
+                Width = NetWidth(11, snap, ppd),
+                Draw = x => DrawNet(dc, pal, x, Math.Round(cy + 11 * 0.38), 11, snap, ppd),
+            });
         return DrawCompactGroups(dc, pal, r, cy, groups);
     }
 
@@ -748,7 +807,7 @@ public sealed class IslandCanvas : FrameworkElement
         double ppd = Ppd;
         DrawCapsuleBase(dc, pal);
         var density = DensityFor();
-        var groups = new List<(double Width, Action<double> Draw)>();
+        var groups = new List<CompactGroup>();
 
         // 每组：标签上、数值下；宽度 = max(标签, 数值, 样本)，样本保证跳数时组距不动
         void Item(string label, string value, string sample, Color? valueColor = null)
@@ -756,11 +815,15 @@ public sealed class IslandCanvas : FrameworkElement
             var icon = Text(label, 9.5, pal.TextTertiary, ppd: ppd);
             double width = Math.Max(Math.Max(RenderKit.NumWidth(sample, 13, true, ppd),
                 RenderKit.NumWidth(value, 13, true, ppd)), icon.Width);
-            groups.Add((width, x =>
+            groups.Add(new CompactGroup
             {
-                dc.DrawText(icon, new Point(x, cy - 14));
-                Num(dc, value, x, cy + 15, 13, valueColor ?? pal.Text, true, ppd);
-            }));
+                Width = width,
+                Draw = x =>
+                {
+                    dc.DrawText(icon, new Point(x, cy - 14));
+                    Num(dc, value, x, cy + 15, 13, valueColor ?? pal.Text, true, ppd);
+                },
+            });
         }
 
         // ① 核心柱（等距各组之首，强调色；轨道+填充）
@@ -770,18 +833,22 @@ public sealed class IslandCanvas : FrameworkElement
             int n = Math.Min(8, cores.Length);
             double bw = 4, gap = 2.6, maxH = 26;
             double baseY = cy + maxH / 2 - 4;
-            groups.Add((n * (bw + gap), x =>
+            groups.Add(new CompactGroup
             {
-                for (int i = 0; i < n; i++)
+                Width = n * (bw + gap),
+                Draw = x =>
                 {
-                    double v = Easing.Clamp(cores[i] / 100.0, 0, 1);
-                    dc.DrawRoundedRectangle(BrushOf(pal.Track), null,
-                        RenderKit.SafeRect(x + i * (bw + gap), baseY - maxH, bw, maxH), 1.6, 1.6);
-                    double h = 2 + v * maxH;
-                    dc.DrawRoundedRectangle(BrushOf(LevelColor(v * 100, pal.Accent, pal)), null,
-                        RenderKit.SafeRect(x + i * (bw + gap), baseY - h, bw, h), 1.6, 1.6);
-                }
-            }));
+                    for (int i = 0; i < n; i++)
+                    {
+                        double v = Easing.Clamp(cores[i] / 100.0, 0, 1);
+                        dc.DrawRoundedRectangle(BrushOf(pal.Track), null,
+                            RenderKit.SafeRect(x + i * (bw + gap), baseY - maxH, bw, maxH), 1.6, 1.6);
+                        double h = 2 + v * maxH;
+                        dc.DrawRoundedRectangle(BrushOf(LevelColor(v * 100, pal.Accent, pal)), null,
+                            RenderKit.SafeRect(x + i * (bw + gap), baseY - h, bw, h), 1.6, 1.6);
+                    }
+                },
+            });
         }
 
         // ② CPU 温度 ③ GPU 温度 ④ 内存 ⑤ GPU% ⑥ 硬盘 ⑦ SSD 温度 ⑧ 电池 ⑨ 网速
@@ -827,18 +894,22 @@ public sealed class IslandCanvas : FrameworkElement
         double ppd = Ppd;
         DrawCapsuleBase(dc, pal);
 
-        var groups = new List<(double Width, Action<double> Draw)>();
+        var groups = new List<CompactGroup>();
 
         // 文件中转计数（有文件才显示）
         int files = FileTrayService.Count;
         if (files > 0)
         {
             var fi = Text("文", 11, pal.TextDim, true, ppd);
-            groups.Add((fi.Width + 4 + RenderKit.NumWidth($"{files}", 13, true, ppd), x =>
+            groups.Add(new CompactGroup
             {
-                dc.DrawText(fi, new Point(x, cy - fi.Height / 2));
-                Num(dc, $"{files}", x + fi.Width + 4, Math.Round(cy + 5), 13, pal.Text, true, ppd);
-            }));
+                Width = fi.Width + 4 + RenderKit.NumWidth($"{files}", 13, true, ppd),
+                Draw = x =>
+                {
+                    dc.DrawText(fi, new Point(x, cy - fi.Height / 2));
+                    Num(dc, $"{files}", x + fi.Width + 4, Math.Round(cy + 5), 13, pal.Text, true, ppd);
+                },
+            });
         }
 
         var devices = DeviceService.Snapshot;
@@ -860,22 +931,26 @@ public sealed class IslandCanvas : FrameworkElement
             // 换算成百分比就是伪装），百分比设备显示分级配色粗体等宽数字
             double width = 15 + (d.LevelText is { } label ? Text(label, 12.5, color, true, ppd).Width
                 : RenderKit.NumWidth($"{d.Percent}%", 13, true, ppd)) + (d.Charging ? 11 : 0);
-            groups.Add((width, x =>
+            groups.Add(new CompactGroup
             {
-                Glyphs.Draw(dc, Glyphs.IconOf(d.Kind), RenderKit.SafeRect(x, cy - 5.5, 11, 11), pal.TextDim);
-                x += 15;
-                if (d.LevelText is { } levelText)
+                Width = width,
+                Draw = x =>
                 {
-                    var level = Text(levelText, 12.5, color, true, ppd);
-                    dc.DrawText(level, new Point(x, cy - level.Height / 2));
-                    x += level.Width;
-                }
-                else
-                    x = Num(dc, $"{d.Percent}%", x, Math.Round(cy + 13 * 0.36), 13, color, true, ppd);
-                // 充电小闪电提供颜色之外的形状线索。
-                if (d.Charging)
-                    Glyphs.Draw(dc, GlyphKind.Bolt, RenderKit.SafeRect(x + 1, cy - 8, 9, 9), pal.Down);
-            }));
+                    Glyphs.Draw(dc, Glyphs.IconOf(d.Kind), RenderKit.SafeRect(x, cy - 5.5, 11, 11), pal.TextDim);
+                    x += 15;
+                    if (d.LevelText is { } levelText)
+                    {
+                        var level = Text(levelText, 12.5, color, true, ppd);
+                        dc.DrawText(level, new Point(x, cy - level.Height / 2));
+                        x += level.Width;
+                    }
+                    else
+                        x = Num(dc, $"{d.Percent}%", x, Math.Round(cy + 13 * 0.36), 13, color, true, ppd);
+                    // 充电小闪电提供颜色之外的形状线索。
+                    if (d.Charging)
+                        Glyphs.Draw(dc, GlyphKind.Bolt, RenderKit.SafeRect(x + 1, cy - 8, 9, 9), pal.Down);
+                },
+            });
         }
         return DrawCompactGroups(dc, pal, r, cy, groups, 18, 16);
     }
@@ -939,9 +1014,13 @@ public sealed class IslandCanvas : FrameworkElement
         double ppd = Ppd;
         // 时间：数字等宽，并按样本 "00:00" 预留宽度（分针跳变不推挤天气）
         double tw = RenderKit.NumWidth("00:00", 15, true, ppd);
-        var groups = new List<(double Width, Action<double> Draw)>
+        var groups = new List<CompactGroup>
         {
-            (tw, x => Num(dc, DateTime.Now.ToString("HH:mm"), x, Math.Round(cy + 15 * 0.36), 15, pal.Text, true, ppd))
+            new CompactGroup
+            {
+                Width = tw,
+                Draw = x => Num(dc, DateTime.Now.ToString("HH:mm"), x, Math.Round(cy + 15 * 0.36), 15, pal.Text, true, ppd),
+            },
         };
         // 天气（时钟旁给环境信息）；无数据时不占位
         if (Weather is { } w)
@@ -953,15 +1032,22 @@ public sealed class IslandCanvas : FrameworkElement
             Color tempColor = stale ? pal.TextDim : pal.Text;
             var emoji = Text(stale ? "" : w.Emoji, 12, pal.Text, ppd: ppd);
             double tempW = RenderKit.NumWidth(temp, 12, true, ppd);
-            groups.Add((emoji.Width + 3 + tempW, x =>
+            groups.Add(new CompactGroup
             {
-                if (!stale) dc.DrawText(emoji, new Point(x, cy - emoji.Height / 2));
-                Num(dc, temp, x + emoji.Width + 3, Math.Round(cy + 12 * 0.36), 12, tempColor, true, ppd);
-            }));
+                Width = emoji.Width + 3 + tempW,
+                Draw = x =>
+                {
+                    if (!stale) dc.DrawText(emoji, new Point(x, cy - emoji.Height / 2));
+                    Num(dc, temp, x + emoji.Width + 3, Math.Round(cy + 12 * 0.36), 12, tempColor, true, ppd);
+                },
+            });
         }
         if (snap is not null)
-            groups.Add((NetWidth(10, snap, ppd),
-                x => DrawNet(dc, pal, x, Math.Round(cy + 10 * 0.38), 10, snap, ppd)));
+            groups.Add(new CompactGroup
+            {
+                Width = NetWidth(10, snap, ppd),
+                Draw = x => DrawNet(dc, pal, x, Math.Round(cy + 10 * 0.38), 10, snap, ppd),
+            });
         return DrawCompactGroups(dc, pal, r, cy, groups, 12, 16);
     }
 
