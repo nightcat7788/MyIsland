@@ -154,7 +154,7 @@ ZIP 无法被签名 ⇒：
 - Microsoft SmartScreen 信誉运营（需 OV 签名 + 下载量积累）
 - CI 平台对接（GitHub Actions / Azure Pipelines）
 - 给第三方 DLL（LibreHardwareMonitor / NAudio / HidSharp）签名
-- 自动更新器与代码签名��的联动
+- 自动更新器与代码签名的联动
 
 ## 后续（证书到位后）
 
