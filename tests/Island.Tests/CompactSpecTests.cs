@@ -69,6 +69,26 @@ internal static class CompactSpecTests
             && CompactSpec.DividerXAfter(100) == 118
             && CompactSpec.DividerXAfter(100) < 100 + CompactSpec.SeparatorBand);
 
+        // ---- dash 单行项**组**宽（2026-11-25 复审 Must-fix 1）：组宽必须按实画宽预留 ----
+        // 组尾就是分隔线的定位基准（线在组尾 + 18）：预留宽一旦大于实画宽，组尾与最后一个字形之间
+        // 就会空出一截（曾用样本宽 "125°"/"100%" 预留，每项空 7.1px），分隔线随读数整体右移。
+        const double LabelW = 28;    // 标签宽（Segoe UI 9.5px 实测量级）
+        const double V2 = 21.44;     // 2 位读数 "58°"（Consolas 13 bold 实测）
+        const double V3 = 28.59;     // 3 位读数 "125°"
+        check("dash 组宽 = Σ项宽 + 组内间距 10×(n-1)",
+            CompactSpec.InlineGroupWidth(3, _ => LabelW, _ => V3)
+            == CompactSpec.InlineItemWidth(LabelW, V3) * 3 + CompactSpec.GaugeGap * 2);
+        check("dash 组宽随读数变化（预留宽 = 实画宽，不是样本宽）",
+            Math.Abs(CompactSpec.InlineGroupWidth(3, _ => LabelW, _ => V3)
+                   - CompactSpec.InlineGroupWidth(3, _ => LabelW, _ => V2) - (V3 - V2) * 3) < 1e-9);
+        check("dash 数值槽：窄于 21 的读数与 21 同宽（组内不留空洞）",
+            CompactSpec.InlineItemWidth(LabelW, 14.29) == CompactSpec.InlineItemWidth(LabelW, 21));
+        check("dash 组宽：窄值按最小槽 21 兜底",
+            CompactSpec.InlineGroupWidth(1, _ => LabelW, _ => 14.29) == LabelW + 3 + 21);
+        check("dash 分隔线落在组尾 + 18（组尾 = 预留宽 = 实画宽）",
+            CompactSpec.DividerXAfter(CompactSpec.InlineGroupWidth(3, _ => LabelW, _ => V2))
+            == CompactSpec.InlineGroupWidth(3, _ => LabelW, _ => V2) + 18);
+
         // ---- 360° 闭环几何 ----
         check("环半径 = 直径/2 - 线宽/2", CompactSpec.RingRadius(20, 2.8) == 8.6);
         check("环半径不设下限（mac 公式：线宽=直径时半径为 0）", CompactSpec.RingRadius(4, 4) == 0);

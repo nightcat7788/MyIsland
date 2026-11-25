@@ -319,8 +319,9 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: 抽出收起态排版规格 Com
     {
         double radius = CompactSpec.RingRadius(diameter, thickness);
         // CompactSpec.RingRadius 按 mac 取消了 0.5 下限（RenderKit.Ring:187），
-        // 于是 thickness > diameter 时半径为负 —— WPF 的 DrawEllipse 会因负半径抛异常，
-        // 而 mac 的 Avalonia 路径不会。参数不合法的调用直接不画，交给调用方保证 thickness <= diameter。
+        // 于是 thickness > diameter 时半径为负（直径为 NaN 时半径也是 NaN）。
+        // 实测（.NET 8 / WPF）：负半径、NaN 半径都不会抛异常，但画出来是无意义的形状，
+        // 所以这里提前返回不画，交给调用方保证 thickness <= diameter。
         if (radius <= 0) return;
         // 底环：整圈
         dc.DrawEllipse(null, PenOf(track, thickness, 0.9), center, radius, radius);
@@ -334,21 +335,29 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: 抽出收起态排版规格 Com
             Point At(double a) => new(center.X + radius * Math.Sin(a), center.Y - radius * Math.Cos(a));
             if (sweep <= Math.PI)
             {
-                ctx.BeginFigure(At(0), false);
-                ctx.ArcTo(At(sweep), new Size(radius, radius), 0, false, SweepDirection.Clockwise);
+                ctx.BeginFigure(At(0), false, false);
+                ctx.ArcTo(At(sweep), new Size(radius, radius), 0, false, SweepDirection.Clockwise, true, false);
             }
             else
             {
-                ctx.BeginFigure(At(0), false);
-                ctx.ArcTo(At(Math.PI), new Size(radius, radius), 0, false, SweepDirection.Clockwise);
-                ctx.ArcTo(At(sweep), new Size(radius, radius), 0, sweep - Math.PI > Math.PI, SweepDirection.Clockwise);
+                ctx.BeginFigure(At(0), false, false);
+                ctx.ArcTo(At(Math.PI), new Size(radius, radius), 0, false, SweepDirection.Clockwise, true, false);
+                ctx.ArcTo(At(sweep), new Size(radius, radius), 0, sweep - Math.PI > Math.PI, SweepDirection.Clockwise, true, false);
             }
-            ctx.EndFigure(false);
+            // WPF 的 StreamGeometryContext 没有 EndFigure（那是 Avalonia 的 API）：
+            // figure 随 using 结束时关闭上下文而结束，开口与否在 BeginFigure 的 isClosed 上
+            // （这里 false = 不补闭合线段，与 mac 侧 EndFigure(false) 等价）。
         }
         geo.Freeze();
         dc.DrawGeometry(null, PenOf(arc, thickness), geo);
     }
 ```
+
+> **WPF 写法说明（2026-11-25 复审补记）**：这一段是 mac 侧 `RenderKit.Ring` 的 **WPF 改写**，不是逐字照抄 ——
+> WPF 的 `System.Windows.Media.StreamGeometryContext` 只有三参 `BeginFigure(Point, bool isFilled, bool isClosed)`、
+> **没有** `EndFigure`，`ArcTo` 还多两个参数（`isStroked` / `isSmoothJoin`）。
+> 几何语义与 mac 一致（不补闭合弦 ⇒ 不画弦；两段弧的拆分点一致）。
+> 上面这段代码块已与交付实现 `src/Island.App/Controls/RenderKit.cs` 逐字一致（2026-11-25 复审时改）。
 
 - [ ] **Step 2: 构建，确认 0 警告 0 错误**
 
@@ -1217,6 +1226,9 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: dash 改单行（组间分隔�
 >   分隔线固定画在「组尾 + 18px」，落在 24px 总带里偏后 6px（下一组从「组尾 + 24」开始），与 mac 的 `Gap()` 同构。
 > - **XML 注释里的 `<` 写成 `&lt;`**：`阈值 &lt;390 / &lt;560` 这类写法将来开启文档生成时不会触发 CS1570；
 >   计划里的代码块与实现逐字一致，可直接复制。
+>   （唯一例外是 Task 2 的 `RenderKit.Ring`：那一段是 mac 同款几何的 **WPF 改写** —— WPF 的
+>   `StreamGeometryContext` 只有三参 `BeginFigure`、没有 `EndFigure`，`ArcTo` 也多两个参数 ——
+>   语义与 mac 等价，落地代码以 `src/Island.App/Controls/RenderKit.cs` 为准。）
 > - **断言**：`全部通过：331 条`（330 基线 + 1 条）。新增那条是**特征化断言**（锁住「dash 组间距 = 24 ⇒
 >   分隔线落在组间总带内」这个 Task 5 的决策），加进去就是绿的 —— `CompactSpec.InlineItemWidth` 与两条 dash 单行项宽断言
 >   在 Task 1（0d04338）就随 `InlineItemWidth` 一起落地了，Step 1/Step 2 的「先红后绿」在本任务里已不可复现；

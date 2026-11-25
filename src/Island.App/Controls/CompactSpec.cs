@@ -67,14 +67,25 @@ public static class CompactSpec
         return w - GaugeGap;
     }
 
-    /// <summary>combo 内容宽（不含胶囊左右内边距）。对应 mac ComboLayout.ContentW（IslandCanvas.cs L605-L607）。</summary>
+    /// <summary>
+    /// combo 内容宽（不含胶囊左右内边距）。对应 mac ComboLayout.ContentW（IslandCanvas.cs L605-L607）。
+    ///
+    /// ⚠️ **定位：镜像 mac 公式、供对照断言用，不是生产路径的宽度计算。**
+    /// 生产渲染（IslandCanvas.DrawCombo → DrawCompactGroups）现场按各组实画宽算内容宽，
+    /// 不走这个函数 —— 两者是同一件事的两种写法（这里是"按规格复算"，那里是"按实际排版"）。
+    /// 所以：① 别把它当唯一口径改生产路径；② 它抓不到生产宽度的漂移（那是离屏渲染断言的活）。
+    /// 存在的意义是：断言"Windows 的 combo 内容宽公式与 mac 一致"，防止规格常量被改歪。
+    /// </summary>
     public static double ComboContentWidth(double clockW, double gaugesW, double systemGaugesW,
                                            double netDownW, double netUpW)
         => clockW + ClockGap + gaugesW
          + (systemGaugesW > 0 ? SeparatorBand + systemGaugesW : 0)
          + SeparatorBand + netDownW + NetGap + netUpW;
 
-    /// <summary>combo 胶囊总宽。对应 mac ComboLayout.CapsuleW（IslandCanvas.cs L608）。</summary>
+    /// <summary>
+    /// combo 胶囊总宽。对应 mac ComboLayout.CapsuleW（IslandCanvas.cs L608）。
+    /// 同 <see cref="ComboContentWidth"/>：这是**镜像 mac 公式的对照口径**，不是生产路径的宽度计算。
+    /// </summary>
     public static double ComboCapsuleWidth(double clockW, double gaugesW, double systemGaugesW,
                                            double netDownW, double netUpW)
         => ComboContentWidth(clockW, gaugesW, systemGaugesW, netDownW, netUpW) + PadX * 2;
@@ -146,6 +157,25 @@ public static class CompactSpec
     /// </summary>
     public static double InlineItemWidth(double labelWidth, double valueWidth)
         => labelWidth + ArrowValueGap + Math.Max(valueWidth, ValueMinW);
+
+    /// <summary>
+    /// dash 单行项**组**的内容宽：各项宽之和 + 组内间距（(n-1) × GaugeGap）。
+    /// 各项宽由 <see cref="InlineItemWidth"/> 给定。
+    ///
+    /// ⚠️ valueWidth 必须传**实画文本宽**（不是"最宽样本"）：
+    /// 组宽就是这一组真正画出来的宽度，组尾又是分隔线的定位基准（线在组尾 + 18）。
+    /// 用样本宽预留会让组尾比最后一个字形多出一截空洞（分隔线整体右移、且随读数跳变）——
+    /// 2026-11-25 复审 Must-fix 1 就是这个 bug（每项空出 7.1px）。
+    /// mac 的 DashLayout.TempW / UsageW 同口径：量的是 max(实画文本宽, CompactValueMinW)。
+    /// </summary>
+    public static double InlineGroupWidth(int count, Func<int, double> labelWidth, Func<int, double> valueWidth)
+    {
+        if (count <= 0) return 0;
+        double w = 0;
+        for (int i = 0; i < count; i++)
+            w += InlineItemWidth(labelWidth(i), valueWidth(i)) + GaugeGap;
+        return w - GaugeGap;
+    }
 
     /// <summary>
     /// 360° 闭环半径（mac RenderKit.Ring：radius = diameter / 2 - thickness / 2，RenderKit.cs L187）。

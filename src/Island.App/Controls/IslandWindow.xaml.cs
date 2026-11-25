@@ -1735,6 +1735,17 @@ public partial class IslandWindow : Window
         islandCanvas.InvalidateVisual();
     }
 
+    /// <summary>
+    /// 切信息胶囊的「数字主角」样式（设置中心开关）：true = 时钟降为次级文字、数字是主角；
+    /// false = 经典版（时间与读数同级）。与 mac 的同名开关语义一致（mac 在右键菜单里切）。
+    /// 设置本身由设置窗口写盘，这里只管画布即时生效。
+    /// </summary>
+    public void SetComboNumericHero(bool hero)
+    {
+        islandCanvas.ComboNumericHero = hero;
+        islandCanvas.InvalidateVisual();   // 时钟的字重/颜色变了 ⇒ 立刻重画
+    }
+
     /// <summary>穿透设置来自面板内开关（那种情况由面板自己负责收起）。</summary>
     private bool _clickThroughFromPanel;
 

@@ -45,6 +45,7 @@ public sealed class SettingsWindow : Window
         public Action ShowMonitorSettings = () => { };
         public Action RestartAsAdmin = () => { };
         public Action<bool> SetClickThrough = _ => { };
+        public Action<bool> SetComboNumericHero = _ => { };
         public Action<bool> SetSmnDirectRead = _ => { };
         public Action<int> SetMonitorInterval = _ => { };
         public Action<string> SetPreferredNic = _ => { };
@@ -510,7 +511,10 @@ public sealed class SettingsWindow : Window
             Field("收起视图", Combo(Views, _settings.CompactView,
                 v => { _settings.CompactView = v; _settings.RequestSave(); _host.SetCompactView(v); })),
             Field("小形象款式", Combo(PetStyles, _settings.PetStyle,
-                v => { _settings.PetStyle = v; _settings.RequestSave(); _host.SetPetStyle(v); }), last: true)));
+                v => { _settings.PetStyle = v; _settings.RequestSave(); _host.SetPetStyle(v); })),
+            // 信息胶囊的「数字主角」开关：mac 的同名开关在右键菜单里（IslandWindow.cs:2280），
+            // Windows 端此前没有入口 —— 只能手改 settings.json。
+            Field("信息胶囊数字主角", ComboHeroToggle(), last: true)));
         return g;
     }
 
@@ -692,6 +696,25 @@ public sealed class SettingsWindow : Window
         Grid.SetColumn(control, 1);
         g.Children.Add(control);
         return g;
+    }
+
+    /// <summary>
+    /// 信息胶囊的「数字主角」开关：开 = 时钟降为次级文字、数字是主角；
+    /// 关 = 经典版（时间与读数同级）。与 mac 的同名开关（右键菜单）语义一致。
+    /// </summary>
+    private FrameworkElement ComboHeroToggle()
+    {
+        var toggle = new ToggleSwitch(_p, _settings.ComboNumericHero, "信息胶囊数字主角");
+        toggle.Changed += v =>
+        {
+            _settings.ComboNumericHero = v;
+            _settings.RequestSave();
+            _host.SetComboNumericHero(v);   // 画布即时生效（宿主回调）
+        };
+        toggle.HorizontalAlignment = HorizontalAlignment.Left;
+        // Field() 会把控件拉成 Stretch（开关有自己的固定宽度，结果会被居中飘在标题中间）——
+        // 套一层容器，让开关跟上面的标题左对齐。
+        return new Grid { HorizontalAlignment = HorizontalAlignment.Left, Children = { toggle } };
     }
 
     private FrameworkElement ToggleRow(string label, bool current, Action<bool> apply, bool last = false)

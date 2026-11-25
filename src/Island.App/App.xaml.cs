@@ -398,6 +398,7 @@ public partial class App : Application
             ShowMonitorSettings = () => _island?.ShowMonitorSettings(),
             RestartAsAdmin = RestartAsAdmin,
             SetClickThrough = on => _island?.SetClickThrough(on),
+            SetComboNumericHero = on => _island?.SetComboNumericHero(on),
             SetSmnDirectRead = on => _island?.SetSmnDirectRead(on),
             SetMonitorInterval = ms => _island?.SetMonitorInterval(ms),
             SetPreferredNic = id => _island?.SetPreferredNic(id),

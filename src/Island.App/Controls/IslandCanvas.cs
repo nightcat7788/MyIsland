@@ -820,13 +820,15 @@ public sealed class IslandCanvas : FrameworkElement
             {
                 var c = TempColor(ctv, pal);
                 sys.Add(("C", ctv is { } t ? Math.Clamp(t / 125.0, 0, 1) : 0,
-                    ctv is { } tv ? $"{Math.Round(tv)}°" : "--", c, c));
+                    // 读不到温度时的占位符用全角破折号 "—"（mac combo 的写法，IslandCanvas.cs:638），
+                    // 不要写 "--"：本分支之前误改成了 "--"，与 mac 不一致（2026-11-25 复审 Must-fix 2）。
+                    ctv is { } tv ? $"{Math.Round(tv)}°" : "—", c, c));
             }
             if (WantCombo("gputemp"))
             {
                 var g = TempColor(gtv, pal);
                 sys.Add(("G", gtv is { } t2 ? Math.Clamp(t2 / 125.0, 0, 1) : 0,
-                    gtv is { } tv2 ? $"{Math.Round(tv2)}°" : "--", g, g));
+                    gtv is { } tv2 ? $"{Math.Round(tv2)}°" : "—", g, g));
             }
             if (WantCombo("disk"))
             {
@@ -928,25 +930,30 @@ public sealed class IslandCanvas : FrameworkElement
         var groups = new List<CompactGroup>();
 
         // 单行项：标签（9.5px 三级文字）+ 间距 3 + 数值（13px 等宽）
-        void InlineItem(string label, string value, string sample, Color? valueColor, ref double x)
+        // 数值槽按**实画宽**推进，窄值再按最小槽宽 21 兜底（mac 的 max(实画宽, CompactValueMinW) 同口径）：
+        // 预留宽与实画宽必须同口径，否则组尾比墨迹尾多出一截，分隔线整体右移、且随读数跳变
+        // （2026-11-25 复审 Must-fix 1：曾用样本宽 "125°"/"100%" 预留，每项空出 7.1px）。
+        void InlineItem(string label, string value, Color? valueColor, ref double x)
         {
             var icon = Text(label, 9.5, pal.TextTertiary, ppd: ppd);
             Baseline(dc, icon, x, Math.Round(cy + 13 * 0.36));
             x += icon.Width + CompactSpec.ArrowValueGap;
-            x = Num(dc, value, x, Math.Round(cy + 13 * 0.36), 13, valueColor ?? pal.Text, true, ppd);
+            double vx = x;
+            x = Num(dc, value, vx, Math.Round(cy + 13 * 0.36), 13, valueColor ?? pal.Text, true, ppd);
+            x = vx + Math.Max(x - vx, CompactSpec.ValueMinW);   // 窄值按最小槽兜底（与组宽预留同口径）
             x += CompactSpec.GaugeGap;
         }
 
         // 一个组：若干单行项，组内用 GaugeGap 隔开
-        void AddItemGroup(List<(string Label, string Value, string Sample, Color? Color)> items, bool dividerAfter)
+        // 组宽按**实画文本宽**预留（不是样本宽）：组宽必须等于这一组真正画出来的宽度，
+        // 否则组尾（分隔线的定位基准）会离最后一个字形远一截 —— 与 mac 的 DashLayout.TempW/UsageW 同口径
+        // （mac 量的是 max(实画文本宽, CompactValueMinW)）。
+        void AddItemGroup(List<(string Label, string Value, Color? Color)> items, bool dividerAfter)
         {
             if (items.Count == 0) return;
             var labels = items.Select(i => (double)Text(i.Label, 9.5, pal.TextTertiary, ppd: ppd).Width).ToArray();
-            var values = items.Select(i => (double)RenderKit.NumWidth(i.Sample, 13, true, ppd)).ToArray();
-            double groupW = 0;
-            for (int i = 0; i < items.Count; i++)
-                groupW += CompactSpec.InlineItemWidth(labels[i], values[i]) + CompactSpec.GaugeGap;
-            groupW -= CompactSpec.GaugeGap;
+            var values = items.Select(i => (double)RenderKit.NumWidth(i.Value, 13, true, ppd)).ToArray();
+            double groupW = CompactSpec.InlineGroupWidth(items.Count, i => labels[i], i => values[i]);
             groups.Add(new CompactGroup
             {
                 Width = groupW,
@@ -955,7 +962,7 @@ public sealed class IslandCanvas : FrameworkElement
                     double ix = x;
                     for (int i = 0; i < items.Count; i++)
                     {
-                        InlineItem(items[i].Label, items[i].Value, items[i].Sample, items[i].Color, ref ix);
+                        InlineItem(items[i].Label, items[i].Value, items[i].Color, ref ix);
                     }
                 },
                 DividerAfter = dividerAfter,
@@ -990,20 +997,20 @@ public sealed class IslandCanvas : FrameworkElement
 
         // ---- 组 2：温度项组（CPU/GPU/SSD）----
         double? ct = thermal?.CpuTemp, gt = thermal?.GpuTemp, st = thermal?.SsdTemp;
-        var temps = new List<(string Label, string Value, string Sample, Color? Color)>();
-        if (Want("cputemp")) temps.Add(("CPU", ct is { } c1 ? $"{Math.Round(c1)}°" : "--", "125°", TempColor(ct, pal)));
-        if (Want("gputemp")) temps.Add(("GPU", gt is { } g1 ? $"{Math.Round(g1)}°" : "--", "125°", TempColor(gt, pal)));
-        if (Want("ssd")) temps.Add(("SSD", st is { } s1 ? $"{Math.Round(s1)}°" : "--", "125°", TempColor(st, pal)));
+        var temps = new List<(string Label, string Value, Color? Color)>();
+        if (Want("cputemp")) temps.Add(("CPU", ct is { } c1 ? $"{Math.Round(c1)}°" : "--", TempColor(ct, pal)));
+        if (Want("gputemp")) temps.Add(("GPU", gt is { } g1 ? $"{Math.Round(g1)}°" : "--", TempColor(gt, pal)));
+        if (Want("ssd")) temps.Add(("SSD", st is { } s1 ? $"{Math.Round(s1)}°" : "--", TempColor(st, pal)));
         AddItemGroup(temps, dividerAfter: density != CompactDensity.Minimal);
 
         // ---- 组 3：占用项组（内存/GPU%/磁盘）----
         // Minimal 档不显示占用组（规格 §3.2 的密度表：Minimal = 核心柱 + 温度组 + 网速）。
         if (density != CompactDensity.Minimal)
         {
-            var usage = new List<(string Label, string Value, string Sample, Color? Color)>();
-            if (Want("mem")) usage.Add(("MEM", $"{snap.MemoryUsagePercent:F0}%", "100%", LevelColor(snap.MemoryUsagePercent, pal.Text, pal)));
-            if (Want("gpu")) usage.Add(("GPU%", $"{snap.GpuUsage:F0}%", "100%", LevelColor(snap.GpuUsage, pal.Text, pal)));
-            if (Want("disk")) usage.Add(("DISK", $"{snap.DiskUsagePercent:F0}%", "100%", LevelColor(snap.DiskUsagePercent, pal.Text, pal)));
+            var usage = new List<(string Label, string Value, Color? Color)>();
+            if (Want("mem")) usage.Add(("MEM", $"{snap.MemoryUsagePercent:F0}%", LevelColor(snap.MemoryUsagePercent, pal.Text, pal)));
+            if (Want("gpu")) usage.Add(("GPU%", $"{snap.GpuUsage:F0}%", LevelColor(snap.GpuUsage, pal.Text, pal)));
+            if (Want("disk")) usage.Add(("DISK", $"{snap.DiskUsagePercent:F0}%", LevelColor(snap.DiskUsagePercent, pal.Text, pal)));
             AddItemGroup(usage, dividerAfter: true);
         }
 
@@ -1011,10 +1018,10 @@ public sealed class IslandCanvas : FrameworkElement
         // 电池读数不在这里：设备收起视图已经有一份，dash 不重复（修复轮 2 裁决）。
         if (Want("net"))
         {
-            AddItemGroup(new List<(string, string, string, Color?)>
+            AddItemGroup(new List<(string, string, Color?)>
             {
-                ("↓", MonitorSnapshot.FormatSpeedFixed(snap.DownloadSpeed), "  0.0B", null),
-                ("↑", MonitorSnapshot.FormatSpeedFixed(snap.UploadSpeed), "  0.0B", null),
+                ("↓", MonitorSnapshot.FormatSpeedFixed(snap.DownloadSpeed), null),
+                ("↑", MonitorSnapshot.FormatSpeedFixed(snap.UploadSpeed), null),
             }, dividerAfter: false);
         }
 
