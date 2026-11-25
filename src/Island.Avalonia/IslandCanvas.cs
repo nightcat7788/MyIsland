@@ -1218,9 +1218,11 @@ public sealed class IslandCanvas : Control
             const double ring = 60;
             double rx = cx + cardW / 2, ry = cy + 20 + ring / 2;
             RenderKit.Ring(dc, new Point(rx, ry), ring, 5, dev.Percent / 100.0, pal.Track, c);
-            // 图标按设备类型：内置电池 / 其它设备（mac 侧没有鼠标键盘的矢量图标，统一用圆盘）
-            Glyph g = dev.Kind == "battery" ? Glyph.Battery : Glyph.Disk;
-            DrawIcon(dc, g, rx - (12 * 1.1) / 2, ry, pal.Text, 1.1);
+            // 环内设备图标：按设备类型给 per-type 矢量剪影（battery / ble / mouse / keyboard /
+            // headset / gamepad / other 七种），与 Windows 端同一套图形语言（16×16 网格、圆头描边）。
+            // 认不出的类型兜底成"通用外设"，不抛异常、不画空白。
+            // 尺寸 16×16 —— 与 Windows 端设备页一致（环内 60px 环里放得下，不压到下方文字）。
+            DeviceGlyphs.Draw(dc, DeviceGlyphs.Of(dev.Kind), SafeRect(rx - 8, ry - 8, 16, 16), pal.Text);
 
             // 大号读数：有百分数显示百分比；只有档位/未知时显示那行文字（不画假的 0%）
             var pct = unknown
