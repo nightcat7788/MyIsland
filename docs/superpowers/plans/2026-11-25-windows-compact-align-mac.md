@@ -1159,7 +1159,8 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: combo 重排为 mac 的四组�
 
 - [ ] **Step 5: 同步宿主尺寸表**
 
-在 `src/Island.App/Controls/IslandWindow.xaml.cs` 的尺寸表里把：
+在宿主尺寸表里把（该表 2026-11-25 验收时抽到 `src/Island.App/Controls/CompactLayout.cs` —— 纯数据，
+仓库内的 Island.Tests 才能直接断言「胶囊不得超出宿主窗口宽 640」；原位置是 `IslandWindow.xaml.cs`）：
 
 ```csharp
         "dash" => (560, 69),    // LiteMonitor 同款全读数行（含硬盘/SSD 温度/电池）
@@ -1168,7 +1169,7 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: combo 重排为 mac 的四组�
 改成：
 
 ```csharp
-        // 全读数单行（核心柱│温度组│占用组│电池│网速，组间分隔线；对齐 mac）。
+        // 全读数单行（核心柱│温度组│占用组│网速，组间分隔线；对齐 mac）。
         // 上限 620：宿主窗口宽度**恒定 640 DIP**（ExpandW 560 + margin 40×2，2026-11-24 定下的防抖决策），
         // 胶囊在窗口内居中画、超出 HWND 的部分由系统裁掉 ⇒ 硬约束是「胶囊 ≤ 640」。
         // 620 < 640 ⇒ 任何读数组合下都不会被裁（装不下的内容折进 "+N"）；4 组实测 580.6（3 核）/ 613.6（8 核），

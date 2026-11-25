@@ -47,7 +47,9 @@ public partial class IslandWindow : Window
     private readonly Spring _drip = new(0, 180, 0.75, 0.05);
     private readonly Spring _squash = new(1, 240, 0.6, 0.001);
 
-    private const double ExpandW = 560, ExpandH = 420;
+    // 宿主窗口宽 = ExpandW + margin×2 = 640（常量本体在 CompactLayout：纯数据，Island.Tests 能直接断言）。
+    // 这里保留本地 const：仓库外的离屏 harness 用反射读它的常量值。
+    private const double ExpandW = CompactLayout.ExpandW, ExpandH = 420;
     private const int HoverOpenMs = 150;
     private const int HoverCloseMs = 350;
 
@@ -1219,28 +1221,12 @@ public partial class IslandWindow : Window
         StartPetCycle();
     }
 
-    private static (double Width, double Height) CollapsedSize(string view) => view switch
-    {
-        "clock" => (230, 44),   // 时间 + 天气 + 网速（参考 BrimDeck compact-clock 的信息密度）
-        // 信息胶囊：时间 + 占用环组(C/M/G) + 温度/硬盘环组(C/G/D) + 网速。
-        // 上限 640：内容宽按实测定（宿主 CurrentCollapsedSize 用 clamp(实测内容宽, 110, 上限)），
-        // 上限只决定「最坏情况还装不装得下」——两个读数同时到 100%（4 字符，比最小槽 21 宽约 7px）
-        // 时 560 会把网速整段挤进「+N」，640 才有余量。mac 的 CapsuleW 同样是按内容定宽。
-        "combo" => (640, 44),
-        // 2026-11-24：读数带的等宽数字 + 四个表盘 + 网速实测约 470 宽，原来上限 460 会把末尾的 "K" 裁掉
-        "monitor" => (500, 44), // 单排高密度读数带
-        // 全读数单行（核心柱│温度组│占用组│网速，组间分隔线；对齐 mac）。
-        // 上限 620：宿主窗口宽度**恒定 640 DIP**（ExpandW 560 + margin 40×2，2026-11-24 定下的防抖决策），
-        // 胶囊在窗口内居中画、超出 HWND 的部分由系统裁掉 ⇒ 硬约束是「胶囊 ≤ 640」。
-        // 620 < 640 ⇒ 任何读数组合下都不会被裁（装不下的内容折进 "+N"）；4 组实测 580.6（3 核）/ 613.6（8 核），
-        // 在 620 内 ⇒ 4 组全显示、网速可见，并留 20px 安全余量。
-        // 电池读数不在 dash 里（设备视图已有一份），dash 不重复。
-        "dash" => (620, 44),
-        "window" => (360, 44),  // 活动窗口（YASB ActiveWindow 同款：进程名 + 标题）
-        "devices" => (300, 64),
-        "clipboard" => (240, 44),
-        _ => (110, 44),
-    };
+    /// <summary>
+    /// 收起态尺寸表（设计上限宽, 高）—— 数据在 <see cref="CompactLayout"/>：
+    /// 纯数据、无 WPF 依赖，所以仓库内的 Island.Tests 能直接链接断言
+    /// （「胶囊不得超出宿主窗口宽 640」这条硬约束原本只活在仓库外的离屏 harness 里）。
+    /// </summary>
+    private static (double Width, double Height) CollapsedSize(string view) => CompactLayout.Size(view);
 
     private void UpdateFullscreenHidden()
     {
@@ -1432,7 +1418,7 @@ public partial class IslandWindow : Window
     /// </summary>
     private void ApplyWindowSize(bool expanded)
     {
-        const double margin = 40;
+        const double margin = CompactLayout.WindowMargin;
         double wantW = ExpandW + margin * 2;
         double wantH, cx, cy;
         if (expanded)
@@ -1534,7 +1520,8 @@ public partial class IslandWindow : Window
     private void OnMouseWheel(object sender, MouseWheelEventArgs e)
     {
         if (_expanded) return;
-        string[] views = { "clock", "dash", "pet", "combo", "monitor", "devices", "clipboard", "window" };
+        // 视图集合与顺序统一取自 CompactLayout.Views（与尺寸表同一份，避免两处列表漂移）
+        string[] views = CompactLayout.Views;
         int i = Array.IndexOf(views, islandCanvas.CompactView);
         i = (i + (e.Delta > 0 ? -1 : 1) + views.Length) % views.Length;
         islandCanvas.CompactView = views[i];
@@ -1639,6 +1626,9 @@ public partial class IslandWindow : Window
             // 预览高度跟收起态胶囊一致（dash 是单行 44px）；原来是两行网格时代的 69px
             CompactView = "dash", Palette = _palette, IsHitTestVisible = false,
             Width = 660, Height = 44,
+            // 宽度预算必须与宿主同款（dash 上限 620）：IslandCanvas 的默认值是 560，
+            // 用默认值时预览会把网速组折成「+1」，而实机（上限 620）显示 ↓/↑ ⇒ 预览与实机不一致。
+            CompactWidthBudget = CompactLayout.Size("dash").Width,
         };
         preview.LayoutTransform = new ScaleTransform(0.78, 0.78);
         OpenModuleSettings(
@@ -1663,6 +1653,8 @@ public partial class IslandWindow : Window
         {
             CompactView = "combo", Palette = _palette, IsHitTestVisible = false,
             Width = 820, Height = 44,
+            // 同上：预览的宽度预算取宿主上限（combo 640），否则预览的截断结果与实机不一致。
+            CompactWidthBudget = CompactLayout.Size("combo").Width,
         };
         // 显示项变多，预览按比例缩一点才塞得进设置窗口
         preview.LayoutTransform = new ScaleTransform(0.62, 0.62);

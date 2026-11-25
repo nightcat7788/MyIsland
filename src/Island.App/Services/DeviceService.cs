@@ -198,7 +198,8 @@ public static class DeviceService
     /// 加失败冷却（同 ThermalService.ReadWmiThermal）：查询抛异常后 5 分钟内不再碰 WMI，
     /// 失败日志一个冷却期只留一条 —— 否则持久失败的查询会每 30 秒唤醒一次 WMI provider host 并刷屏。
     /// 冷却期间沿用上一次成功的读数（同 WeatherService 失败保留上次数据的做法），但最多沿用一个冷却时长：
-    /// 收起态 dash 视图是"有电池才画'电'那一组"，读数一消失岛体宽度就跳一下；太旧的读数则宁可不显示。
+    /// 收起态「设备」视图按设备列表排版，读数一消失列表就少一项、岛体宽度会跳一下；太旧的读数则宁可不显示。
+    /// （dash 视图已无电池组 —— 电池读数在「设备」视图里，2026-11-25 修复轮 2 裁决。）
     /// 查询成功但 0 行（台式机没电池）不算失败：不进冷却、不记日志，行为同以前。
     /// </summary>
     private static IEnumerable<DeviceInfo> SampleWmiBattery()

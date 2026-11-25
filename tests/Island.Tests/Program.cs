@@ -40,6 +40,7 @@ try
     IntelComputePolicyTests.Run(Check);
     PawnIoInstallerTests.Run(Check);
     CompactSpecTests.Run(Check);   // 2026-11-25 收起态对齐：规格常量与宽度公式锁死
+    CompactLayoutTests.Run(Check); // 2026-11-25 验收：收起态尺寸表不得超出宿主窗口宽 640
 }
 catch (Exception ex)
 {
