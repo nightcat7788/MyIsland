@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -163,6 +164,44 @@ public static class PeripheralProtocols
             return p;
         }
         return null;
+    }
+
+    /// <summary>
+    /// 协议命中时界面显示的名字：厂商 + 型号；缺哪个用哪个，都缺就退回设备本身的名字。
+    /// 两端共用（Windows 与 mac 显示同一个名字，列表才对得上）。
+    /// </summary>
+    public static string DisplayName(PeripheralProtocol protocol, string fallback)
+    {
+        if (protocol is null) return fallback;
+        if (protocol.Vendor.Length > 0 && protocol.Model.Length > 0) return protocol.Vendor + " " + protocol.Model;
+        if (protocol.Model.Length > 0) return protocol.Model;
+        if (protocol.Vendor.Length > 0) return protocol.Vendor;
+        return fallback;
+    }
+
+    /// <summary>
+    /// 从用户文件重新装载协议表（%LOCALAPPDATA%\MyIsland\peripheral-protocols.json 等）。
+    /// 先解析再替换：文件坏了就**保留旧表**，不能把能用的配置弄没。
+    /// 返回本次装载的条数（0 = 没有文件 / 文件为空）。
+    /// </summary>
+    public static int ReloadUserTableFile(string path)
+    {
+        if (string.IsNullOrEmpty(path)) return 0;
+        try
+        {
+            if (!File.Exists(path)) return 0;
+            string json = File.ReadAllText(path);
+            var protocols = LoadFromJson(json);
+            if (protocols.Count == 0) return 0;
+            ClearUserProtocols();
+            AddUserProtocols(protocols);
+            return protocols.Count;
+        }
+        catch
+        {
+            // 文件坏了：保留旧表（ClearUserProtocols 不该在解析失败时执行）
+            return 0;
+        }
     }
 
     /// <summary>从 JSON 文本装载协议表（用户填表用的入口）。</summary>

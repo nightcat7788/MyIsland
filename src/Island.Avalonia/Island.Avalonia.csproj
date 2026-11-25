@@ -58,6 +58,15 @@
     <!-- 天气/设置是纯 .NET（Open-Meteo + JSON），跨平台直接复用 -->
     <Compile Include="..\Island.App\Services\WeatherService.cs" Link="Merged\WeatherService.cs" />
     <Compile Include="..\Island.App\Services\Settings.cs" Link="Merged\Settings.cs" />
+    <!-- Windows/mac 两端共享的外设电量判定层（2026-11-26 macOS 端对齐）：
+         纯 .NET，无 Win32 / WinRT 依赖 —— 协议表 / 标准 usage / 识别兜底 / HID 描述符解析。
+         mac 端按同一模式链进来，保证两端口径不漂移。 -->
+    <Compile Include="..\Island.App\Services\Peripheral\PeripheralReading.cs" Link="Merged\Peripheral\PeripheralReading.cs" />
+    <Compile Include="..\Island.App\Services\Peripheral\PeripheralProtocol.cs" Link="Merged\Peripheral\PeripheralProtocol.cs" />
+    <Compile Include="..\Island.App\Services\Peripheral\StandardHidBattery.cs" Link="Merged\Peripheral\StandardHidBattery.cs" />
+    <Compile Include="..\Island.App\Services\Peripheral\PeripheralClassifier.cs" Link="Merged\Peripheral\PeripheralClassifier.cs" />
+    <Compile Include="..\Island.App\Services\Peripheral\HidModels.cs" Link="Merged\Peripheral\HidModels.cs" />
+    <Compile Include="..\Island.App\Services\Peripheral\HidReportDescriptor.cs" Link="Merged\Peripheral\HidReportDescriptor.cs" />
   </ItemGroup>
 
   <ItemGroup>

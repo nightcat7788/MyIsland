@@ -1171,7 +1171,7 @@ public sealed class IslandCanvas : Control
         double x = r.X + 20, w = r.Width - 40, y = y0;
         if (Devices.Count == 0)
         {
-            var t = RenderKit.Text("未检测到带电量的设备（蓝牙鼠标 / 键盘 / 耳机 / 手柄，或本机内置电池）", 11.5, pal.TextDim);
+            var t = RenderKit.Text("未检测到设备（蓝牙 / 2.4G 接收器 / 鼠标键盘耳机，或本机内置电池）", 11.5, pal.TextDim);
             dc.DrawText(t, new Point(x, y + 30));
             return;
         }

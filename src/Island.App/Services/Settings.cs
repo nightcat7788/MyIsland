@@ -209,6 +209,13 @@ public sealed class Settings
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MyIsland");
     public static string FilePath => Path.Combine(Dir, "settings.json");
 
+    /// <summary>
+    /// 数据目录（两端统一）：Windows 是 %LOCALAPPDATA%\MyIsland，
+    /// macOS 上 .NET 把 LocalApplicationData 映射到 ~/Library/Application Support，
+    /// 所以同一个相对路径在两端都成立（用户协议表 peripheral-protocols.json 放这里）。
+    /// </summary>
+    public static string DataDir => Dir;
+
     public static Settings Load()
     {
         var settings = new Settings();

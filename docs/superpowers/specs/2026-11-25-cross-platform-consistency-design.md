@@ -58,10 +58,11 @@
 | 内存回收（用完即还） | ✓ `MemoryReclaim` | ✗ | 平台专属（Windows） |
 | 手柄档位（XInput） | ✓ `XInputService` | ✗ | 平台专属（Windows） |
 | BLE GATT 电量直读 | ✓ `BleBatteryService` | ✗（mac 走原生电池 API） | 平台专属（各自实现） |
-| 外设电量：2.4G 接收器（厂商私有 HID 协议） | ✓ `Peripheral/`（L3 协议表） | ✗（mac 走 IOKit 探针 `island-devices`，无 2.4G dongle 等价能力） | 平台专属（Windows） |
-| 外设电量：标准 HID 电量 usage（`0x06:0x20` / `0x0D:0x3B` / `0x85:0x0065`） | ✓（L1） | ✗ | 平台专属（Windows） |
-| 外设电量：只识别不读数（2.4G dongle 兜底，显示「未知」） | ✓（L4） | ✗ | 平台专属（Windows） |
+| 外设电量：2.4G 接收器（厂商私有 HID 协议） | ✓ `Peripheral/`（L3 协议表） | 实施中（规格 `2026-11-26-macos-peripheral-battery-align-design.md`：探针只搬运 + 共享层判定） | 对齐中 |
+| 外设电量：标准 HID 电量 usage（`0x06:0x20` / `0x0D:0x3B` / `0x85:0x0065`） | ✓（L1） | 实施中（共享层新增最小 HID 报告描述符解析器） | 对齐中 |
+| 外设电量：只识别不读数（2.4G dongle 兜底，显示「未知」） | ✓（L4） | 实施中（`DeviceBattery.Device.LevelText`） | 对齐中 |
 | 温度链路 / 天气 / 设置项 | ✓ | ✓（共享源） | 一致 |
+| CPU 温度**取值口径**（选一个 + 排除 Distance 类干扰项） | ✓ `CpuTemperatureRule`（W2） | 实施中（`thermal.m` 由「求平均」改为「按优先级选一个」，同层取最大值） | 对齐中 |
 | 签名安装包 / 开机自启 / 文件托盘 | ✓ | ✗ | 平台专属（Windows） |
 
 ---
@@ -108,7 +109,9 @@
 
 | 编号 | 内容 | 交付物 | 状态 |
 |---|---|---|---|
-| W1 | Windows 外设电量（HID 访问层 + L1/L3/L4 分层探测 + 数据驱动协议表） | 规格 `2026-11-26-windows-peripheral-battery-design.md` / 计划 `2026-11-26-windows-peripheral-battery.md` | 规格已定，实施待做 |
+| W1 | Windows 外设电量（HID 访问层 + L1/L3/L4 分层探测 + 数据驱动协议表） | 规格 `2026-11-26-windows-peripheral-battery-design.md` / 计划 `2026-11-26-windows-peripheral-battery.md` | **已实施**（`d1820e2` + 审查修复 `11ad76b`，已推 origin/main） |
+| W2 | CPU 温度取值口径（分层匹配 + 排除干扰项） | 规格 `2026-11-26-cpu-temperature-picker-design.md` / 计划 `2026-11-26-cpu-temperature-picker.md` | **已实施**（`a2bee97`）：Windows 由 `Core Average` 改取 `CPU Package`，本机 49→58 |
+| W3 | macOS 对齐（外设电量 2.4G 接收器 + CPU 温度口径；协议表与判定规则**两端共用同一份**） | 规格 `2026-11-26-macos-peripheral-battery-align-design.md` / 计划 `2026-11-26-macos-peripheral-battery-align.md` | 实施中（原生探针待用户在 Mac 上编译验证） |
 
 W1 与上面的「阶段 1..5」不是同一条序列：跨端阶段解决的是**两端一致性**，
 W1 解决的是 **Windows 侧的能力缺口**（2.4G 接收器读不到电量），不涉及 mac 侧改动。

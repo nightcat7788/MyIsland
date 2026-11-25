@@ -24,6 +24,13 @@ echo "==> 完整 publish"
     -c Release -r osx-arm64 --self-contained -p:PublishSingleFile=true \
     -o "$OUT" --nologo
 
+# ---- 原生探针：源码在仓库里，但产物不进版本库；缺了就现场编译 ----
+# publish.sh 下面会硬性校验 island-devices 等工具存在，缺了就直接失败。
+# 这里先尝试编译（需要 macOS 的 clang/swiftc），失败不阻断：可能产物已在目录里。
+if ! bash "$ROOT/tools/build-mac-probes.sh" "$OUT"; then
+    echo "[warn] 原生探针编译失败，继续（若发布目录里已有旧产物会沿用）"
+fi
+
 echo "==> 校验产物"
 fail=0
 # native 依赖：Avalonia/Skia/HarfBuzz 等，缺任何一个 .app 都起不来
