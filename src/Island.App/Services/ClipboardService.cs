@@ -61,6 +61,20 @@ public static class ClipboardService
     /// <summary>历史副本（新→旧）。</summary>
     public static List<ClipboardItem> Items { get { lock (_gate) { Trim(); return new List<ClipboardItem>(_items); } } }
 
+    /// <summary>
+    /// 去掉一条（面板里的行内 × / 右键「删除」用）。
+    /// 匹配口径：时间戳 + 类型 + 全文都相同才算同一条（与列表里的显示一致）。
+    /// 返回是否真的删掉了。
+    /// </summary>
+    public static bool Remove(ClipboardItem item)
+    {
+        if (item is null) return false;
+        lock (_gate)
+        {
+            return _items.RemoveAll(x => x.At == item.At && x.Kind == item.Kind && x.Full == item.Full) > 0;
+        }
+    }
+
     /// <summary>当前排除的来源进程名（副本）。</summary>
     public static string[] ExcludedProcesses { get { lock (_gate) return _excluded.ToArray(); } }
 

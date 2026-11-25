@@ -51,13 +51,169 @@
                 <Setter Property="FontFamily" Value="Consolas, Microsoft YaHei UI"/>
                 <Setter Property="Typography.NumeralAlignment" Value="Tabular"/>
             </Style>
+
+            <!-- ===== 剪贴板页（对齐 mac 的 DrawClipsPage / DrawClipMenu）=====
+                 分类标签的彩点与行首类型彩点共用同一组色值（mac 的 ClipTagOf）：
+                 常用青 #5FD3A0 / 工作绿 #60C078 / 代码紫 #8E9BF5 -->
+            <SolidColorBrush x:Key="ClipDotCommon" Color="#5FD3A0"/>
+            <SolidColorBrush x:Key="ClipDotWork" Color="#60C078"/>
+            <SolidColorBrush x:Key="ClipDotCode" Color="#8E9BF5"/>
+            <!-- 删除项的文字色（mac 的 pal.Up 在深色底上的等价色） -->
+            <SolidColorBrush x:Key="ClipDanger" Color="#E5534B"/>
+            <!-- 浮层底色（右键浮层 / 详情浮层）：不透明的面板色 —— 浮在列表上，
+                 半透明会把底下的字透上来，读不清。主题在 ApplyTheme 里按 SurfaceAlt 覆写。 -->
+            <SolidColorBrush x:Key="OverlayBg" Color="#12141A"/>
+
+            <!-- 分类标签（mac：标签框高 22、圆角 7；激活底由代码按 18% 强调色写入） -->
+            <Style x:Key="ClipTabBtn" TargetType="Button">
+                <Setter Property="Cursor" Value="Hand"/>
+                <Setter Property="Focusable" Value="False"/>
+                <Setter Property="Height" Value="22"/>
+                <Setter Property="Padding" Value="7,0"/>
+                <Setter Property="Background" Value="Transparent"/>
+                <Setter Property="BorderThickness" Value="0"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="7"
+                                    Padding="{TemplateBinding Padding}">
+                                <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center" RecognizesAccessKey="False"/>
+                            </Border>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <!-- 列表行主体（mac：行高 30）：整行可点 = 恢复到系统剪贴板；悬停给一层底色 -->
+            <Style x:Key="ClipRowBody" TargetType="Button">
+                <Setter Property="Cursor" Value="Hand"/>
+                <Setter Property="Focusable" Value="False"/>
+                <Setter Property="Height" Value="30"/>
+                <Setter Property="Padding" Value="0"/>
+                <Setter Property="Background" Value="Transparent"/>
+                <Setter Property="BorderThickness" Value="0"/>
+                <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="6"
+                                    Padding="{TemplateBinding Padding}">
+                                <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Stretch" RecognizesAccessKey="False"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter Property="Background" Value="{DynamicResource Hover}" TargetName="bd"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <!-- 行尾删除 ×（mac：× 字形 12px；热区放大到 22×22，别难点中） -->
+            <Style x:Key="ClipDeleteBtn" TargetType="Button">
+                <Setter Property="Cursor" Value="Hand"/>
+                <Setter Property="Focusable" Value="False"/>
+                <Setter Property="Width" Value="22"/>
+                <Setter Property="Height" Value="22"/>
+                <Setter Property="Padding" Value="0"/>
+                <Setter Property="FontSize" Value="12"/>
+                <Setter Property="Foreground" Value="{DynamicResource FgDim}"/>
+                <Setter Property="Background" Value="Transparent"/>
+                <Setter Property="BorderThickness" Value="0"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="6">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" RecognizesAccessKey="False"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter Property="Background" Value="{DynamicResource Hover}" TargetName="bd"/>
+                                    <Setter Property="Foreground" Value="{DynamicResource Fg}"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <!-- 头部的小动作（导出 / 清空）：mac 的头部动作同款，10.5px 次色 -->
+            <Style x:Key="ClipTinyBtn" TargetType="Button">
+                <Setter Property="Cursor" Value="Hand"/>
+                <Setter Property="Focusable" Value="False"/>
+                <Setter Property="Height" Value="22"/>
+                <Setter Property="Padding" Value="6,0"/>
+                <Setter Property="FontSize" Value="10.5"/>
+                <Setter Property="Foreground" Value="{DynamicResource FgDim}"/>
+                <Setter Property="Background" Value="Transparent"/>
+                <Setter Property="BorderThickness" Value="0"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="6"
+                                    Padding="{TemplateBinding Padding}">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" RecognizesAccessKey="False"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter Property="Background" Value="{DynamicResource Hover}" TargetName="bd"/>
+                                    <Setter Property="Foreground" Value="{DynamicResource Fg}"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <!-- 正文按类型分渲染（mac 的 DrawClipsPage 里的 switch 分支）：
+                 普通文本 11px；链接 10.5px（host 用链接色，路径用第三级色）；
+                 代码 10.5px 等宽；颜色 10.5px + 14×14 色块；图片 10.5px + 14×14 缩略 -->
+            <DataTemplate x:Key="ClipTextBody">
+                <TextBlock Text="{Binding Preview}" FontSize="11" Foreground="{DynamicResource Fg}"
+                           TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+            </DataTemplate>
+            <DataTemplate x:Key="ClipLinkBody">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="{Binding LinkHost}" FontSize="10.5" Foreground="{DynamicResource Accent}" VerticalAlignment="Center"/>
+                    <TextBlock Grid.Column="1" Text="{Binding LinkPath}" FontSize="10" Foreground="{DynamicResource FgTertiary}"
+                               Margin="4,0,0,0" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                </Grid>
+            </DataTemplate>
+            <DataTemplate x:Key="ClipCodeBody">
+                <TextBlock Text="{Binding Preview}" FontFamily="Consolas, Microsoft YaHei UI" FontSize="10.5"
+                           Foreground="{DynamicResource Fg}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+            </DataTemplate>
+            <DataTemplate x:Key="ClipColorBody">
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border Width="14" Height="14" CornerRadius="3" Background="{Binding SwatchBrush}"
+                            BorderBrush="{DynamicResource Hairline}" BorderThickness="1"/>
+                    <TextBlock Text="{Binding Preview}" FontSize="10.5" Foreground="{DynamicResource Fg}" Margin="6,0,0,0"
+                               VerticalAlignment="Center"/>
+                </StackPanel>
+            </DataTemplate>
+            <DataTemplate x:Key="ClipImageBody">
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border Width="14" Height="14" CornerRadius="3" BorderBrush="{DynamicResource Hairline}" BorderThickness="1">
+                        <Image Source="{Binding Image}" Stretch="UniformToFill"/>
+                    </Border>
+                    <TextBlock Text="{Binding Preview}" FontSize="10.5" Foreground="{DynamicResource Fg}" Margin="6,0,0,0"
+                               VerticalAlignment="Center"/>
+                </StackPanel>
+            </DataTemplate>
+            <!-- 正文模板选择器（按条目类型挑上面那一套） -->
+            <local:ClipBodySelector x:Key="ClipBodySelector"/>
         </ResourceDictionary>
     </UserControl.Resources>
 
     <!-- 面板整体：底色由岛体本体（IslandCanvas）画，这里只排内容
          内容区内边距 = 左右 18 / 上 14 / 下 18（ExpandedPanelSpec.ContentPadX / ContentPadTop / ContentPadBottom），
          code-behind 里再按常量覆写一次（XAML 读不到 const，规格类才是唯一事实来源）。 -->
-    <Grid x:Name="rootGrid" Margin="18,14,18,18">
+    <Grid x:Name="rootGrid" Margin="18,14,18,18" PreviewMouseDown="OnPanelPreviewMouseDown" PreviewKeyDown="OnPanelPreviewKeyDown">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
@@ -144,47 +300,146 @@
             <!-- 页0：系统监控（自绘） -->
             <local:MonitorPage x:Name="monitorPage"/>
 
-            <!-- 页1：剪贴板 · 文件（列表行；空状态是一句话，不占列表的位置） -->
+            <!-- 页1：剪贴板（对齐 mac 的单区结构：分类标签栏 → 头部 → 列表）
+                 Windows 独有的「文件」列保留在单区右侧（文件中转是平台专属能力，不互相搬运）。 -->
             <Grid x:Name="pageShelf" Visibility="Collapsed">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
+                    <!-- 剪贴板单区：列表列 246（mac 的列表列宽）+ 卡片内边距 20 + 描边 2 = 268 -->
+                    <ColumnDefinition Width="268"/>
                     <ColumnDefinition Width="10"/>
-                    <ColumnDefinition Width="216"/>
+                    <!-- 文件列（Windows 独有） -->
+                    <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
 
-                <Border Grid.Column="0" Style="{StaticResource GroupCard}" Padding="14,2,14,6" Margin="0">
+                <Border Grid.Column="0" Style="{StaticResource GroupCard}" Padding="10,8,10,6" Margin="0">
                     <Grid>
                         <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>   <!-- 分类标签栏 -->
+                            <RowDefinition Height="Auto"/>   <!-- 头部：计数 + 导出 / 清空 -->
+                            <RowDefinition Height="*"/>      <!-- 列表 -->
+                            <RowDefinition Height="Auto"/>   <!-- 底部：还有 N 条 / 操作提示 -->
                         </Grid.RowDefinitions>
-                        <TextBlock Grid.Row="0" Text="剪贴板" Style="{StaticResource GroupLabel}"/>
-                        <TextBlock Grid.Row="1" Text="复制的内容会出现在这里" Style="{StaticResource EmptyHint}" Margin="0,10,0,0"
-                                   Visibility="{Binding HasClipboard, Converter={StaticResource InvVis}}"/>
-                        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
-                                      HorizontalContentAlignment="Stretch">
-                            <ItemsControl ItemsSource="{Binding Clipboard}">
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <Button Style="{StaticResource QuietBtn}" Height="32" Margin="0,2" Padding="6,0" Click="OnRestoreClipboard" ToolTip="点击恢复到系统剪贴板；然后在目标窗口粘贴">
-                                        <Grid Style="{StaticResource ListRow}">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="18"/>
-                                                <ColumnDefinition Width="*"/>
-                                                <ColumnDefinition Width="Auto"/>
-                                            </Grid.ColumnDefinitions>
-                                            <local:GlyphIcon Width="13" Height="13" VerticalAlignment="Center" Kind="Clipboard"
-                                                             TextElement.Foreground="{DynamicResource FgDim}" Opacity="0.8"/>
-                                            <TextBlock Grid.Column="1" Text="{Binding Preview}" FontSize="12" VerticalAlignment="Center"
-                                                       Foreground="{DynamicResource Fg}" TextTrimming="CharacterEllipsis"/>
-                                            <TextBlock Grid.Column="2" Text="{Binding Time}" FontSize="10.5" VerticalAlignment="Center" Margin="12,0,0,0"
-                                                       Style="{StaticResource DataText}" Foreground="{DynamicResource FgTertiary}"/>
-                                        </Grid>
-                                        </Button>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
-                        </ScrollViewer>
+
+                        <!-- 分类标签栏（mac 的 DrawClipsPage：全部 / ●常用 / ●工作 / ●代码）
+                             标签文字 11px、标签框高 22、圆角 7、激活底 = 强调色 18%（代码里按常量覆写）；
+                             分类彩点 6px：常用青 #5FD3A0 / 工作绿 #60C078 / 代码紫 #8E9BF5 -->
+                        <StackPanel x:Name="clipTabBar" Grid.Row="0" Orientation="Horizontal" Height="22" Margin="0,0,0,6">
+                            <Grid Margin="0,0,2,0">
+                                <Border x:Name="clipFillAll" Background="Transparent" CornerRadius="7"/>
+                                <Button Tag="all" Click="OnClipFilter" Style="{StaticResource ClipTabBtn}">
+                                    <TextBlock x:Name="clipTextAll" Text="全部" FontSize="11" VerticalAlignment="Center"/>
+                                </Button>
+                            </Grid>
+                            <Grid Margin="0,0,2,0">
+                                <Border x:Name="clipFillCommon" Background="Transparent" CornerRadius="7"/>
+                                <Button Tag="common" Click="OnClipFilter" Style="{StaticResource ClipTabBtn}">
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                        <Ellipse Width="6" Height="6" Fill="{StaticResource ClipDotCommon}" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                        <TextBlock x:Name="clipTextCommon" Text="常用" FontSize="11" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </Button>
+                            </Grid>
+                            <Grid Margin="0,0,2,0">
+                                <Border x:Name="clipFillWork" Background="Transparent" CornerRadius="7"/>
+                                <Button Tag="work" Click="OnClipFilter" Style="{StaticResource ClipTabBtn}">
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                        <Ellipse Width="6" Height="6" Fill="{StaticResource ClipDotWork}" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                        <TextBlock x:Name="clipTextWork" Text="工作" FontSize="11" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </Button>
+                            </Grid>
+                            <Grid>
+                                <Border x:Name="clipFillCode" Background="Transparent" CornerRadius="7"/>
+                                <Button Tag="code" Click="OnClipFilter" Style="{StaticResource ClipTabBtn}">
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                        <Ellipse Width="6" Height="6" Fill="{StaticResource ClipDotCode}" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                        <TextBlock x:Name="clipTextCode" Text="代码" FontSize="11" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </Button>
+                            </Grid>
+                        </StackPanel>
+
+                        <!-- 头部：左侧计数「N 条」+ 右侧「导出」「清空」两个动作（mac 的头部是 导出全部 / 计数 / 垃圾桶） -->
+                        <Grid Grid.Row="1" Height="22" Margin="0,0,0,6">
+                            <TextBlock x:Name="clipCount" Text="0 条" FontSize="10.5" VerticalAlignment="Center"
+                                       Foreground="{DynamicResource FgTertiary}"/>
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                <Button Content="导出" Style="{StaticResource ClipTinyBtn}" Click="OnClipExport"
+                                        ToolTip="把剪贴板历史导出到「下载」目录"/>
+                                <Button Content="清空" Style="{StaticResource ClipTinyBtn}" Click="OnClipClear"
+                                        ToolTip="清空剪贴板历史"/>
+                            </StackPanel>
+                        </Grid>
+
+                        <!-- 列表（行高 30）：自绘滚动 —— 内容整体位移，不用系统 ScrollViewer
+                             （mac 的 DrawClipsPage 也是自己算偏移、自己画那条 3px 细条） -->
+                        <Grid Grid.Row="2" x:Name="clipListHost" ClipToBounds="True" Background="Transparent"
+                              PreviewMouseWheel="OnClipListWheel" SizeChanged="OnClipHostSizeChanged">
+                            <TextBlock x:Name="clipEmptyAll" Text="复制的内容会出现在这里" Style="{StaticResource EmptyHint}"
+                                       Visibility="Collapsed"/>
+                            <TextBlock x:Name="clipEmptyFilter" Text="这个分类下暂无记录" Style="{StaticResource EmptyHint}"
+                                       Visibility="Collapsed"/>
+                            <!-- 右边留出 11px 给自绘滚动条（行尾的 × 不被压在条下面） -->
+                            <ItemsControl x:Name="clipList" VerticalAlignment="Top" HorizontalAlignment="Stretch"
+                                          Margin="0,0,11,0">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid Height="30" Background="Transparent" MouseRightButtonDown="OnClipRowRightDown">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <!-- 行主体：点一下恢复到系统剪贴板（mac 的 ClipPicked） -->
+                                                <Button Grid.Column="0" Style="{StaticResource ClipRowBody}" Click="OnRestoreClipboard"
+                                                        ToolTip="点击恢复到系统剪贴板；然后在目标窗口粘贴">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="Auto"/>
+                                                            <ColumnDefinition Width="*"/>
+                                                            <ColumnDefinition Width="Auto"/>
+                                                        </Grid.ColumnDefinitions>
+                                                        <!-- 行首类型彩点 5px（mac 的半径 2.5） -->
+                                                        <Ellipse Width="5" Height="5" Margin="0,0,7,0" VerticalAlignment="Center"
+                                                                 Fill="{Binding DotBrush}"/>
+                                                        <!-- 正文按类型分渲染（文本 11 / 代码 10.5 等宽 / 链接 10.5 链接色 / 其它 10.5） -->
+                                                        <ContentControl Grid.Column="1" Content="{Binding}"
+                                                                        ContentTemplateSelector="{StaticResource ClipBodySelector}"
+                                                                        VerticalAlignment="Center"/>
+                                                        <!-- 多行文本的额外行数（mac 的「+N 行」，9.5px） -->
+                                                        <TextBlock Grid.Column="2" Text="{Binding MoreText}" FontSize="9.5" Margin="6,0,0,0"
+                                                                   Foreground="{DynamicResource FgTertiary}" VerticalAlignment="Center"/>
+                                                    </Grid>
+                                                </Button>
+                                                <!-- 右侧：相对时间（9.5px 比例字体）+ 删除 ×（12px 字形，22×22 热区） -->
+                                                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                                    <TextBlock Text="{Binding TimeText}" FontSize="9.5" VerticalAlignment="Center"
+                                                               Margin="0,0,4,0" Foreground="{DynamicResource FgTertiary}"/>
+                                                    <Button Content="×" Style="{StaticResource ClipDeleteBtn}" Tag="{Binding Item}"
+                                                            Click="OnDeleteClip" ToolTip="删除这条记录"/>
+                                                </StackPanel>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            <!-- 自绘 3px 覆盖式滚动条（mac 的 DrawClipsPage 末尾：右侧竖条 3px、滑块最小 24、盖在内容上） -->
+                            <!-- 覆盖在列表右缘的 3px 细条（自绘）：不折叠，折叠了就没有高度可算；
+                                 内容装得下时只把轨道和滑块本身收起来。 -->
+                            <Grid x:Name="clipScrollBar" Width="11" HorizontalAlignment="Right" Background="Transparent"
+                                  PreviewMouseWheel="OnClipScrollWheel">
+                                <Rectangle x:Name="clipScrollTrack" Width="3" HorizontalAlignment="Right" VerticalAlignment="Stretch"
+                                           Margin="0,2,0,2" RadiusX="1.5" RadiusY="1.5"
+                                           Fill="{DynamicResource Hairline}" Opacity="0.5"/>
+                                <Rectangle x:Name="clipScrollThumb" Width="3" Height="24" HorizontalAlignment="Right"
+                                           VerticalAlignment="Top" RadiusX="1.5" RadiusY="1.5" Cursor="Hand"
+                                           Fill="{DynamicResource FgDim}" Opacity="0.45"
+                                           MouseLeftButtonDown="OnClipThumbDown" MouseMove="OnClipThumbMove"
+                                           MouseLeftButtonUp="OnClipThumbUp"/>
+                            </Grid>
+                        </Grid>
+
+                        <!-- 底部：还有 N 条没显示出来 / 操作提示（9.5px） -->
+                        <TextBlock x:Name="clipMore" Grid.Row="3" Text="" FontSize="9.5" Margin="0,4,0,0"
+                                   Foreground="{DynamicResource FgTertiary}" Visibility="Collapsed"/>
                     </Grid>
                 </Border>
 
@@ -410,6 +665,43 @@
                     </Border>
                 </StackPanel>
             </Grid>
+        </Grid>
+
+        <!-- 浮层宿主（自绘右键浮层 + 详情浮层）：画在最上层 ——
+             mac 的 DrawClipMenu 也是在最后画的（浮层不能被列表压住）。
+             菜单项在代码里生成（条目随选中项变化：链接才有「打开链接」）。 -->
+        <Grid x:Name="overlayHost" Grid.RowSpan="2" Visibility="Collapsed">
+            <!-- 右键浮层（mac：项高 26、宽 152、圆角 9；浮层比面板更亮 + 描边） -->
+            <Border x:Name="clipMenu" Width="152" HorizontalAlignment="Left" VerticalAlignment="Top"
+                    Background="{DynamicResource OverlayBg}" BorderBrush="{DynamicResource Hairline}" BorderThickness="1"
+                    CornerRadius="9" Padding="5" Visibility="Collapsed">
+                <StackPanel x:Name="clipMenuItems" Orientation="Vertical"/>
+            </Border>
+
+            <!-- 详情浮层：Windows 侧没有独立的 ClipDetailWindow 窗口（那是 mac 工程的文件），
+                 这里在面板内自绘一个等价的详情层（全文可滚动 / 图片预览）。 -->
+            <Border x:Name="clipDetail" Width="320" HorizontalAlignment="Center" VerticalAlignment="Center"
+                    Background="{DynamicResource OverlayBg}" BorderBrush="{DynamicResource Hairline}" BorderThickness="1"
+                    CornerRadius="9" Padding="12" Visibility="Collapsed">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+                    <Grid Margin="0,0,0,8">
+                        <TextBlock Text="剪贴板详情" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource Fg}"/>
+                        <Button Content="×" Style="{StaticResource ClipDeleteBtn}" HorizontalAlignment="Right"
+                                Click="OnCloseClipDetail"/>
+                    </Grid>
+                    <Grid Grid.Row="1" MaxHeight="220">
+                        <TextBox x:Name="clipDetailText" IsReadOnly="True" TextWrapping="Wrap" FontSize="11"
+                                 VerticalScrollBarVisibility="Auto" Background="Transparent" BorderThickness="0"
+                                 Foreground="{DynamicResource Fg}"/>
+                        <Image x:Name="clipDetailImage" Stretch="Uniform" MaxHeight="220" Visibility="Collapsed"/>
+                    </Grid>
+                </Grid>
+            </Border>
         </Grid>
     </Grid>
 </UserControl>

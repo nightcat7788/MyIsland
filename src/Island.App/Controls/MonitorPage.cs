@@ -9,16 +9,14 @@ namespace Island.App.Controls;
 /// <summary>
 /// 展开面板的系统监控页。整页自绘，读数变化只触发重绘、不重新测量布局；文本/画笔/几何走 RenderKit 缓存。
 ///
-/// 排版规格对齐 mac 版 <c>DrawMonitorPage</c>（数值抄在 <see cref="ExpandedPanelSpec"/>，实现只引用常量）：
-///   字号阶梯 = 14（行数值）/ 12（卡片标题）/ 11（次级文字）/ 10（行标签）/ 9（状态提示）。
-///   卡片标题 = 12×12 矢量图标 + 12px SemiBold 标题 + 标题下 1px 发丝线（左右各内缩 15）。
-///   分隔线只出现在卡片内的标题下，区块之间不再画发丝线（mac 口径）。
-///
-/// 布局（Windows 仍是「左仪表栏 + 右进程卡」；2×2 卡片栅格是下一批次）：
-///   左栏 = 卡片「占用」→ CPU（唯一的主角，唯一用强调色的读数）→ 每核竖条 → 内存 / GPU / 磁盘各一行
-///        → 卡片「上下速度」→ 下行 / 上行各一行（读数 + 走势）→ 外设电量行 → 页脚。
-///   右栏 = 进程榜卡片：标题「占用最高 · CPU / 内存」+ 排序分段控件（96×20，选中段 Accent 实心）
-///          + 进程行（行距 21、最多 5 行、图标 15、名称 11px 比例字体）+ 进程 / 线程数与今日流量。
+/// 布局 = **2×2 卡片栅格**（对齐 mac 版 <c>DrawMonitorPage</c>）：
+///   · 栅格：内容宽 560（mac 口径）→ 卡片宽 256（(560 - 18×2 - 12) / 2）、列间距 / 排间距都是 12；
+///           上排两张卡（高 181 = 卡头 42 + 3 行 × 44 + 行距 7），下排两张卡（高 156 = 42 + 2 × 46 + 22）。
+///   · 卡片：卡头 42px（12px SemiBold 标题 + 12×12 矢量图标 + 标题下 1px 发丝线，左右内缩 15）
+///           → 下面若干「读数行」（行高 44、行距 7）：12×12 图标 + 10px TextDim 标签
+///             + 右对齐 14px SemiBold 数值 + 4px 圆角 2 的进度条 + 1.4px 走势曲线（框高 14）。
+///   · 四张卡：① CPU（占用 / 频率 / 温度）② 内存（内存 / GPU / 磁盘）
+///             ③ 上下速度（下行 / 上行 + 卡底网络与电池）④ 进程榜（占用最高 · CPU / 内存 + 排序分段控件）。
 ///
 /// 配色身份不变（暗色科技）：一屏一主角 —— CPU 是唯一用强调色的读数，其余读数中性色，
 /// 只有 ≥70% / ≥90% 才换成状态色。mac 的「按资源配色」不引入。
@@ -58,6 +56,51 @@ public sealed class MonitorPage : FrameworkElement
 
     private double Ppd => VisualTreeHelper.GetDpi(this).PixelsPerDip;
 
+    // ================= 栅格几何（mac 口径；只在本页用得到的数放这里） =================
+
+    /// <summary>栅格内容区左右内缩（mac：18）。</summary>
+    private const double GridPad = 18;
+    /// <summary>卡片之间的间距（列 / 行同值，mac：12）。</summary>
+    private const double GridGap = 12;
+    /// <summary>卡头高度（标题 + 分隔线 + 留白，mac：42）。</summary>
+    private const double CardHeadH = 42;
+    /// <summary>卡内左右内缩（图标 / 数值 / 发丝线共用，mac：15）。</summary>
+    private const double CardPadX = 15;
+    /// <summary>卡片圆角（mac：12；像素主题 3）。</summary>
+    private const double CardRadius = 12;
+    /// <summary>读数行高（mac：44 —— 进度条下方留 16px 给历史曲线）。</summary>
+    private const double RowH = 44;
+    /// <summary>读数行距（mac：7）。</summary>
+    private const double RowGap = 7;
+    /// <summary>速度两行的间距（mac：46）。</summary>
+    private const double SpeedRowH = 46;
+    /// <summary>上排卡高（mac：卡头 42 + 3 行 × 44 + 行距 7 = 181）。</summary>
+    private const double TopCardH = CardHeadH + 3 * RowH + RowGap;
+    /// <summary>下排卡高（mac：max(42 + 2×46 + 22, 42 + 86) = 156）。</summary>
+    private const double BotCardH = CardHeadH + 2 * SpeedRowH + 22;
+    /// <summary>让位档的读数行高（去掉走势曲线，纯装饰先让位）。</summary>
+    private const double TightRowH = 30;
+    /// <summary>让位档的速度行距。</summary>
+    private const double TightSpeedRowH = 34;
+    /// <summary>让位档的卡高（上排 160 = 42 + 44 + 30 + 30 + 2×7；下排 132 = 42 + 2×34 + 22）。</summary>
+    private const double TightTopH = CardHeadH + RowH + 2 * TightRowH + 2 * RowGap;
+    private const double TightBotH = CardHeadH + 2 * TightSpeedRowH + 22;
+    /// <summary>进度条 / 流量条填充的最小可见长度。</summary>
+    private const double MinFill = 4;
+    /// <summary>流量条圆角（mac：1.5）。</summary>
+    private const double FlowCorner = 1.5;
+    /// <summary>流量条满格 = 2 MB/s（对数刻度的分母）。</summary>
+    private const double FullSpeed = 2 * 1024 * 1024;
+    /// <summary>频率条满格基准 = 5.0 GHz（常见加速上限；超了按满格算）。</summary>
+    private const double FreqFull = 5.0;
+    /// <summary>温度条满格基准（mac：110℃）。</summary>
+    private const double TempFull = 110;
+    /// <summary>速度数值字号（mac：16 SemiBold）。</summary>
+    private const double SpeedValueFont = 16;
+    /// <summary>读数行的图标边长（mac：12）。</summary>
+    private const double RowIconSize = 12;
+
+    /// <summary>磁盘空间（"12 GB/500 GB" 那一串）：与旧版口径一致。</summary>
     private static string DriveText(DiskStat d)
     {
         static string F(double gb) => gb >= 1024 ? $"{gb / 1024:F1} TB" : $"{gb:F0} GB";
@@ -118,25 +161,62 @@ public sealed class MonitorPage : FrameworkElement
         // 提前 return 的那几种情况（还没布局）不算画过，放在它们之后。
         _thermalDrawn = ThermalDisplay.Signature(th);
         double ppd = Ppd;
+        _sortToggleRect = Rect.Empty;
 
-        // 左右双栏：左栏仪表区定宽（上限 288），其余归右栏的进程卡片
-        const double x0 = 2;
-        double lw = Math.Min(288, W * 0.60), w = lw - 6;
+        // ---------- 栅格几何 ----------
+        // 内容宽 560（mac 口径）→ 卡片宽 (560 - 18×2 - 12) / 2 = 256；面板更窄时等比收窄，绝不重叠。
+        double pad = GridPad;
+        double cardW = (W - pad * 2 - GridGap) / 2;
+        if (cardW < 150)
+        {
+            pad = Math.Max(0, (W - GridGap - 300) / 2);
+            cardW = (W - pad * 2 - GridGap) / 2;
+        }
+        if (cardW < 60) return;
+
+        // 高度分档：骨架不变，放不下时让曲线 / 行数逐级让位（老做法：排不下就不画，绝不越出面板）。
+        //   A 完整档 349 = 181 + 12 + 156（mac 口径）
+        //   B 让位档 304 = 160 + 12 + 132（只有 CPU 占用行保留走势曲线）
+        //   C 紧凑档 290 = 146 + 12 + 132（全部读数行不带曲线）
+        double rowH, firstRowH, topH, speedRowH, botH;
+        int procRows;
+        bool speedCurve;      // 速度两行的走势曲线（只有完整档放得下）
+        if (H >= TopCardH + GridGap + BotCardH)
+        {
+            rowH = RowH; firstRowH = RowH;
+            topH = TopCardH; speedRowH = SpeedRowH; botH = BotCardH;
+            procRows = ExpandedPanelSpec.ProcessMaxRows;
+            speedCurve = true;
+        }
+        else if (H >= TightTopH + GridGap + TightBotH)
+        {
+            rowH = TightRowH; firstRowH = RowH;
+            topH = TightTopH; speedRowH = TightSpeedRowH; botH = TightBotH;
+            procRows = 4;
+            speedCurve = false;
+        }
+        else
+        {
+            rowH = TightRowH; firstRowH = TightRowH;
+            topH = CardHeadH + 3 * rowH + 2 * RowGap; speedRowH = TightSpeedRowH; botH = TightBotH;
+            procRows = 4;
+            speedCurve = false;
+        }
+
+        double x1 = pad, x2 = pad + cardW + GridGap;
+        double y1 = 0, y2 = topH + GridGap;
+
+        // 面板有圆角，画到页面之外的像素会露馅 —— 整个页面裁一刀（正常情况下内容都在里面）。
+        dc.PushClip(new RectangleGeometry(new Rect(0, 0, W, H)));
 
         // 中性读数 = 文字色降不透明度。像素主题的文字是琥珀色，中性读数跟着是琥珀，整页保持单色。
         Color Neutral(byte alpha) => Color.FromArgb(alpha, pal.Text.R, pal.Text.G, pal.Text.B);
 
         // 局部排版助手（都按基线放置，返回右端 x）：
-        //   T 中文 / 界面字体的文字；M 等宽体的拉丁标签与单位；N 等宽体的读数（数字等宽）；NW 量一段读数的宽度
+        //   T 中文 / 界面字体的文字；N 等宽体的读数（数字等宽）；NW 量一段读数的宽度
         double T(string text, double x, double bl, double size, Color color, bool strong = false)
         {
             var t = RenderKit.Text(text, size, color, strong, ppd);
-            RenderKit.Baseline(dc, t, x, bl);
-            return x + t.WidthIncludingTrailingWhitespace;
-        }
-        double M(string text, double x, double bl, double size, Color color, bool strong = false)
-        {
-            var t = RenderKit.Mono(text, size, color, strong, ppd);
             RenderKit.Baseline(dc, t, x, bl);
             return x + t.WidthIncludingTrailingWhitespace;
         }
@@ -144,12 +224,12 @@ public sealed class MonitorPage : FrameworkElement
             => RenderKit.Num(dc, text, x, bl, size, color, strong, ppd);
         double NW(string text, double size, bool strong) => RenderKit.NumWidth(text, size, strong, ppd);
 
-        // 温度读数："62°" 走等宽读数（跟随所在行的字号）；"需管理员" / "缺驱动" 是状态提示，固定 9px
-        double Temp(double? value, double x, double bl, double size)
+        // 卡片外壳：半透明底（3.5% 的白）+ 1px 微光边 + 圆角 12（暗色科技的卡片配方；像素主题 3）
+        void Card(double cx, double cy, double cw, double ch)
         {
-            if (value is not { } v) return T(TempMissingText, x, bl, ExpandedPanelSpec.StatusFont, TempMissingColor(pal), true);
-            string text = $"{Math.Round(v)}°";
-            return N(text, x, bl, size, TempColor(v, pal), true);
+            double cr = pal.SquareCorners ? 3 : CardRadius;
+            dc.DrawRoundedRectangle(RenderKit.Faint(pal.Text, 0.035),
+                RenderKit.PenOf(pal.Hairline, 1), RenderKit.SafeRect(cx, cy, cw, ch), cr, cr);
         }
 
         // 进度条：轨道 + 填充（mac 口径：高 4、圆角 2；填充比一个高度还短时不画，圆角会糊成一团）
@@ -162,407 +242,315 @@ public sealed class MonitorPage : FrameworkElement
             dc.DrawRoundedRectangle(RenderKit.BrushOf(fill), null, RenderKit.SafeRect(mx, my, fw, mh), mc, mc);
         }
 
-        // ---------- 左栏：仪表区 ----------
-        double y = 0;
-        // 读数行：左边标签列定宽，读数从同一列起，纵向对齐
-        const double lx = 48;
-        double vx = x0 + lx;
-
-        // ---------- 卡片「占用」：CPU / 内存 / GPU / 磁盘 ----------
-        if (Want("cpu") || Want("mem") || Want("gpu") || Want("disk"))
+        // 一行读数（mac 口径的 Row）：12×12 图标 + 10px TextDim 标签（+ 次级说明）
+        //   + 右对齐 14px SemiBold 数值 + 4px 圆角 2 的进度条 + 1.4px 走势曲线（框高 14）
+        void MetricRow(double cx, double cy, double cw, GlyphKind? icon, string iconText, Color iconColor,
+            Color valueColor, Color meterColor, string label, string sub, string value, string unit,
+            double share, double[]? history)
         {
-            CardTitle(dc, pal, ppd, "占用", GlyphKind.Monitor, x0, y, lw - 6, pal.Text);
-            // GPU 角标：占用卡右上角（mac：GPU {n}%，10px SemiBold 右对齐；数字来自监控快照）
-            if (s is not null && s.GpuUsage > 0)
-            {
-                var badge = RenderKit.Text($"GPU {Math.Round(s.GpuUsage)}%",
-                    ExpandedPanelSpec.RowLabelFont, pal.Text, true, ppd);
-                RenderKit.Baseline(dc, badge, lw - 6 - badge.WidthIncludingTrailingWhitespace, y + 11);
-            }
-            y += 28;
+            double right = cx + cw - CardPadX;
+            double labelX = cx + 33;
+            double nw = NW(value, ExpandedPanelSpec.MetricValueFont, true);
+            // 单位：ASCII 走等宽读数体；非 ASCII（° ·）走界面字体 —— Consolas 里没有度数符号，
+            // 用等宽体画会变成豆腐块（□）。
+            bool unitAscii = unit.All(ch => ch < 128);
+            double uw = unit.Length == 0 ? 0
+                : unitAscii ? NW(unit, ExpandedPanelSpec.SecondaryFont, false)
+                            : RenderKit.Text(unit, ExpandedPanelSpec.SecondaryFont, pal.TextDim, false, ppd).WidthIncludingTrailingWhitespace;
+            double vx = right - nw - uw;      // 数值左端（整组右对齐到卡内右边）
 
-            // CPU：这一页的主角（唯一用强调色的读数 —— 强调色是 Windows 暗色科技的身份，mac 没有）
-            if (Want("cpu"))
+            // 图标（12×12）：矢量图标没有对应字形时用一个小字符（温度 = 度数符号）
+            if (icon is { } g)
+                Glyphs.Draw(dc, g, RenderKit.SafeRect(cx + 15, cy + 4, RowIconSize, RowIconSize), iconColor);
+            else
+                RenderKit.Baseline(dc, RenderKit.Text(iconText, 12, iconColor, false, ppd), cx + 15, cy + 14);
+
+            // 标签（10px TextDim）；次级说明（10px TextTertiary）排不下就不画
+            double lx = T(label, labelX, cy + 14, ExpandedPanelSpec.RowLabelFont, pal.TextDim);
+            if (sub.Length > 0 && vx - 10 > lx + 4)
             {
-                double cpu = s?.CpuUsage ?? 0;
-                Color cpuColor = s is null ? pal.TextTertiary : RenderKit.LevelColor(cpu, pal.Accent, pal);
-                double bl = y + 13;
-                M("CPU", x0, bl, ExpandedPanelSpec.RowLabelFont, pal.TextDim, true);
-                double x = N(s is null ? "—" : $"{Math.Round(cpu)}", vx, bl,
-                    ExpandedPanelSpec.MetricValueFont, cpuColor, true);
-                x = N("%", x + 2, bl, ExpandedPanelSpec.SecondaryFont, pal.TextDim);
+                var subT = RenderKit.Trimmed(sub, ExpandedPanelSpec.RowLabelFont, pal.TextTertiary, vx - 10 - lx - 4, false, ppd);
+                RenderKit.Baseline(dc, subT, lx + 4, cy + 14);
+            }
+
+            // 数值（右对齐）：14px SemiBold + 单位 11px TextDim
+            N(value, vx, cy + 15, ExpandedPanelSpec.MetricValueFont, valueColor, true);
+            if (uw > 0)
+            {
+                if (unitAscii) N(unit, vx + nw, cy + 15, ExpandedPanelSpec.SecondaryFont, pal.TextDim);
+                else RenderKit.Baseline(dc, RenderKit.Text(unit, ExpandedPanelSpec.SecondaryFont, pal.TextDim, false, ppd), vx + nw, cy + 15);
+            }
+
+            // 进度条
+            Meter(labelX, cy + 22, cw - 48, share, meterColor);
+
+            // 走势曲线（没有这一项的历史就不画，空框不如不画）
+            if (history is not null)
+                RenderKit.DrawSpark(dc, RenderKit.SafeRect(labelX, cy + 29, cw - 48, ExpandedPanelSpec.SparkHeight),
+                    history, valueColor, 36, ExpandedPanelSpec.SparkStroke);
+        }
+
+        // 速度行（mac 口径的 Speed）：箭头 + 10px TextDim 标签 + 右对齐 16px SemiBold 数值
+        //   + 3px 圆角 1.5 的流量条（对数刻度，2MB/s 满格）+ 14px 走势曲线
+        void SpeedRow(double cx, double cy, double cw, string arrow, string label, double bytesPerSec,
+            double[]? history, bool curve)
+        {
+            double labelX = cx + 33;
+            double right = cx + cw - CardPadX;
+            string text = MonitorSnapshot.FormatSpeed(bytesPerSec);
+            double tw = NW(text, SpeedValueFont, true);
+            N(text, right - tw, cy + 16, SpeedValueFont, pal.Text, true);
+            N(arrow, cx + 15, cy + 16, ExpandedPanelSpec.SecondaryFont, pal.TextDim, true);
+            T(label, labelX, cy + 16, ExpandedPanelSpec.RowLabelFont, pal.TextDim);
+
+            // 流量条：对数刻度，低速（几 KB/s）也能看到明显条长
+            double bw = cw - 48;
+            dc.DrawRoundedRectangle(RenderKit.BrushOf(pal.Track), null,
+                RenderKit.SafeRect(labelX, cy + 27, bw, 3), FlowCorner, FlowCorner);
+            double frac = bytesPerSec <= 0 ? 0
+                : Math.Clamp(Math.Log10(1 + bytesPerSec) / Math.Log10(1 + FullSpeed), 0, 1);
+            if (frac > 0.002)
+                dc.DrawRoundedRectangle(RenderKit.BrushOf(Neutral(0x99)), null,
+                    RenderKit.SafeRect(labelX, cy + 27, Math.Max(MinFill, bw * frac), 3), FlowCorner, FlowCorner);
+
+            // 走势曲线（让位档不画：两行间距压到 34 后，曲线会撞到卡底的信息行）
+            if (curve && history is not null)
+                RenderKit.DrawSpark(dc, RenderKit.SafeRect(labelX, cy + 33, bw, ExpandedPanelSpec.SparkHeight),
+                    history, Neutral(0x99), 36, ExpandedPanelSpec.SparkStroke);
+        }
+
+        // ================= ① CPU 卡（上排左）：这一页的主角 =================
+        if (Want("cpu"))
+        {
+            Card(x1, y1, cardW, topH);
+            CardTitle(dc, pal, ppd, "CPU", GlyphKind.Monitor, x1, y1, x1 + cardW, pal.Text);
+
+            double cy = y1 + CardHeadH;
+            double cpu = s?.CpuUsage ?? 0;
+            // CPU 是唯一用强调色的读数（暗色科技的身份）：告警时才换成状态色
+            Color cpuColor = s is null ? pal.TextTertiary : RenderKit.LevelColor(cpu, pal.Accent, pal);
+            MetricRow(x1, cy, cardW, GlyphKind.Sliders, "", cpuColor, cpuColor, cpuColor,
+                "占用", "", s is null ? "—" : $"{Math.Round(cpu)}", "%", s is null ? 0 : cpu / 100, CpuHistory);
+
+            // 频率（满格基准 5.0 GHz）
+            double ghz = s?.CpuFrequencyGHz ?? 0;
+            MetricRow(x1, cy + firstRowH + RowGap, cardW, GlyphKind.Gear, "", pal.TextDim, pal.Text, Neutral(0x8C),
+                "频率", "", ghz > 0.1 ? $"{ghz:F1}" : "—", ghz > 0.1 ? " GHz" : "", ghz / FreqFull, null);
+
+            // 温度（取整度数：与 ThermalDisplay.Signature 的口径一致）
+            double ty = cy + firstRowH + RowGap + rowH + RowGap;
+            string tempValue, tempUnit;
+            Color tempColor;
+            double tempShare;
+            if (th?.CpuTemp is { } tv)
+            {
+                tempValue = $"{Math.Round(tv)}"; tempUnit = "°";
+                tempColor = TempColor(tv, pal); tempShare = tv / TempFull;
+            }
+            else
+            {
+                tempValue = TempMissingText; tempUnit = "";
+                tempColor = TempMissingColor(pal); tempShare = 0;
+            }
+            MetricRow(x1, ty, cardW, null, "°", pal.TextDim, tempColor, Neutral(0x8C),
+                "温度", "", tempValue, tempUnit, tempShare, null);
+        }
+
+        // ================= ② 内存卡（上排右）：内存 / GPU / 磁盘 =================
+        if (Want("mem") || Want("gpu") || Want("disk"))
+        {
+            Card(x2, y1, cardW, topH);
+            CardTitle(dc, pal, ppd, "内存", GlyphKind.Grid, x2, y1, x2 + cardW, pal.Text);
+
+            double cy = y1 + CardHeadH;
+            int slot = 0;
+            // 内存：占用 % + 已用/总量（次级说明里）
+            if (Want("mem"))
+            {
+                double mp = s?.MemoryUsagePercent ?? 0;
+                string sub = s is null ? "" : $"{s.MemoryUsedGB:F1}/{s.MemoryTotalGB:F0} GB";
+                MetricRow(x2, cy + slot * (rowH + RowGap), cardW, GlyphKind.Monitor, "", pal.TextDim,
+                    RenderKit.LevelColor(mp, pal.Text, pal),
+                    RenderKit.LevelColor(mp, Neutral(0x8C), pal),
+                    "内存", sub, s is null ? "—" : $"{Math.Round(mp)}", "%", mp / 100, null);
+                slot++;
+            }
+            // GPU：占用 % + 温度 / 显存（次级说明里）
+            if (Want("gpu"))
+            {
+                double gp = s?.GpuUsage ?? 0;
+                var parts = new List<string>();
+                if (th?.GpuTemp is { } gt) parts.Add($"{Math.Round(gt)}°");
+                if (th?.GpuMemoryUsedGB is { } gmu)
+                    parts.Add($"{gmu:F1}{(th.GpuMemoryTotalGB is { } gtot ? $"/{gtot:F0}" : "")} GB");
+                MetricRow(x2, cy + slot * (rowH + RowGap), cardW, GlyphKind.Grid, "", pal.TextDim,
+                    RenderKit.LevelColor(gp, pal.Text, pal),
+                    RenderKit.LevelColor(gp, Neutral(0x8C), pal),
+                    "GPU", string.Join(" · ", parts), s is null ? "—" : $"{Math.Round(gp)}", "%", gp / 100, null);
+                slot++;
+            }
+            // 磁盘：活动 % + 空间
+            if (Want("disk"))
+            {
+                double dp = s?.DiskUsagePercent ?? 0;
+                string sub = "";
                 if (s is not null)
                 {
-                    if (s.CpuFrequencyGHz > 0.1)
-                    {
-                        string f = $"{s.CpuFrequencyGHz:F1} GHz";
-                        x = N(f, x + 14, bl, ExpandedPanelSpec.SecondaryFont, pal.TextDim);
-                    }
-                    x = Temp(th?.CpuTemp, x + 14, bl, ExpandedPanelSpec.SecondaryFont);
+                    var disks = s.Disks is { Length: > 0 } dl ? dl : null;
+                    if (disks is not null && disks[0].TotalGB > 0.1) sub = DriveText(disks[0]);
+                    else if (s.DriveTotalGB > 0.1) sub = $"{s.DriveUsedGB:F0}/{s.DriveTotalGB:F0} GB";
                 }
-                // 走势线跟读数同色：CPU 告警时数字、走势一起变
-                double sparkX = x + 14, sparkW = lw - 6 - sparkX;
-                if (sparkW >= 40)
-                    RenderKit.DrawSpark(dc, RenderKit.SafeRect(sparkX, bl - 11, sparkW, ExpandedPanelSpec.SparkHeight),
-                        CpuHistory, cpuColor, 36, ExpandedPanelSpec.SparkStroke);
-                y += 24;
+                MetricRow(x2, cy + slot * (rowH + RowGap), cardW, GlyphKind.File, "", pal.TextDim,
+                    RenderKit.LevelColor(dp, pal.Text, pal),
+                    RenderKit.LevelColor(dp, Neutral(0x8C), pal),
+                    "磁盘", sub, s is null ? "—" : $"{Math.Round(dp)}", "%", dp / 100, null);
+            }
+        }
+
+        // ================= ③ 上下速度卡（下排左） =================
+        if (Want("net") || Want("power"))
+        {
+            Card(x1, y2, cardW, botH);
+            CardTitle(dc, pal, ppd, "上下速度", GlyphKind.Bolt, x1, y2, x1 + cardW, pal.Text);
+
+            double cy = y2 + CardHeadH;
+            if (Want("net"))
+            {
+                SpeedRow(x1, cy, cardW, "↓", "下行", s?.DownloadSpeed ?? 0, DownHistory ?? NetHistory, speedCurve);
+                SpeedRow(x1, cy + speedRowH, cardW, "↑", "上行", s?.UploadSpeed ?? 0, UpHistory ?? NetHistory, speedCurve);
             }
 
-            // 每核一根细竖条（与收起态读数带同构）：强调色，≥70% / ≥90% 换状态色
-            var cores = s?.CoreUsages;
-            if (Want("cores") && cores is { Length: > 0 })
+            // 卡底信息位：左 网络类型，右 电池（≤20% 用 pal.Up）
+            double infoBase = y2 + botH - 9;
+            if (Want("net"))
             {
-                int n = Math.Min(16, cores.Length);
-                double gap = 3, bh = 16, bw = (w - gap * (n - 1)) / n;
-                double rr = pal.SquareCorners ? 0.5 : 2;
-                for (int i = 0; i < n; i++)
-                {
-                    double v = Math.Clamp(cores[i] / 100.0, 0, 1);
-                    double bx = x0 + i * (bw + gap);
-                    dc.DrawRoundedRectangle(RenderKit.BrushOf(pal.Track), null, RenderKit.SafeRect(bx, y, bw, bh), rr, rr);
-                    double fh = Math.Max(bh * 0.12, v * bh);
-                    dc.DrawRoundedRectangle(RenderKit.BrushOf(RenderKit.LevelColor(v * 100, pal.Accent, pal)), null,
-                        RenderKit.SafeRect(bx, y + bh - fh, bw, fh), rr, rr);
-                }
-                y += 22;
+                string link = string.IsNullOrEmpty(s?.LinkType) ? "—" : s.LinkType;
+                T($"网络 {link}", x1 + CardPadX, infoBase, ExpandedPanelSpec.RowLabelFont, pal.TextTertiary);
             }
-            else y += 6;
-
-            if (Want("mem") && s is not null)
+            if (Want("power"))
             {
-                Color valueColor = RenderKit.LevelColor(s.MemoryUsagePercent, pal.Text, pal);
-                double bl = y + 14;
-                T("内存", x0, bl, ExpandedPanelSpec.RowLabelFont, pal.TextDim);
-                double x = N($"{s.MemoryUsedGB:F1}", vx, bl, ExpandedPanelSpec.MetricValueFont, valueColor, true);
-                x = N($" /{s.MemoryTotalGB:F0} GB", x, bl, ExpandedPanelSpec.SecondaryFont, pal.TextDim);
-                if (s.CommitLimitGB > 0.1)
+                int? percent = null;
+                bool charging = false;
+                if (s is not null && s.BatteryPercent is { } bp) { percent = (int)Math.Round(bp); charging = s.BatteryCharging; }
+                else
                 {
-                    x = T("  提交 ", x, bl, ExpandedPanelSpec.SecondaryFont, pal.TextTertiary);
-                    x = N($"{s.CommitGB:F0}/{s.CommitLimitGB:F0} GB", x, bl, ExpandedPanelSpec.SecondaryFont, pal.TextTertiary);
+                    var dev = BatteryDevice();
+                    if (dev is not null) { percent = dev.Percent; charging = dev.Charging; }
                 }
-                string pct = $"{Math.Round(s.MemoryUsagePercent)}";
-                N(pct, lw - 6 - 13 - NW(pct, ExpandedPanelSpec.MetricValueFont, true), bl,
-                    ExpandedPanelSpec.MetricValueFont, valueColor, true);
-                N("%", lw - 6 - 12, bl, ExpandedPanelSpec.SecondaryFont, pal.TextDim);
-                Meter(vx, y + 24, w - lx, s.MemoryUsagePercent / 100,
-                    RenderKit.LevelColor(s.MemoryUsagePercent, Neutral(0x8C), pal));
-                y += 34;
-            }
-
-            if (Want("gpu") && s is not null)
-            {
-                double bl = y + 14;
-                M("GPU", x0, bl, ExpandedPanelSpec.RowLabelFont, pal.TextDim);
-                double x = N($"{Math.Round(s.GpuUsage)}", vx, bl, ExpandedPanelSpec.MetricValueFont,
-                    RenderKit.LevelColor(s.GpuUsage, pal.Text, pal), true);
-                x = N("%", x + 2, bl, ExpandedPanelSpec.SecondaryFont, pal.TextDim) + 14;
-                x = Temp(th?.GpuTemp, x, bl, ExpandedPanelSpec.SecondaryFont) + 14;
-                // 显存先占位，显卡名吃剩余宽度
-                double gx = x;
-                if (th?.GpuMemoryUsedGB is { } gmu)
-                    gx = N($"显存 {gmu:F1}{(th.GpuMemoryTotalGB is { } gtot ? $"/{gtot:F0}" : "")} GB",
-                        x, bl, ExpandedPanelSpec.SecondaryFont, pal.TextDim) + 12;
-                if (!string.IsNullOrEmpty(s.GpuName))
+                if (percent is { } pv)
                 {
-                    var name = RenderKit.Trimmed(s.GpuName, ExpandedPanelSpec.SecondaryFont, pal.TextTertiary,
-                        lw - 6 - gx, false, ppd);
-                    RenderKit.Baseline(dc, name, lw - 6 - name.WidthIncludingTrailingWhitespace, bl);
-                }
-                y += 28;
-            }
-
-            // 硬盘：每块物理盘一行；计数器实例缺失时回退单行（系统盘/_Total）
-            if (Want("disk") && s is not null)
-            {
-                var rows = new List<DiskStat>();
-                if (s.Disks is { Length: > 0 } dl) rows.AddRange(dl);
-                if (rows.Count == 0)
-                    rows.Add(new DiskStat
-                    {
-                        Name = s.DriveName, ActivePercent = s.DiskUsagePercent,
-                        ReadSpeed = s.DiskReadSpeed, WriteSpeed = s.DiskWriteSpeed,
-                        UsedGB = s.DriveUsedGB, TotalGB = s.DriveTotalGB,
-                    });
-
-                int shown = Math.Min(3, rows.Count);
-                double rowH = shown >= 3 ? 26 : 30;   // 三块盘时行距收紧，保证页脚留在版面内
-                for (int i = 0; i < shown; i++)
-                {
-                    var d = rows[i];
-                    double bl = y + 14;
-                    M((d.Name.Length > 0 ? d.Name[..1] : "D") + ":", x0, bl, ExpandedPanelSpec.RowLabelFont, pal.TextDim, true);
-                    double x = N($"{Math.Round(d.ActivePercent)}", vx, bl, ExpandedPanelSpec.MetricValueFont, pal.Text, true);
-                    x = N("%", x + 2, bl, ExpandedPanelSpec.SecondaryFont, pal.TextDim) + 14;
-                    // 右侧空间先占位；读写速度从左往右排，排不下就不画（不叠字）
-                    double right = lw - 6;
-                    string space = d.TotalGB > 0 ? DriveText(d) : "";
-                    if (space.Length > 0)
-                    {
-                        right -= NW(space, ExpandedPanelSpec.SecondaryFont, false);
-                        N(space, right, bl, ExpandedPanelSpec.SecondaryFont, pal.TextTertiary);
-                        right -= 10;
-                    }
-                    // 读写速度用紧凑单位（↓108K/s ↑2.1M/s）：等宽体比界面字体宽，全称（"108.5 KB/s"）放不下读写两项加空间。
-                    // 从左往右排，排不下就不画（不叠字）。SSD 温度挪到了页脚（这一行放不下第四项）。
-                    double rx = N($"↓{Compact(d.ReadSpeed)}", x, bl, ExpandedPanelSpec.SecondaryFont, pal.TextDim) + 10;
-                    string wr = $"↑{Compact(d.WriteSpeed)}";
-                    if (rx + NW(wr, ExpandedPanelSpec.SecondaryFont, false) < right)
-                        rx = N(wr, rx, bl, ExpandedPanelSpec.SecondaryFont, pal.TextDim) + 10;
-                    y += rowH;
+                    string text = $"电池 {pv}%{(charging ? " · 充电中" : "")}";
+                    Color bc = pv <= 20 ? pal.Up : pal.TextDim;
+                    var bt = RenderKit.Text(text, ExpandedPanelSpec.RowLabelFont, bc, false, ppd);
+                    RenderKit.Baseline(dc, bt, x1 + cardW - CardPadX - bt.WidthIncludingTrailingWhitespace, infoBase);
                 }
             }
         }
 
-        // ---------- 卡片「上下速度」：下行 / 上行 ----------
-        if (Want("net") && s is not null)
+        // ================= ④ 进程榜卡（下排右） =================
+        if (Want("topproc"))
         {
-            CardTitle(dc, pal, ppd, "上下速度", GlyphKind.Bolt, x0, y, lw - 6, pal.Text);
-            y += 28;
-            double rx = lw - 6;
-            double bl1 = y + 13, bl2 = y + 35;
-            double pingW = 0;
-            if (s.PingMs >= 0)
-            {
-                string ping = $"{s.PingMs} ms";
-                Color pc = s.PingMs <= 50 ? pal.TextDim : s.PingMs <= 120 ? pal.Warning : pal.Up;
-                pingW = NW(ping, ExpandedPanelSpec.SecondaryFont, false);
-                N(ping, rx - pingW, bl2, ExpandedPanelSpec.SecondaryFont, pc);
-                pingW += 14;
-            }
-            double x = N("↓", x0, bl1, ExpandedPanelSpec.SecondaryFont, pal.TextDim, true) + 6;
-            x = N(MonitorSnapshot.FormatSpeed(s.DownloadSpeed), x, bl1, ExpandedPanelSpec.MetricValueFont, pal.Text, true);
-            RenderKit.DrawSpark(dc, RenderKit.SafeRect(x + 10, bl1 - 12, rx - x - 18, ExpandedPanelSpec.SparkHeight),
-                DownHistory ?? NetHistory, Neutral(0x99), 36);
-            double x2 = N("↑", x0, bl2, ExpandedPanelSpec.SecondaryFont, pal.TextDim, true) + 6;
-            x2 = N(MonitorSnapshot.FormatSpeed(s.UploadSpeed), x2, bl2, ExpandedPanelSpec.MetricValueFont, pal.Text, true);
-            RenderKit.DrawSpark(dc, RenderKit.SafeRect(x2 + 10, bl2 - 12, rx - pingW - x2 - 18, ExpandedPanelSpec.SparkHeight),
-                UpHistory ?? NetHistory, Neutral(0x99), 36);
-            y += 44;
-        }
+            Card(x2, y2, cardW, botH);
 
-        // ---------- 外设电量（2026-11-25 设备电量监控模块）：每台外设一行，读数右对齐、名字吃剩余宽度。
-        // 本机电池不在这一组（页脚已经有"电池"），蓝牙设备 / GATT 直读 / 手柄档位都在这里。
-        // 排不下就不画（页脚还要留位），与页脚同一套规矩。
-        if (Want("devices"))
-        {
-            var externals = new List<DeviceInfo>();
-            foreach (var d in DeviceService.Snapshot)
-                if (d.Name != "笔记本电池") externals.Add(d);
-            int devRows = Math.Min(externals.Count, 3);
-            if (devRows > 0 && y + 28 + devRows * 22 + 30 <= H)
+            // 右上分段控件（96×20 圆角 6）：选中段 Accent 实心 + 文字 Surface 色，未选中段底 pal.Track
+            double segW = ExpandedPanelSpec.SegmentedWidth, segH = ExpandedPanelSpec.SegmentedHeight;
+            double segX = x2 + cardW - CardPadX - segW, segY = y2 + 1;
+            _sortToggleRect = RenderKit.SafeRect(segX, segY, segW, segH);
+            double segR = ExpandedPanelSpec.SegmentedCorner;
+            dc.DrawRoundedRectangle(RenderKit.BrushOf(pal.Track), null, _sortToggleRect, segR, segR);
+            if (TopSort == "mem")
+                dc.DrawRoundedRectangle(RenderKit.BrushOf(pal.Accent), null,
+                    RenderKit.SafeRect(segX + segW / 2, segY, segW / 2, segH), segR, segR);
+            else
+                dc.DrawRoundedRectangle(RenderKit.BrushOf(pal.Accent), null,
+                    RenderKit.SafeRect(segX, segY, segW / 2, segH), segR, segR);
+            string[] segLabels = { "CPU", "内存" };
+            for (int i = 0; i < segLabels.Length; i++)
             {
-                CardTitle(dc, pal, ppd, "外设", GlyphKind.Battery, x0, y, lw - 6, pal.Text);
-                y += 28;
-                foreach (var d in externals.Take(devRows))
+                bool on = TopSort == (i == 0 ? "cpu" : "mem");
+                var t = RenderKit.Text(segLabels[i], ExpandedPanelSpec.RowLabelFont,
+                    on ? pal.Surface : pal.TextDim, on, ppd);
+                double tx = segX + i * (segW / 2) + (segW / 2 - t.WidthIncludingTrailingWhitespace) / 2;
+                RenderKit.Baseline(dc, t, tx, segY + segH / 2 + 3.5);
+            }
+
+            // 榜标题：跟随排序切换；卡片窄得放不下就只留"占用最高"（分段控件本身已经说明按什么排）
+            string title = TopSort == "mem" ? "占用最高 · 内存" : "占用最高 · CPU";
+            double titleMax = segX - 8 - (x2 + 20);
+            if (RenderKit.Text(title, ExpandedPanelSpec.CardTitleFont, pal.Text, true, ppd)
+                    .WidthIncludingTrailingWhitespace > titleMax)
+                title = "占用最高";
+            CardTitle(dc, pal, ppd, title, GlyphKind.File, x2, y2, x2 + cardW, pal.Text, titleMax);
+
+            // 榜体：图标 15×15 + 名称 11px 比例字体 + 右对齐数值 11px SemiBold（行距 21、最多 5 行）
+            double ry = y2 + CardHeadH;
+            double rx0 = x2 + CardPadX;
+            double right = x2 + cardW - CardPadX;
+            var tops = TopSort == "mem" ? s?.TopProcessesByMem : s?.TopProcesses;
+            if (tops is null || tops.Length == 0)
+            {
+                // 空态区分「未采集」与「暂无高占用应用」（mac 口径）
+                string empty = tops is null ? "未采集（仅监控页读取）" : "暂无高占用应用";
+                RenderKit.Baseline(dc, RenderKit.Text(empty, ExpandedPanelSpec.EmptyListFont, pal.TextTertiary, ppd: ppd),
+                    rx0, ry + 12);
+            }
+            else
+            {
+                foreach (var p in tops.Take(procRows))
                 {
-                    double bl = y + 14;
-                    Color vc = d.Charging ? Color.FromRgb(0x3F, 0xC1, 0x5E)
-                        : d.LevelText is { } lv ? (lv is "空" or "低" ? pal.Up : lv == "中" ? pal.Warning : pal.Text)
-                        : d.Percent <= 20 ? pal.Up
-                        : d.Percent <= 40 ? pal.Warning : pal.Text;
-                    var glyphT = RenderKit.Text(DeviceService.Glyph(d.Kind), ExpandedPanelSpec.SecondaryFont, pal.TextDim, true, ppd);
-                    RenderKit.Baseline(dc, glyphT, x0, bl);
-                    // 读数先占位（右对齐），名字吃剩余宽度（进程榜同款排法）
-                    double right = lw - 6;
-                    double valueW;
-                    if (d.LevelText is { } levelText)
+                    double bl = ry + 12;
+                    bool mem = TopSort == "mem";
+                    string mainText = mem
+                        ? (p.MemoryMB >= 1024 ? $"{p.MemoryMB / 1024:F1} GB" : $"{p.MemoryMB:F0} MB")
+                        : $"{p.CpuPercent:F1}%";
+                    double mainW = NW(mainText, ExpandedPanelSpec.ProcessValueFont, true);
+                    N(mainText, right - mainW, bl, ExpandedPanelSpec.ProcessValueFont, pal.TextDim, true);
+
+                    // 名称用比例字体（mac 口径：名单是中文 + 英文混排，等宽体会显得挤）
+                    double nx = rx0 + 22;
+                    var name = RenderKit.Trimmed(p.Name, ExpandedPanelSpec.ProcessNameFont, pal.Text,
+                        right - mainW - 12 - nx, false, ppd);
+                    RenderKit.Baseline(dc, name, nx, bl);
+
+                    // 真实应用图标（15px 原尺寸，放大就糊；取不到画首字母圆）
+                    var icon = RenderKit.AppIcon(p.ExePath);
+                    if (icon is not null)
                     {
-                        var lvT = RenderKit.Text(levelText, ExpandedPanelSpec.SecondaryFont, vc, true, ppd);
-                        valueW = lvT.WidthIncludingTrailingWhitespace;
-                        RenderKit.Baseline(dc, lvT, right - valueW, bl);
+                        dc.DrawImage(icon, RenderKit.SafeRect(rx0, ry, ExpandedPanelSpec.ProcessIconSize, ExpandedPanelSpec.ProcessIconSize));
                     }
                     else
                     {
-                        valueW = RenderKit.NumWidth($"{d.Percent}%", ExpandedPanelSpec.SecondaryFont, true, ppd);
-                        RenderKit.Num(dc, $"{d.Percent}%", right - valueW, bl, ExpandedPanelSpec.SecondaryFont, vc, true, ppd);
+                        double c = ExpandedPanelSpec.ProcessIconSize / 2;
+                        dc.DrawEllipse(RenderKit.Faint(pal.Text, 0.10), null, new Point(rx0 + c, ry + c), c, c);
+                        // 首字母兜底（取不到应用图标时）
+                        var ini = RenderKit.Mono(p.Name.Length > 0 ? char.ToUpper(p.Name[0]).ToString() : "?",
+                            ExpandedPanelSpec.StatusFont, pal.TextDim, true, ppd);
+                        dc.DrawText(ini, new Point(rx0 + c - ini.Width / 2, ry + c - ini.Height / 2));
                     }
-                    var name = RenderKit.Trimmed(d.Name, ExpandedPanelSpec.SecondaryFont, pal.Text,
-                        right - valueW - 14 - (x0 + 16), false, ppd);
-                    RenderKit.Baseline(dc, name, x0 + 16, bl);
-                    y += 22;
+                    ry += ExpandedPanelSpec.ProcessRowGap;
                 }
             }
         }
 
-        // ---------- 页脚：从左往右排，排不下就不画 ----------
-        // 右栏进程榜关着时，今日流量落在这里的右端（开着时由右栏自己画在它的页脚）。
-        if (Want("power"))
-        {
-            double bl = y + 14;
-            double rx = lw - 6;
-            bool list = Want("topproc") && W - 4 - (lw + 10) >= 110;
-            if (s is not null && !list)
-            {
-                string today = Today(s);
-                double tw = NW(today, ExpandedPanelSpec.RowLabelFont, false);
-                N(today, rx - tw, bl, ExpandedPanelSpec.RowLabelFont, pal.TextTertiary);
-                rx -= tw + 14;
-            }
-            double x = x0;
-            // 每一项先量宽度，排得下才画（页脚右端可能还有今日流量）
-            string power = th?.CpuPower is { } p && p > 0.01 ? $"{Math.Round(p)} W"
-                : th?.GpuPower is { } gp && gp > 0.01 ? $"GPU {Math.Round(gp)} W" : "";
-            if (power.Length > 0 && x + 44 + NW(power, ExpandedPanelSpec.RowLabelFont, true) < rx)
-            {
-                x = T("功耗 ", x, bl, ExpandedPanelSpec.RowLabelFont, pal.TextDim);
-                x = N(power, x, bl, ExpandedPanelSpec.RowLabelFont, pal.Text, true) + 16;
-            }
-            if (th?.MotherboardTemp is { } mb && x + 78 < rx)
-            {
-                x = T("主板 ", x, bl, ExpandedPanelSpec.RowLabelFont, pal.TextDim);
-                x = Temp(mb, x, bl, ExpandedPanelSpec.RowLabelFont) + 16;
-            }
-            if (th?.SsdTemp is { } ssd && x + 68 < rx)
-            {
-                x = T("SSD ", x, bl, ExpandedPanelSpec.RowLabelFont, pal.TextDim);
-                x = Temp(ssd, x, bl, ExpandedPanelSpec.RowLabelFont) + 16;
-            }
-            if (s is { UptimeHours: > 0 } && x + 76 < rx)
-            {
-                x = T("运行 ", x, bl, ExpandedPanelSpec.RowLabelFont, pal.TextDim);
-                x = N(FormatUptime(s.UptimeHours), x, bl, ExpandedPanelSpec.RowLabelFont, pal.TextDim) + 16;
-            }
-            // 本机电池（有电池才显示）：充电绿 / ≤20 红 / ≤40 橙 / 其余文字色
-            var bat = s is null ? null : BatteryDevice();
-            if (bat is not null && x + 64 < rx)
-            {
-                Color bc = bat.Charging ? pal.Down : bat.Percent <= 20 ? pal.Up : bat.Percent <= 40 ? pal.Warning : pal.Text;
-                x = T("电池 ", x, bl, ExpandedPanelSpec.RowLabelFont, pal.TextDim);
-                x = N($"{bat.Percent}%", x, bl, ExpandedPanelSpec.RowLabelFont, bc, true) + 4;
-                if (bat.Charging) Glyphs.Draw(dc, GlyphKind.Bolt, RenderKit.SafeRect(x, bl - 9, 10, 10), pal.Down);
-            }
-        }
-
-        if (Want("topproc")) DrawTopProcesses(dc, pal, s, W, H, lw, ppd);
-    }
-
-    private static string Today(MonitorSnapshot s)
-        => $"今日 ↓{MonitorSnapshot.FormatBytes(s.TodayDownload)} ↑{MonitorSnapshot.FormatBytes(s.TodayUpload)}";
-
-    /// <summary>紧凑速度（"108K/s" / "2.1M/s"）：与收起态读数带同一个口径，只是带上了 "/s"。</summary>
-    private static string Compact(double bytesPerSecond) => MonitorSnapshot.CompactSpeed(bytesPerSecond) + "/s";
-
-    /// <summary>运行时长人性化：&lt;1h 显示分钟，&lt;48h 显示 x.x h，否则 x 天。</summary>
-    private static string FormatUptime(double hours)
-    {
-        if (hours < 1) return $"{(int)(hours * 60)} 分钟";
-        if (hours < 48) return $"{hours:F1} h";
-        return $"{hours / 24:F1} 天";
+        dc.Pop();
     }
 
     /// <summary>
     /// 卡片标题（mac 口径）：12×12 矢量图标 + 12px SemiBold 标题，标题下画一根 1px 发丝线（左右各内缩 15）。
     /// 分隔线只出现在这里 —— 区块之间不再画发丝线（Windows 原来的画法是把区块切开）。
     /// </summary>
+    /// <param name="maxTitleWidth">标题可用的最大宽度（0 = 不限；窄卡片里给分段控件让位时用）。</param>
     private static void CardTitle(DrawingContext dc, Palette pal, double ppd, string title, GlyphKind icon,
-        double cx, double cy, double right, Color color)
+        double cx, double cy, double right, Color color, double maxTitleWidth = 0)
     {
         double isz = ExpandedPanelSpec.CardTitleIconSize;
         Glyphs.Draw(dc, icon, RenderKit.SafeRect(cx + 2, cy + 1, isz, isz), color);
-        var t = RenderKit.Text(title, ExpandedPanelSpec.CardTitleFont, color, true, ppd);
-        RenderKit.Baseline(dc, t, cx + isz + 8, cy + 11);
+        double tx = cx + isz + 8;
+        var t = maxTitleWidth > 0
+            ? RenderKit.Trimmed(title, ExpandedPanelSpec.CardTitleFont, color, maxTitleWidth, true, ppd)
+            : RenderKit.Text(title, ExpandedPanelSpec.CardTitleFont, color, true, ppd);
+        RenderKit.Baseline(dc, t, tx, cy + 11);
         double inset = ExpandedPanelSpec.CardTitleRuleInset;
         RenderKit.Hairline(dc, pal, cx + inset, right - inset, cy + 22);
-    }
-
-
-    /// <summary>
-    /// 右栏进程榜：一块半透明卡片（深色主题是 3.5% 的白 + 1px 微光边，暗色科技的卡片配方），
-    /// 里面是卡片标题（「占用最高 · CPU / 内存」，12px SemiBold + 12×12 图标 + 标题下 1px 发丝线）
-    /// + 排序分段控件（96×20 圆角 6，选中段 Accent 实心 + 文字用 Surface 色）
-    /// + 进程行（行距 21、最多 5 行、图标 15、名称 11px 比例字体、数值 11px）+ 进程 / 线程数与今日流量。
-    /// </summary>
-    private void DrawTopProcesses(DrawingContext dc, Palette pal, MonitorSnapshot? s,
-        double W, double H, double lw, double ppd)
-    {
-        double cw = W - 6 - (lw + 10);
-        if (cw < 124) return;
-        double cardX = lw + 10, cardRight = cardX + cw;
-        double rx0 = cardX + 14, right = W - 18, rw = right - rx0;
-        if (rw < 100) return;
-        double cr = pal.SquareCorners ? 3 : 14;
-        dc.DrawRoundedRectangle(RenderKit.Faint(pal.Text, 0.035),
-            RenderKit.PenOf(pal.Hairline, 1), RenderKit.SafeRect(cardX, 0, cw, H - 2), cr, cr);
-
-        // ---- 卡片标题（兼榜标题）：跟随当前排序方式切换文案 ----
-        CardTitle(dc, pal, ppd, TopSort == "mem" ? "占用最高 · 内存" : "占用最高 · CPU",
-            GlyphKind.Grid, cardX, 8, cardRight, pal.Text);
-
-        // ---- 排序分段控件：96×20 圆角 6；选中段 Accent 实心底 + 文字用 Surface 色，未选中段底色 pal.Track ----
-        // 放在标题分隔线下面（Windows 的卡片比 mac 的窄，标题与分段控件挤在一行会叠字）。
-        double segW = ExpandedPanelSpec.SegmentedWidth, segH = ExpandedPanelSpec.SegmentedHeight;
-        double segX = right - segW, segY = 42;
-        _sortToggleRect = RenderKit.SafeRect(segX, segY, segW, segH);
-        double segR = ExpandedPanelSpec.SegmentedCorner;
-        dc.DrawRoundedRectangle(RenderKit.BrushOf(pal.Track), null, _sortToggleRect, segR, segR);
-        if (TopSort == "mem")
-            dc.DrawRoundedRectangle(RenderKit.BrushOf(pal.Accent), null,
-                RenderKit.SafeRect(segX + segW / 2, segY, segW / 2, segH), segR, segR);
-        else
-            dc.DrawRoundedRectangle(RenderKit.BrushOf(pal.Accent), null,
-                RenderKit.SafeRect(segX, segY, segW / 2, segH), segR, segR);
-        string[] segLabels = { "CPU", "内存" };
-        for (int i = 0; i < segLabels.Length; i++)
-        {
-            bool on = TopSort == (i == 0 ? "cpu" : "mem");
-            var t = RenderKit.Text(segLabels[i], ExpandedPanelSpec.RowLabelFont,
-                on ? pal.Surface : pal.TextDim, on, ppd);
-            double tx = segX + i * (segW / 2) + (segW / 2 - t.WidthIncludingTrailingWhitespace) / 2;
-            RenderKit.Baseline(dc, t, tx, segY + segH / 2 + 3.5);
-        }
-
-        double ry = 72;
-        var tops = TopSort == "mem" ? s?.TopProcessesByMem : s?.TopProcesses;
-        if (tops is null || tops.Length == 0)
-        {
-            // 空态区分「未采集」与「暂无高占用应用」（mac 口径）
-            string empty = tops is null ? "未采集（仅监控页读取）" : "暂无高占用应用";
-            RenderKit.Baseline(dc, RenderKit.Text(empty, ExpandedPanelSpec.EmptyListFont, pal.TextTertiary, ppd: ppd), rx0, ry + 12);
-            ry += 24;
-        }
-        else
-        {
-            foreach (var p in tops.Take(ExpandedPanelSpec.ProcessMaxRows))
-            {
-                double bl = ry + 12;
-                // 读数先占位（右对齐），名称吃剩余宽度
-                bool mem = TopSort == "mem";
-                string mainText = mem
-                    ? (p.MemoryMB >= 1024 ? $"{p.MemoryMB / 1024:F1} GB" : $"{p.MemoryMB:F0} MB")
-                    : $"{p.CpuPercent:F1}%";
-                Color mainColor = mem ? pal.Text : RenderKit.LevelColor(p.CpuPercent, pal.Text, pal);
-                double mainW = RenderKit.NumWidth(mainText, ExpandedPanelSpec.ProcessValueFont, true, ppd);
-                RenderKit.Num(dc, mainText, right - mainW, bl, ExpandedPanelSpec.ProcessValueFont, mainColor, true, ppd);
-
-                // 名称用比例字体（mac 口径：名单是中文 + 英文混排，等宽体会显得挤）
-                double nx = rx0 + 22;
-                var name = RenderKit.Trimmed(p.Name, ExpandedPanelSpec.ProcessNameFont, pal.Text,
-                    right - mainW - 12 - nx, false, ppd);
-                RenderKit.Baseline(dc, name, nx, bl);
-
-                // 真实应用图标（15px 原尺寸，放大就糊；取不到画首字母圆）
-                var icon = RenderKit.AppIcon(p.ExePath);
-                if (icon is not null)
-                {
-                    dc.DrawImage(icon, RenderKit.SafeRect(rx0, ry, ExpandedPanelSpec.ProcessIconSize, ExpandedPanelSpec.ProcessIconSize));
-                }
-                else
-                {
-                    double c = ExpandedPanelSpec.ProcessIconSize / 2;
-                    dc.DrawEllipse(RenderKit.Faint(pal.Text, 0.10), null, new Point(rx0 + c, ry + c), c, c);
-                    // 首字母兜底（取不到应用图标时）：mac 用 9px，这里取状态行的 9px 档
-                    var ini = RenderKit.Mono(p.Name.Length > 0 ? char.ToUpper(p.Name[0]).ToString() : "?",
-                        ExpandedPanelSpec.StatusFont, pal.TextDim, true, ppd);
-                    dc.DrawText(ini, new Point(rx0 + c - ini.Width / 2, ry + c - ini.Height / 2));
-                }
-                ry += ExpandedPanelSpec.ProcessRowGap;
-            }
-        }
-        if (s is { ProcessCount: > 0 })
-        {
-            RenderKit.Num(dc, $"{s.ProcessCount} 进程 · {s.ThreadCount} 线程", rx0, ry + 10,
-                ExpandedPanelSpec.RowLabelFont, pal.TextTertiary, false, ppd);
-            RenderKit.Num(dc, Today(s), rx0, ry + 26, ExpandedPanelSpec.RowLabelFont, pal.TextTertiary, false, ppd);
-        }
     }
 }

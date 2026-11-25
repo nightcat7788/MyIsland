@@ -521,7 +521,7 @@ internal static class RenderKit
         using (var ctx = under.Open()) Curve(ctx, pts, true, area.Bottom);
         line.Freeze(); under.Freeze();
         dc.DrawGeometry(Faint(color, 0.16), null, under);
-        dc.DrawGeometry(null, PenOf(color, 1.2, 0.9), line);
+        dc.DrawGeometry(null, PenOf(color, strokeWidth, 0.9), line);
     }
 
     /// <summary>Catmull-Rom 过点转三次贝塞尔；closed 时向底部闭合供填充，且曲线不许越过底边。</summary>
