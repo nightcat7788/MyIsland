@@ -77,8 +77,16 @@ public partial class ExpandedPanel : UserControl
     /// （2026-11-24 视觉重做）。宿主换主题时调用；单独渲染面板的探针也调它，保证和真实程序一致。
     /// 派生色（悬停 / 压下 / 轨道 / 滚动条滑块）都由文字色加不透明度得到，主题只管定义底色、文字和强调色。
     /// </summary>
+    /// <summary>
+    /// 最近一次应用的主题色板（宿主在 IslandWindow.UpdatePanelResources 里按当前主题整体覆盖时写进来）。
+    /// 硬件传感器窗口要跟着当前主题走 ⇒ 从这里取 Palette 对象
+    ///（面板自己的资源字典里只有画笔，取不回 Palette 对象）。
+    /// </summary>
+    public static Island.App.Themes.Palette? CurrentPalette { get; private set; }
+
     public static void ApplyTheme(ResourceDictionary res, Island.App.Themes.Palette pal)
     {
+        CurrentPalette = pal;
         Color T(double alpha) => Color.FromArgb((byte)Math.Round(alpha * 255), pal.Text.R, pal.Text.G, pal.Text.B);
         bool mono = pal.Accent == pal.Text;   // 单色主题（像素）：强调色就是文字色，圆钮不能也用它
         res["CardBg"] = new SolidColorBrush(pal.SurfaceAlt);
@@ -281,6 +289,52 @@ public partial class ExpandedPanel : UserControl
 
     /// <summary>清理进行中标志：避免连点重复扫全系统进程。</summary>
     private bool _cleaning;
+
+    /// <summary>
+    /// 硬件传感器窗口（只读，2026-11-26 task4）。
+    /// 放成**静态**：面板收起时会被释放重建（见 IslandWindow.ReleasePanel），
+    /// 静态引用保证"整个进程只有一个传感器窗口"，不会收一次面板就多开一扇窗。
+    /// </summary>
+    private static HardwareSensorsWindow? _sensorsWindow;
+
+    /// <summary>
+    /// 打开只读的硬件传感器窗口（控制页的入口按钮）。
+    ///
+    /// 数据来源是温度服务**已经枚举出来的结果**（<see cref="Services.ThermalService.Instance"/>），
+    /// 不在这里另起一套 LHM 实例 —— LHM 的 OpCode 与总线互斥体是库里的静态资源，
+    /// 两个 Computer 同时开着会互相拆掉，而且重复实例会重复吃资源。
+    /// </summary>
+    private void OnShowHardwareSensors(object sender, RoutedEventArgs e)
+    {
+        var source = Services.ThermalService.Instance;
+        if (source is null)
+        {
+            sensorEntryHint.Text = "温度服务未就绪";
+            return;
+        }
+        sensorEntryHint.Text = "全部硬件读数";
+
+        // 已经开着就把它拉到前面（不重复开窗）
+        if (_sensorsWindow is not null)
+        {
+            if (_sensorsWindow.IsVisible)
+            {
+                _sensorsWindow.Activate();
+                _sensorsWindow.Topmost = true;
+                return;
+            }
+            _sensorsWindow.Close();
+            _sensorsWindow = null;
+        }
+
+        var win = new HardwareSensorsWindow(CurrentPalette ?? Island.App.Themes.Palette.Dark, source);
+        win.Closed += (_, _) =>
+        {
+            if (ReferenceEquals(_sensorsWindow, win)) _sensorsWindow = null;
+        };
+        _sensorsWindow = win;
+        win.Show();
+    }
 
     /// <summary>控制页打开时刷新电源计划按钮（powercfg 枚举，高亮当前项）。
     /// powercfg 是子进程（实测 27–65ms），放后台线程读，UI 线程只负责画按钮。</summary>

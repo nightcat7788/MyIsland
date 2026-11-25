@@ -12,8 +12,10 @@ namespace Island.App.Services;
 /// - 驱动由程序自己带（2026-11-24）：以管理员运行且 PawnIO 缺失/过旧时，App 在后台调 PawnIoInstaller.EnsureInstalled 装好。
 ///   本类不参与安装，也不等安装；只在采样时发现"驱动到位了"就地重建 Computer（见 Sample 的自愈）
 /// 采样节流：仅当有消费者（展开面板或开启显示）时才每 2s 更新一次。
+/// 硬件详情窗口（2026-11-26 task4）：本类同时是**全部硬件传感器**的枚举源（<see cref="Sensors"/>）——
+/// 只读窗口列的就是这份枚举结果，不另起一套 LHM 实例（重复实例会重复吃资源，还会互相拆掉静态资源）。
 /// </summary>
-public sealed class ThermalService : IDisposable
+public sealed class ThermalService : IDisposable, IHardwareSensorSource
 {
     private Computer? _computer;
     private readonly object _gate = new();
@@ -23,8 +25,52 @@ public sealed class ThermalService : IDisposable
     // 打开 _computer 那一刻温度驱动（PawnIO）在不在。打开时不在、后来装上了 ⇒ 需要重建，见 Sample。
     private bool _openedWithDriver;
 
+    // 全部已枚举到的传感器（不只是挑出来的那几个）：硬件详情窗口要列的就是这份枚举结果。
+    private IReadOnlyList<HardwareSensorEntry> _sensors = Array.Empty<HardwareSensorEntry>();
+
+    // 请求刷新的排队闸：上一次刷新还没做完时不再排新的（窗口每秒请求一次，采样慢时会堆积）。
+    private int _refreshBusy;
+
     public event Action<ThermalSnapshot>? Updated;
     public ThermalSnapshot Current => _last;
+
+    /// <summary>
+    /// 进程内当前存活的实例（Windows 端只有一个岛体窗口 ⇒ 只有一个）。
+    /// 用途：只读的硬件传感器窗口要**复用同一份 LHM 枚举结果**，不能自己再开一个 Computer ——
+    /// LHM 的 OpCode 与总线互斥体是库里的静态资源（见 <see cref="ReopenComputer"/> 的说明），
+    /// 两个 Computer 实例同时开着会互相拆掉。
+    /// </summary>
+    public static ThermalService? Instance { get; private set; }
+
+    /// <summary>是否以管理员身份运行（决定"读不到"显示"需管理员"还是"未知"）。</summary>
+    public bool Elevated { get; }
+
+    /// <summary>最近一次枚举到的全部硬件传感器（顺序 = 枚举顺序）。</summary>
+    public IReadOnlyList<HardwareSensorEntry> Sensors => _sensors;
+
+    /// <summary>枚举结果更新后触发（**在采样线程上**触发；订阅方要自己切回 UI 线程）。</summary>
+    public event Action? SensorsChanged;
+
+    public ThermalService()
+    {
+        Instance = this;
+        Elevated = ComputeElevated();
+    }
+
+    /// <summary>当前进程是否以管理员身份运行（读不出主板 / SuperIO / CPU MSR 时用得上）。</summary>
+    private static bool ComputeElevated()
+    {
+        try
+        {
+            using var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+            var principal = new System.Security.Principal.WindowsPrincipal(identity);
+            return principal.IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     /// <summary>
     /// 温度驱动（PawnIO）是否到位。每次都现读，不缓存：驱动可能在本次运行中被装上。
@@ -192,10 +238,14 @@ public sealed class ThermalService : IDisposable
                 // 诊断文本只在首次构建——此前每 2 秒拼完全部传感器再丢弃，纯浪费
                 bool dump = !_dumped;
                 System.Text.StringBuilder? diag = dump ? new System.Text.StringBuilder() : null;
+                // 本轮枚举到的全部传感器（硬件详情窗口的清单）：跟诊断日志无关，每次采样都收。
+                var sensorEntries = new List<HardwareSensorEntry>();
                 foreach (IHardware hw in _computer!.Hardware)
                 {
                     hw.Update();
                     foreach (IHardware sub in hw.SubHardware) sub.Update();
+                    // **包括读不到的那些**（它们的值是 null）—— 完整清单才是"枚举到了却看不见"的那扇门。
+                    CollectEntries(hw, sensorEntries);
                     diag?.AppendLine($"[{hw.HardwareType}] {hw.Name}");
                     if (dump)
                     {
@@ -272,6 +322,10 @@ public sealed class ThermalService : IDisposable
                         mbTemp ??= HardwareSensorRules.Pick(HardwareSensorKind.MotherboardTemperature, mbTemps)?.Value;
                     }
                 }
+                // 交给窗口的一份不可变快照（外面拿到的是拷贝，不会看到半截状态）。
+                _sensors = sensorEntries.ToArray();
+                SensorsChanged?.Invoke();
+
                 if (dump)
                 {
                     _dumped = true;
@@ -400,6 +454,94 @@ public sealed class ThermalService : IDisposable
     }
 
     /// <summary>
+    /// 把某块硬件（含它的子硬件）的**全部**传感器收进清单。
+    ///
+    /// 与 <see cref="Collect"/> 的分工：那个只收"某种类型 + 读数有效"的候选（给规则类挑代表值用）；
+    /// 这里收**全部**（硬件详情窗口要的是完整清单），读不到的传感器照样在列，只是值为 null。
+    /// </summary>
+    private static void CollectEntries(IHardware hw, List<HardwareSensorEntry> into)
+    {
+        // 主板 / SuperIO 的读数要管理员权限（Ring0 驱动）。
+        bool needsElevation = hw.HardwareType == HardwareType.Motherboard;
+        AddEntries(hw, hw.Name, needsElevation, into);
+        foreach (IHardware sub in hw.SubHardware)
+            AddEntries(sub, sub.Name, needsElevation, into);
+    }
+
+    /// <summary>
+    /// 收一块硬件上的全部传感器（子硬件的硬件名用子硬件自己的名字）。
+    /// </summary>
+    private static void AddEntries(IHardware hw, string hardwareName, bool needsElevation, List<HardwareSensorEntry> into)
+    {
+        foreach (ISensor s in hw.Sensors)
+        {
+            var category = CategoryOf(s.SensorType);
+            // 提权要求：主板 / SuperIO 一律要；CPU 的温度 / 功耗走 MSR，也要。
+            bool elevation = needsElevation
+                || (hw.HardwareType == HardwareType.Cpu
+                    && category is HardwareSensorCategory.Temperature or HardwareSensorCategory.Power);
+            // 读数有效性沿用 <see cref="IsValidReading"/>：温度类的 0 是坏值（读不到），
+            // 风扇 / 功耗的 0 是合法读数（停转 / 空闲）—— 两者不能混。
+            // 占用率的 0% 也是合法读数（空闲），IsValidReading 是给温度挑选用的，这里单独放行。
+            double? value = IsValidReading(s.SensorType, s.Value)
+                ? s.Value
+                : (s.SensorType == SensorType.Load && s.Value is { } load && load >= 0 ? load : null);
+            into.Add(new HardwareSensorEntry(hardwareName, s.Name, category, value, elevation));
+        }
+    }
+
+    /// <summary>
+    /// LibreHardwareMonitor 的传感器类别 → 我们的类别（纯枚举映射）。
+    /// SensorType.Data（字节）不并进 Data（我们那边是 MB，显存口径）—— 宁可归"其它"，不乱配单位。
+    /// </summary>
+    private static HardwareSensorCategory CategoryOf(SensorType type) => type switch
+    {
+        SensorType.Temperature => HardwareSensorCategory.Temperature,
+        SensorType.Power => HardwareSensorCategory.Power,
+        SensorType.Fan => HardwareSensorCategory.Fan,
+        SensorType.Clock => HardwareSensorCategory.Clock,
+        SensorType.SmallData => HardwareSensorCategory.Data,
+        SensorType.Load => HardwareSensorCategory.Load,
+        SensorType.Voltage => HardwareSensorCategory.Voltage,
+        SensorType.Control => HardwareSensorCategory.Control,
+        _ => HardwareSensorCategory.Other,
+    };
+
+    /// <summary>
+    /// 立刻重新枚举一次（后台线程）。
+    ///
+    /// 为什么需要它：服务自己的定时器只在"有人要温度"时才跑（见 <see cref="SetWanted"/>），
+    /// 面板收起时它是停的 —— 硬件详情窗口不能因此读到旧值。
+    /// 复用同一个 Computer（只有 _computer 为 null 才新建），**不另起一套 LHM 实例**。
+    /// </summary>
+    public void RequestRefresh()
+    {
+        // 上一次刷新还没做完就不再排队（窗口每秒请求一次，采样慢时会堆积）。
+        if (Interlocked.Exchange(ref _refreshBusy, 1) == 1) return;
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            try
+            {
+                lock (_gate)
+                {
+                    if (_computer is null)
+                    {
+                        _computer = OpenComputer();
+                        _openedWithDriver = DriverPresent;
+                    }
+                    if (_computer is null) return;
+                    // 驱动是后台装上的 ⇒ 这里也要能自愈重建（与 Sample 同一套判断）
+                    if (PawnIoInstaller.NeedsReopen(_openedWithDriver, DriverPresent)) ReopenComputer();
+                    if (_computer is null) return;
+                    SampleCore();
+                }
+            }
+            catch { /* 单次刷新失败保留上次 */ }
+            finally { Interlocked.Exchange(ref _refreshBusy, 0); }
+        });
+    }
+
+    /// <summary>
     /// 把某块硬件上某种类型的传感器收集成规则类要的候选列表（名字 + 读数）。
     /// 读数有效性沿用 <see cref="IsValidReading"/>：风扇/功耗允许 0（停转/空闲是真实读数），
     /// 其余必须 &gt; 0.01；没有读数与读数为 0 是两回事。
@@ -426,5 +568,7 @@ public sealed class ThermalService : IDisposable
         }
         _smn.Dispose();   // 关闭开关并释放已映射的物理区 / 已加载的 dll
         try { _computer?.Close(); } catch { }
+        // 进程内的实例指针：服务没了就别让窗口拿着它刷新（那时 Computer 已经关掉了）。
+        if (ReferenceEquals(Instance, this)) Instance = null;
     }
 }

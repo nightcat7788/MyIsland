@@ -85,6 +85,15 @@
     <!-- 新测试文件：默认 glob 已包含它，这里显式登记（先移除默认项，避免重复编译项报错） -->
     <Compile Remove="HardwareSensorRulesTests.cs" />
     <Compile Include="HardwareSensorRulesTests.cs" />
+    <!-- 硬件传感器列表的纯逻辑 + 只读面板的视图（2026-11-26 task4）：
+         显示层（单位 / 格式 / 告警级别 / 状态词）与视图都不依赖硬件库 / Win32 ⇒ 可链进零包测试工程。
+         数据契约（HardwareSensorEntry / IHardwareSensorSource）在上面链接的 HardwareSensorRules.cs 里。 -->
+    <Compile Include="..\..\src\Island.App\Controls\HardwareSensorList.cs" Link="Merged\App\HardwareSensorList.cs" />
+    <Compile Include="..\..\src\Island.App\Controls\HardwareSensorsWindow.cs" Link="Merged\App\HardwareSensorsWindow.cs" />
+    <Compile Remove="HardwareSensorListTests.cs" />
+    <Compile Include="HardwareSensorListTests.cs" />
+    <Compile Remove="HardwareSensorsViewTests.cs" />
+    <Compile Include="HardwareSensorsViewTests.cs" />
     <!-- 协议表自检层的新测试文件：同样先移除默认项再显式登记 -->
     <Compile Remove="PeripheralProtocolTableTests.cs" />
     <Compile Include="PeripheralProtocolTableTests.cs" />
