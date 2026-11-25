@@ -176,7 +176,11 @@ internal static class MemoryReclaimTests
         long lastAskAt = -1;
         MemoryReclaim.DefaultDelay = TimeSpan.FromMilliseconds(50);
         MemoryReclaim.RetryDelay = TimeSpan.FromMilliseconds(50);
-        MemoryReclaim.MaxWait = TimeSpan.FromMilliseconds(200);
+        // 上限给足 3 秒：机器满载时计时器会被推迟，首次询问可能落在几百毫秒之后。
+        // 上限只有 200ms 时，首次询问一旦晚于上限就会「问一次就放弃」——那是**环境慢**不是产品缺陷，
+        // 却会让「至少问过两次」这条断言随机变红（2026-11-26 实测：基线 6 次跑挂 1 次，与任何改动无关）。
+        // 上限放宽到 3 秒后重试必然发生；「到上限就丢弃」的行为照样被验证，只是观察窗变长。
+        MemoryReclaim.MaxWait = TimeSpan.FromMilliseconds(3000);
         MemoryReclaim.ReclaimHookForTest = () => Interlocked.Increment(ref count);
         MemoryReclaim.IsIdle = () =>
         {
@@ -186,16 +190,17 @@ internal static class MemoryReclaimTests
         };
 
         MemoryReclaim.Request();
-        // 50ms 到点，上限 = 到点后再等 200ms ⇒ 最迟约 250ms 之后不该再问
+        // 50ms 到点，上限 3000ms ⇒ 到了上限就该停止询问并丢弃这个请求。
         //
-        // 这里用**轮询到静默**而不是固定 sleep：机器负载高时（多个构建并行）定时器会迟到，
-        // 固定 700ms 就断言会把"迟到"误判成"没问够"，门禁随机变红 —— 2026-11-26 实测过一次。
-        // 等到"至少问过两次"且"最后一次询问已过去 400ms"，再观察询问次数是否还在涨。
+        // 用**轮询到静默**而不是固定 sleep：机器负载高时计时器会迟到，固定 700ms 断言会把"迟到"
+        // 误判成"没问够"，门禁随机变红（2026-11-26 实测：基线 6 次跑挂 1 次，与任何改动无关）。
+        // 等到"至少问过两次"且"最后一次询问已过去 400ms"（= 已经过了上限、不再问了），
+        // 再观察询问次数是否还在涨 —— 涨了就说明没到上限就放弃，是缺陷。
         WaitUntil(() => Volatile.Read(ref asked) >= 2
-                       && (sw.ElapsedMilliseconds - Volatile.Read(ref lastAskAt)) >= 400, 5000);
+                       && (sw.ElapsedMilliseconds - Volatile.Read(ref lastAskAt)) >= 400, 15000);
         int askedWhenQuiet = Volatile.Read(ref asked);
         long lastAskWhenQuiet = Volatile.Read(ref lastAskAt);
-        Thread.Sleep(600);
+        Thread.Sleep(800);
         check("MemoryReclaim：到点后界面一直忙，等到上限就停止询问并丢弃请求（始终没有回收）",
             Volatile.Read(ref count) == 0
             && askedWhenQuiet >= 2 && lastAskWhenQuiet >= 200
