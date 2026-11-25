@@ -94,6 +94,11 @@
 
 **动机**：这四轮全部只在一台机器（Intel Core Ultra 5 225H）上验证过。
 
+- [x] F0 **验证矩阵执行器**（`tools\verify-matrix.ps1`）：把「多机型验证」从不可执行的复选框变成一条命令 ——
+      采集本机画像（CPU 厂商/核数、显卡清单、有无电池、主板、内存）+ 跑 lhm-probe / hid-probe e2e，
+      自动判定本机覆盖 F1–F4 的哪几格并附原始输出，落成 Markdown 报告到 `docs\verification\`。
+      ↳ 首份报告：`docs/verification/2026-11-26-Intel-R-Core-TM-Ultra-5-225H.md`（本机：移动平台、无独显 ⇒ F1/F2/F3 均未覆盖，温度因非管理员全部读不到，如实记为「空」）。
+
 - [ ] F1 AMD 平台验证（SMN 直读通道、CCD 温度、Tctl/Tdie 取舍）。
 - [ ] F2 Intel 桌面平台验证（无核显、无电池、主板 SuperIO 温度）。
 - [ ] F3 核显 + 独显组合验证（GPU 选择口径、显存类型）。
