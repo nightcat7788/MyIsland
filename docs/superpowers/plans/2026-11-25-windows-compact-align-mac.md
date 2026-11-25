@@ -1157,8 +1157,11 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: combo 重排为 mac 的四组�
             }, dividerAfter: false);
         }
 
-        // dash 的胶囊左右内边距用 CompactSpec.DashPadX = 14（mac DashPadX），不是 combo 的 PadX = 10
-        return DrawCompactGroups(dc, pal, r, cy, groups, padding: CompactSpec.DashPadX, drawDividers: true);
+        // dash 的胶囊左右内边距用 CompactSpec.DashPadX = 14（mac DashPadX），不是 combo 的 PadX = 10；
+        // 组间距必须用 SeparatorBand(24)：分隔线固定画在「组尾 + 18」，若组间距是默认 16，
+        // 线会落到下一组起点右侧 2px（压字）。mac 的 dash 各组之间也是 Gap()（带 24px 总带 + 线）。
+        return DrawCompactGroups(dc, pal, r, cy, groups,
+            gap: CompactSpec.SeparatorBand, padding: CompactSpec.DashPadX, drawDividers: true);
     }
 ```
 
