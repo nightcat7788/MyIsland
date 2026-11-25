@@ -1,3 +1,5 @@
+using Island.Core.Capabilities;
+
 namespace Island.App.Controls;
 
 /// <summary>
@@ -26,10 +28,13 @@ public static class CompactLayout
     public const double HostWindowWidth = ExpandW + WindowMargin * 2;
 
     /// <summary>
-    /// 全部收起视图（尺寸表覆盖的视图；宠物视图走默认档 —— 它按内容定宽）。
+    /// 全部收起视图 —— **取自能力清单**（<see cref="CapabilityManifest"/>，两端唯一真相源）。
+    /// 顺序也由清单决定：共享部分以 mac 为准（dash / clock / pet / combo），
+    /// Windows 独有的 monitor / devices / clipboard / window 追加在后面。
+    /// 清单改了这里自动跟着改；两端漂移由 tests/Island.Tests/CapabilityManifestTests.cs 断言。
     /// </summary>
     public static readonly string[] Views =
-        { "clock", "dash", "pet", "combo", "monitor", "devices", "clipboard", "window" };
+        CapabilityManifest.CollapsedViewsFor(macOS: false).ToArray();
 
     /// <summary>
     /// 收起态各视图的（设计上限宽, 高）。

@@ -13,6 +13,7 @@ using System.Windows.Shapes;
 using System.Windows.Documents;
 using Island.App.Services;
 using Island.App.Themes;
+using Island.Core.Capabilities;
 
 namespace Island.App.Controls;
 
@@ -84,13 +85,43 @@ public sealed class SettingsWindow : Window
         { ("top", "顶部"), ("bottom", "底部"), ("left", "左侧"), ("right", "右侧") };
     private static readonly (string Id, string Label)[] ExpandModes =
         { ("hover", "悬停展开"), ("always", "常驻展开"), ("never", "长关") };
+    // 收起视图下拉：视图键取自能力清单（两端唯一真相源），中文标签是 Windows 侧的措辞。
     private static readonly (string Id, string Label)[] Views =
-    {
-        ("dash", "仪表盘"), ("clock", "时间+天气"), ("combo", "信息胶囊"), ("monitor", "系统读数"),
-        ("devices", "设备电量"), ("clipboard", "剪贴板"), ("pet", "小形象"), ("window", "活动窗口"),
-    };
+        CapabilityManifest.CollapsedViewsFor(macOS: false)
+            .Select(k => (Id: k, Label: CollapsedViewLabel(k)))
+            .ToArray();
+
+    // 小形象款式：款式键取自能力清单（两端一致），中文标签是 Windows 侧的措辞。
     private static readonly (string Id, string Label)[] PetStyles =
-        { ("alien", "外星人"), ("ghost", "幽灵"), ("frog", "青蛙"), ("classic", "经典双眼"), ("mono", "独眼"), ("cat", "猫咪"), ("robot", "机器人"), ("pixel", "像素") };
+        CapabilityManifest.PetStyles.Select(k => (Id: k, Label: PetStyleLabel(k))).ToArray();
+
+    /// <summary>收起视图的中文标签（清单只给键；清单新增视图而这里还没写标签时，先回落成键本身）。</summary>
+    private static string CollapsedViewLabel(string key) => key switch
+    {
+        "dash" => "仪表盘",
+        "clock" => "时间+天气",
+        "combo" => "信息胶囊",
+        "monitor" => "系统读数",
+        "devices" => "设备电量",
+        "clipboard" => "剪贴板",
+        "pet" => "小形象",
+        "window" => "活动窗口",
+        _ => key,
+    };
+
+    /// <summary>小形象款式的中文标签（清单只给键；标签是 Windows 侧的措辞）。</summary>
+    private static string PetStyleLabel(string key) => key switch
+    {
+        "classic" => "经典双眼",
+        "mono" => "独眼",
+        "cat" => "猫咪",
+        "robot" => "机器人",
+        "pixel" => "像素",
+        "alien" => "外星人",
+        "ghost" => "幽灵",
+        "frog" => "青蛙",
+        _ => key,
+    };
     private static readonly string[] Cities =
         { "北京", "上海", "广州", "深圳", "杭州", "成都", "重庆", "西安", "武汉", "南京", "苏州", "厦门", "长沙", "青岛" };
 

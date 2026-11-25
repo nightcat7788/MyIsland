@@ -16,6 +16,7 @@ using System.Windows.Media;
 using System.Windows.Media.Effects;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
+using Island.Core.Capabilities;
 
 namespace Island.App.Controls;
 
@@ -43,9 +44,16 @@ public sealed class InverseBoolToVis : IValueConverter
 /// </summary>
 public partial class ExpandedPanel : UserControl
 {
-    /// <summary>页签索引（与 ExpandedPanel.xaml 里页签按钮的 Tag 一致）：
-    /// 0=监控 1=剪贴板·文件 2=设备电量 3=控制。页签增删后这里要同步。</summary>
-    private const int ControlPageIndex = 3;
+    /// <summary>
+    /// 展开页签的键顺序 —— **取自能力清单**（两端唯一真相源）：
+    /// Windows 侧 = monitor / clips / devices / control（共享页签在前、平台专属页签在后）。
+    /// 键 → XAML 控件的对应关系在下面按键写死（控件名是 XAML 的 x:Name，清单给不出），
+    /// 但**顺序与页签索引都由清单决定** ⇒ 清单改顺序时不必再手改索引常量。
+    /// </summary>
+    private static readonly string[] TabKeys = CapabilityManifest.ExpandedTabsFor(macOS: false).ToArray();
+
+    /// <summary>控制页的页签索引（由清单顺序推出，页签增删后不用手改）。</summary>
+    private static readonly int ControlPageIndex = Array.IndexOf(TabKeys, "control");
 
     private Button[] _pageBtns = null!;
     private UIElement[] _pages = null!;
@@ -138,11 +146,18 @@ public partial class ExpandedPanel : UserControl
     public ExpandedPanel()
     {
         InitializeComponent();
-        _pageBtns = new[] { btnMonitor, btnShelf, btnDevices, btnControl };
-        _pages = new UIElement[] { monitorPage, pageShelf, pageDevices, pageControl };
-        _tabFills = new[] { tabFillMonitor, tabFillShelf, tabFillDevices, tabFillControl };
-        _tabIcons = new[] { tabIconMonitor, tabIconShelf, tabIconDevices, tabIconControl };
-        _tabTexts = new[] { tabTextMonitor, tabTextShelf, tabTextDevices, tabTextControl };
+        // 页签零件按**清单顺序**装配（键 → 控件的映射见下面的能力清单页签区）。
+        var parts = TabKeys.Select(TabPartsOf).ToArray();
+        _pageBtns = parts.Select(p => p.Btn).ToArray();
+        _pages = parts.Select(p => p.Page).ToArray();
+        _tabFills = parts.Select(p => p.Fill).ToArray();
+        _tabIcons = parts.Select(p => p.Icon).ToArray();
+        _tabTexts = parts.Select(p => p.Text).ToArray();
+        // 页签 Tag = 页索引，也按清单顺序回写：XAML 里写死的 Tag 只是初值，
+        // 运行时以清单为准 ⇒ 清单改了顺序，索引不会错位。
+        for (int i = 0; i < _pageBtns.Length; i++) _pageBtns[i].Tag = i;
+        // 页签的**视觉顺序**也跟着清单走（XAML 里写的顺序只是初值）。
+        ReorderTabBar();
         ApplySpecGeometry();
         ApplyClipGeometry();
         UpdateClipTabVisuals();
@@ -159,6 +174,41 @@ public partial class ExpandedPanel : UserControl
         _clock.Start();
         TickClock();
     }
+
+    // ===== 能力清单页签区：开始 =====
+    /// <summary>一个页签的五样零件：按钮 / 页面 / 激活底 / 图标 / 文字。</summary>
+    private readonly record struct TabParts(Button Btn, UIElement Page, Border Fill, GlyphIcon Icon, TextBlock Text);
+
+    /// <summary>
+    /// 页签键 → XAML 控件的映射。**键来自能力清单**，控件名是 XAML 里的 x:Name（清单给不出）。
+    /// 新增一个页签要改三处：能力清单加一条 + 这里加一个分支 + XAML 里加按钮；
+    /// 少改任何一处，tests/Island.Tests/CapabilityManifestTests.cs 的漂移检查都会红。
+    /// </summary>
+    private TabParts TabPartsOf(string key) => key switch
+    {
+        "monitor" => new TabParts(btnMonitor, monitorPage, tabFillMonitor, tabIconMonitor, tabTextMonitor),
+        "clips" => new TabParts(btnShelf, pageShelf, tabFillShelf, tabIconShelf, tabTextShelf),
+        "devices" => new TabParts(btnDevices, pageDevices, tabFillDevices, tabIconDevices, tabTextDevices),
+        "control" => new TabParts(btnControl, pageControl, tabFillControl, tabIconControl, tabTextControl),
+        _ => throw new InvalidOperationException($"能力清单里的页签「{key}」在展开面板没有对应控件"),
+    };
+
+    /// <summary>
+    /// 把页签条里的宿主 Grid 按**清单顺序**重排（XAML 里写死的顺序只是初值）。
+    /// 每个页签的激活底与按钮同属一个宿主 Grid ⇒ 移动 Grid 就等于移动整个页签。
+    /// </summary>
+    private void ReorderTabBar()
+    {
+        for (int i = 0; i < _tabFills.Length; i++)
+        {
+            if (_tabFills[i].Parent is not Grid host) continue;
+            int at = tabBar.Children.IndexOf(host);
+            if (at == i) continue;
+            tabBar.Children.Remove(host);
+            tabBar.Children.Insert(i, host);
+        }
+    }
+    // ===== 能力清单页签区：结束 =====
 
     private void TickClock() => clockText.Text = DateTime.Now.ToString("HH:mm");
 
@@ -457,8 +507,8 @@ public partial class ExpandedPanel : UserControl
     // 自绘 3px 覆盖式滚动条）与 DrawClipMenu（自绘右键浮层）。
     // XAML 里读不到 const，页面几何以这里的常量为唯一事实来源（ApplyClipGeometry 落到控件上）。
 
-    /// <summary>剪贴板页的页签索引（与顶栏页签的 Tag 一致）。</summary>
-    private const int ClipPageIndex = 1;
+    /// <summary>剪贴板页的页签索引（与顶栏页签的 Tag 一致；由清单顺序推出）。</summary>
+    private static readonly int ClipPageIndex = Array.IndexOf(TabKeys, "clips");
 
     /// <summary>列表行高（mac：rowH = 30）。</summary>
     private const double ClipRowHeight = 30;

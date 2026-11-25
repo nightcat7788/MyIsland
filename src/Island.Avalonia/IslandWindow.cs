@@ -6,6 +6,7 @@ using Avalonia.Platform;
 using Avalonia.Threading;
 using Island.App.Animation;
 using Island.App.Themes;
+using Island.Core.Capabilities;
 using Island.Core.Monitoring;
 
 namespace Island.Avalonia;
@@ -571,8 +572,9 @@ public sealed class IslandWindow : Window
             // 必须在 LoadAndApplySettings()（里面会按展开方式 SetExpanded(true)）**之前**恢复：
             // 顺序反了的话，面板先按默认的 monitor 页展开，Page 后改不会触发内容切换
             // —— 表现为「设置了常驻展开+剪贴板页，启动后却是监控页」。
-            if (st.LastPage is "monitor" or "clips" or "screens" or "devices") _canvas.Page = st.LastPage;
-            if (cv is "dash" or "combo" or "clock" or "pet") SetView(cv);
+            // 恢复的页/视图必须在**本平台可用**的清单项里（清单是唯一真相源）。
+            if (CapabilityManifest.ExpandedTabsFor(macOS: true).Contains(st.LastPage)) _canvas.Page = st.LastPage;
+            if (CapabilityManifest.CollapsedViewsFor(macOS: true).Contains(cv)) SetView(cv);
         }
         catch { /* 读不到用默认 */ }
 
@@ -1095,7 +1097,12 @@ public sealed class IslandWindow : Window
         _canvas.MarkDirty();
     }
 
-    private static readonly string[] Views = { "dash", "clock", "pet", "combo" };
+    /// <summary>
+    /// 收起视图集合 —— **取自能力清单**（两端唯一真相源）。
+    /// mac 侧只有共享的那几个（dash / clock / pet / combo）；Windows 独有的四个 mac 没有。
+    /// 清单改了这里自动跟着改；漂移由 tests/Island.Tests/CapabilityManifestTests.cs 断言。
+    /// </summary>
+    private static readonly string[] Views = CapabilityManifest.CollapsedViewsFor(macOS: true).ToArray();
 
     private void OnWheel(object? sender, PointerWheelEventArgs e)
     {

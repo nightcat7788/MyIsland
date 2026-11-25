@@ -38,6 +38,8 @@
     <Compile Include="..\Island.Core\Monitoring\MonitorModels.cs" Link="Merged\MonitorModels.cs" />
     <Compile Include="..\Island.Core\Monitoring\Reading.cs" Link="Merged\Reading.cs" />
     <Compile Include="..\Island.Core\Monitoring\SamplerDemand.cs" Link="Merged\SamplerDemand.cs" />
+    <!-- 能力清单（两端唯一真相源）：直接链源文件，两端拿同一份实现 -->
+    <Compile Include="..\Island.Core\Capabilities\*.cs" Link="Merged\Core\Capabilities\%(Filename)%(Extension)" />
     <Compile Include="..\Island.Native\SystemMonitor.cs" Link="Merged\SystemMonitor.cs" />
     <!-- 采样层通配符 PDH 查询器（SystemMonitor/GpuUsageReader 依赖它，必须一起链进来，
          否则跨平台工程编译不过：CS0246 找不到 PdhWildcardQuery） -->

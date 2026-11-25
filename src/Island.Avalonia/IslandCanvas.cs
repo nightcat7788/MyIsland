@@ -4,6 +4,7 @@ using Avalonia.Media;
 using Avalonia.Media.Immutable;
 using Island.App.Animation;
 using Island.App.Themes;
+using Island.Core.Capabilities;
 using Island.Core.Monitoring;
 
 namespace Island.Avalonia;
@@ -728,10 +729,28 @@ public sealed class IslandCanvas : Control
             dc.DrawText(t, new Point(tabX + iconW + 5, tabY));
             tabX += rect.Width + 6;
         }
-        Tab("监控", "monitor", Glyph.Spark, ref _tabMonitor);
-        Tab("剪贴板", "clips", Glyph.ClipBox, ref _tabClips);
-        if (OperatingSystem.IsMacOS()) Tab("屏幕", "screens", Glyph.SunLine, ref _tabScreens);
-        if (OperatingSystem.IsMacOS()) Tab("设备", "devices", Glyph.Battery, ref _tabDevices);
+        // 展开页签：**取自能力清单**（两端唯一真相源）。
+        // 清单顺序 = 共享页签在前、平台专属页签在后（总纲 §1 的统一呈现规则），
+        // 所以 mac 侧是 监控 / 剪贴板 / 设备 / 屏幕（"屏幕"从"设备"前面挪到最后）。
+        // 清单决定"有哪些页签、什么顺序、叫什么"；IsMacOS() 只决定"本机能不能真的服务这个页签"
+        // （设备页要 IOKit 探针、屏幕页要 DDC 工具链，dev 机跑 mac 工程时都没有）。
+        // ===== 能力清单页签区：开始 =====
+        foreach (string key in CapabilityManifest.ExpandedTabsFor(macOS: true))
+        {
+            string title = CapabilityManifest.ExpandedTabs.First(e => e.Key == key).Title;
+            switch (key)
+            {
+                case "monitor": Tab(title, "monitor", Glyph.Spark, ref _tabMonitor); break;
+                case "clips": Tab(title, "clips", Glyph.ClipBox, ref _tabClips); break;
+                case "devices":
+                    if (OperatingSystem.IsMacOS()) Tab(title, "devices", Glyph.Battery, ref _tabDevices);
+                    break;
+                case "screens":
+                    if (OperatingSystem.IsMacOS()) Tab(title, "screens", Glyph.SunLine, ref _tabScreens);
+                    break;
+            }
+        }
+        // ===== 能力清单页签区：结束 =====
 
         // 顶栏右侧：当前时间（参考图 18:10 的位置）
         var clockText = RenderKit.Text(DateTime.Now.ToString("HH:mm"), 12, pal.TextDim);
