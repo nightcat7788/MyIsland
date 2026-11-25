@@ -70,6 +70,8 @@
     <Compile Include="..\..\src\Island.App\Services\Peripheral\StandardHidBattery.cs" Link="Merged\Peripheral\StandardHidBattery.cs" />
     <Compile Include="..\..\src\Island.App\Services\Peripheral\PeripheralClassifier.cs" Link="Merged\Peripheral\PeripheralClassifier.cs" />
     <Compile Include="..\..\src\Island.App\Services\Peripheral\HidModels.cs" Link="Merged\Peripheral\HidModels.cs" />
+    <!-- CPU 温度取值规则（2026-11-26）：纯函数，无硬件库依赖，可链进测试工程 -->
+    <Compile Include="..\..\src\Island.App\Services\CpuTemperatureRule.cs" Link="Merged\App\CpuTemperatureRule.cs" />
     <!-- PDH 通配符读取器（GPU Engine 分组聚合）：纯 P/Invoke，无 NuGet 依赖，可链进测试工程 -->
     <Compile Include="..\..\src\Island.Native\PdhWildcardQuery.cs" Link="Merged\PdhWildcardQuery.cs" />
   </ItemGroup>

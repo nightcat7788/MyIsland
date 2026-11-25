@@ -178,9 +178,11 @@ public sealed class ThermalService : IDisposable
     {
         try
         {
-            double? cpuTemp = null, gpuTemp = null, mbTemp = null, cpuPower = null,
+                        double? cpuTemp = null, gpuTemp = null, mbTemp = null, cpuPower = null,
                     gpuFan = null, cpuFan = null, gpuPower = null, ssdTemp = null,
                     gpuMemUsed = null, gpuMemTotal = null, gpuClock = null;
+            // CPU 温度是从哪个传感器、按什么口径选出来的（诊断日志用）
+            string? cpuTempSource = null;
 
             // SMN 直读绝不在常规传感器读取前探测：这条通道会加载未签名内核驱动并映射物理内存，
             // 只有 LHM 已经读不到 CPU 温度、且用户明确开启时，才允许进入下面的 fallback。
@@ -261,6 +263,7 @@ public sealed class ThermalService : IDisposable
                 if (dump)
                 {
                     _dumped = true;
+                    diag?.AppendLine($"CPU 温度来源：{cpuTempSource ?? "未选到"}");
                     string smnNote = AllowSmnDirectRead
                         ? $"SMN-inpoutx64: {_smuProbeResult ?? "not needed (LHM/WMI provided temperature or fallback not reached)"}"
                         : "SMN-inpoutx64: disabled (EnableSmnDirectRead=off)";

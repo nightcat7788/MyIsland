@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>lhm-probe</AssemblyName>
+    <RootNamespace>Island.Tools.LhmProbe</RootNamespace>
+    <!-- CPU 温度侦察工具（开发期专用，不属于 Island.sln：与 tools/hid-probe 同例） -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 与主工程同一个版本的硬件库，保证看到的传感器名与产品里一致 -->
+    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.6" />
+  </ItemGroup>
+
+  <!-- 直接链接主工程的取值规则，保证工具与产品用的是同一套判定 -->
+  <ItemGroup>
+    <Compile Include="..\..\src\Island.App\Services\CpuTemperatureRule.cs" Link="Merged\CpuTemperatureRule.cs" />
+  </ItemGroup>
+
+</Project>
