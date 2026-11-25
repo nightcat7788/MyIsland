@@ -41,21 +41,27 @@
 
 ## 阶段 B：发布链闭环
 
-**动机**：`installer/dist/` 只有 1.0.1 的旧安装包（当前 1.1.2），本机没装 Inno Setup ⇒ 正式安装包没出。
+**动机**：`installer/dist/` 只有 1.0.1 的旧安装包（当前 1.1.2），正式安装包没更新。
 
-- [ ] B1 在装了 Inno Setup 的机器上跑 `iscc installer\MyIsland.iss` 出 1.1.2 安装包。
-      ↳ **本机无 Inno Setup（ISCC.exe 不存在）**；但 `signtool.exe` **存在**（Windows SDK 10.0.26100.0）。
-      ↳ `release.ps1` 原有实现第 0 步就无条件 `throw` 找不到 ISCC ⇒ 没有 Inno Setup 时连 publish/签名/便携 zip/校验清单都跑不了。
-      ↳ 收口动作：给 `release.ps1` 加 `-SkipInstaller` 降级通道（**进行中**，见下方收口批次）。
+- [x] B1 跑 `iscc installer\MyIsland.iss` 出 1.1.2 安装包。
+      ↳ **本机其实装了 Inno Setup 7**：%LOCALAPPDATA%\Programs\Inno Setup 7\ISCC.exe（可正常运行）；
+        `signtool.exe` 也在（Windows SDK 10.0.26100.0）。
+      ↳ ⚠️ 更正：早前「本机没装 Inno Setup ⇒ 发布链在本机做不了」是**误判**（只查了 C:\Program Files (x86) 与 PATH，
+        漏了 LOCALAPPDATA）。据此派生的「发布链是硬件阻塞」的结论同样作废。
+      ↳ `release.ps1` 的两个**真实**缺陷（已修，`ae86838`）：
+        ① 第 0 步无条件 `throw` 找不到 ISCC ⇒ 没有 Inno Setup 时连 publish/签名/便携 zip/校验清单都跑不了；
+        ② dotnet 路径写死（系统 dotnet 无 SDK，本机也无 USERPROFILE\dotnet-sdk）⇒ 找不到 SDK。
+        现在加了 `-SkipInstaller` 降级通道、`-Dotnet` / `-Iscc` 显式指定。
 - [x] B2 签名：`sign.ps1` 已有可插拔证书来源（PFX / 证书库 thumbprint / 默认自签 CN=MyIsland），
       签名 + RFC3161 时间戳 + 门禁**已端到端跑通并有实物证据**：
       `dist/MyIsland-Setup-1.0.6.exe` 与 `dist/Island.App.exe` 的 `Get-AuthenticodeSignature` = **Valid**（签名者 `CN=MyIsland`），
       `signtool verify /pa /v` 输出含 `The signature is timestamped`，`dist/SHA256SUMS.txt` 哈希与重算**逐位一致**。
       ↳ 遗留事实：默认证书是**自签**，对用户端 SmartScreen 无信誉价值；换公有 CA 证书只需改 `-CertPfx` / `-CertThumbprint`。
-      ↳ 遗留事实：`publish/win-dist/MyIsland-1.1.2.exe`（当前版本）**未签名**（`Status=NotSigned`）。
-- [ ] B3 `release.ps1` 端到端跑一次，确认安装包 / 便携 zip / SHA256SUMS 三样产物齐。
-      ↳ 1.0.6 已在有 Inno Setup 的环境下跑通过（产物在 `dist/`）；**1.1.2 尚未重跑**。
-      ↳ 收口动作：先跑「无安装包」通道产出 1.1.2 的已签名便携包 + 校验清单，安装包待有 Inno Setup 的环境补齐。**进行中**。
+      ↳ 遗留事实：`publish/win-dist/MyIsland-1.1.2.exe`（旧手工产物）**未签名**（`Status=NotSigned`）；
+        新流水线产出的 `dist/MyIsland-Setup-1.1.2.exe` 与包内 `Island.App.exe` 均已签名 Valid。
+- [x] B3 `release.ps1` 端到端跑一次，确认安装包 / 便携 zip / SHA256SUMS 三样产物齐。
+      ↳ 1.0.6 已在有 Inno Setup 的环境下跑通过（产物在 `dist/`）。
+      ↳ **1.1.2 也已跑通**（2026-11-26 04:58，`release.ps1`）：三样产物齐 ——`MyIsland-Setup-1.1.2.exe`（64,667,072 B，签名 **Valid**、CN=MyIsland、RFC3161 时间戳）、`MyIsland-1.1.2-portable.zip`（87,921,564 B）、`SHA256SUMS.txt`（三行哈希与重算逐位一致）。
 - [ ] B4 **SmartScreen 误报**：单文件自包含 exe 未签名时会被拦，需实测并写进 README。
 
 ---
@@ -117,7 +123,7 @@
 |---|---|---|
 | Task 1 | 离屏渲染视觉回归探针（`tools/visual-probe`）+ 渲染不变量断言进 `Island.Tests` | 进行中 |
 | Task 2 | 协议表自检：共享层校验逻辑 + `hid-probe --selftest` 真机命中报告 | 进行中 |
-| Task 8 | `release.ps1` 加 `-SkipInstaller` 降级 + dotnet 可配置发现 → 无 Inno Setup 也能出签名便携包 | 进行中 |
+| Task 8 | `release.ps1` 加 `-SkipInstaller` 降级 + dotnet/ISCC 路径可发现 | **完成**（`ae86838`） |
 
 **本批次的门禁**（与通用门禁相同）：build 0 警告 0 错误、Island.Tests 全过、UTF-8 无 BOM + LF、
 读不到的量一律「未知」（禁止 0 / 默认值 / 换算百分比充数）。
