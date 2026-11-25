@@ -89,6 +89,7 @@
 4. **主题 token 不同源**：12 个同名 token 在每套主题下取值都不同
    （Windows「暗色科技：近黑底 + 单一强调色」vs macOS「Apple 系统色：中性色阶 + 个性色」）；
    `Island` 主题还是「Windows 单一深色 vs macOS 日夜自动切换」。
+   **语义口径见第 8 节**（同名 = 同一语义角色，取值按设计不同）。
 5. **渲染层与小形象是两份独立实现**：
    渲染层 Windows `src/Island.App/Controls/RenderKit.cs`（38 KB）vs macOS `src/Island.Avalonia/RenderKit.cs`（18 KB）；
    小形象同理（`PetFace.cs` vs `PetFaceAv.cs`），mac 工程没有 link Windows 的实现。
@@ -112,3 +113,53 @@
   2×2 栅格放不下，收起态仍有 —— 恢复则要另找版位或改栅格。
 - **收起视图集怎么收口**：Windows 独有的 4 个视图（高密度读数带 / 设备电量行 / 剪贴板提示行 / 活动窗口）
   是收掉、是给 mac 补上、还是接受差异公开 —— 现在是「差异公开」的状态。
+
+---
+
+## 8. 主题 token 语义口径（统一语义名，公开取值差异）
+
+**真相源**：`src/Island.Core/Capabilities/ThemeTokenManifest.cs`　**门禁**：`tests/Island.Tests/ThemeTokenTests.cs`
+
+两端各有一份 Palette（Windows `src/Island.App/Themes/Theme.cs`、macOS `src/Island.Avalonia/Themes.cs`），
+其中 **12 个颜色 token 两端同名**，但**每套主题下取值都不同**。本项目的口径是：
+
+- **统一的是「语义名」，不是「具体色值」** —— 同一个 token 名在两端指的是**同一个语义角色**
+  （两端 `Accent` 都是「唯一强调色」，两端 `Down` 都是「跌=绿」）。
+- **取值按设计不同，是有意保留的差异，不是缺陷、不是待办** —— Windows 端保留「暗色科技：近黑中性底 +
+  单一强调色 + 一屏一主角」的配色身份，macOS 端保留「Apple 系统色：中性色阶 + 一个个性强调色」的材质分层。
+  强行统一色值 = 把一端的配色体系搬进另一端 = 违背已定的产品决策，**本轮明确不做**。
+
+### 8.1 两端共享的 12 个 token
+
+| 语义键 | 语义说明 | Windows 属性 | mac 属性 | 两端取值是否相同 |
+|---|---|---|---|---|
+| `surface` | 窗口底色（最底层）：所有元素画在它之上 | `Surface` | `Surface` | 否（按设计不同：近黑暗色科技底 vs Apple 冷中性底） |
+| `surface-alt` | 次级容器底色：卡片 / 分组内小块 | `SurfaceAlt` | `SurfaceAlt` | 否（按设计不同；层级角色也不对称：Windows 端当卡片底用，mac 端让给 `elevated`） |
+| `text-primary` | 主文字色：标题与关键读数 | `Text` | `Text` | 否（按设计不同） |
+| `text-secondary` | 次级文字色：说明文案与单位 | `TextDim` | `TextDim` | 否（按设计不同） |
+| `text-tertiary` | 三级文字色：弱化提示（10px 说明文字也要读得清） | `TextTertiary` | `TextTertiary` | 否（按设计不同） |
+| `accent` | 唯一强调色：选中态、焦点、关键数据发光点 | `Accent` | `Accent` | 否（按设计不同：薄荷青/柠檬黄等 vs 系统蓝） |
+| `rim` | 描边色：卡片 / 容器的轮廓 | `Rim` | `Rim` | 否（按设计不同） |
+| `track` | 轨道色：进度条与表盘的未填充部分 | `Track` | `Track` | 否（按设计不同：Windows 端半透明白，mac 端实色中性阶） |
+| `hairline` | 发丝线：分组之间、卡片内部的 1px 分隔线 | `Hairline` | `Hairline` | 否（按设计不同） |
+| `warning` | 告警色：读数偏高 / 需要注意（非致命） | `Warning` | `Warning` | 否（按设计不同） |
+| `up` | 上升色：涨=红（中国股市习惯），并兼作危险级别状态色 | `Up` | `Up` | 否（按设计不同；**语义两端一致：都是涨=红**） |
+| `down` | 下降色：跌=绿 | `Down` | `Down` | 否（按设计不同；**语义两端一致：都是跌=绿**） |
+
+### 8.2 平台专属 token
+
+| 语义键 | 语义说明 | Windows 属性 | mac 属性 | 说明 |
+|---|---|---|---|---|
+| `elevated` | 抬升层底色：卡片 / 浮起层 | — | `Elevated` | 仅 macOS 有：Windows 端无抬升层 token，卡片底由 `surface-alt` 承担 |
+| `fill` | 控件内嵌填充：进度槽、输入框底 | — | `Fill` | 仅 macOS 有 |
+| `selection` | 选中态的柔和底色：页签胶囊等 | — | `Selection` | 仅 macOS 有：Windows 端选中态直接用 `accent` 表达 |
+| `square-corners` | 直角开关：像素主题用 3px 微圆角的直角形态 | `SquareCorners` | — | 仅 Windows 有，且**不是颜色**（是 bool）；mac 端圆角固定 |
+
+### 8.3 门禁怎么守
+
+`ThemeTokenTests` 断言：清单键唯一且每个 token 都有语义说明；两端 Palette 源码里**声明了的每个颜色/开关 token
+都已登记进清单**，且**清单登记的每个属性在源码里真的存在**
+⇒ **新增或删除一个 token 而不登记 ⇒ 门禁红**（与 `CapabilityManifestTests` 同一范式）。
+
+---
+
