@@ -6,6 +6,61 @@ using System.Text.Json.Serialization;
 namespace Island.App.Services.Peripheral;
 
 /// <summary>
+/// 一条表项的**验证状态** —— 这条协议到底有没有在真机上验过。
+///
+/// 为什么要有这个字段：协议表是纯数据，谁都能往里加一条。加错一条的后果是
+/// 向用户输出一个**假读数**（本项目最硬的红线：不伪装）。所以每条表项都必须
+/// 自报家门 —— 验过的写"已实机验证"并留下证据（设备 / 日期 / 说明），
+/// 没验过的老实写"未验证"，绝不能冒充已支持。
+/// </summary>
+public enum PeripheralVerification
+{
+    /// <summary>未验证：没有在真机上回包确认过（**内置表不允许**出现这种条目）。</summary>
+    Unverified = 0,
+
+    /// <summary>已实机验证：真机回过包、读数对得上（内置表只收这种条目）。</summary>
+    Verified = 1,
+}
+
+/// <summary>
+/// 验证状态的 JSON 转换：字符串名（**大小写不敏感**，也认中文"已实机验证" / "未验证"）或整数都认。
+/// 未知取值直接抛异常（带出写错的值）—— 用户手填的表里一个错值不该被静默当成
+/// "未验证"，那会让一条没验证过的表项悄悄混进用户表。
+/// </summary>
+public sealed class PeripheralVerificationConverter : JsonConverter<PeripheralVerification>
+{
+    public override PeripheralVerification Read(ref Utf8JsonReader reader, Type typeToConvert,
+        JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.Number)
+        {
+            int raw = reader.GetInt32();
+            if (raw == 0) return PeripheralVerification.Unverified;
+            if (raw == 1) return PeripheralVerification.Verified;
+            throw new JsonException("未知的验证状态数值：" + raw);
+        }
+        string? text = reader.GetString();
+        if (!string.IsNullOrEmpty(text))
+        {
+            string t = text.Trim();
+            if (t.Equals("verified", StringComparison.OrdinalIgnoreCase)
+                || t == "已实机验证" || t == "已验证" || t == "实机验证")
+                return PeripheralVerification.Verified;
+            if (t.Equals("unverified", StringComparison.OrdinalIgnoreCase)
+                || t == "未验证" || t == "未实机验证")
+                return PeripheralVerification.Unverified;
+            throw new JsonException("未知的验证状态：" + text);
+        }
+        throw new JsonException("验证状态不能为空（写 \"verified\" 或 \"unverified\"）");
+    }
+
+    public override void Write(Utf8JsonWriter writer, PeripheralVerification value, JsonSerializerOptions options)
+    {
+        writer.WriteStringValue(value == PeripheralVerification.Verified ? "verified" : "unverified");
+    }
+}
+
+/// <summary>
 /// 一家厂商/型号的私有电量协议描述 —— **纯数据**，不写任何设备操作。
 ///
 /// 新增一个品牌 = 往表里加一条记录，不写新的 Provider、不改 UI。
@@ -14,6 +69,8 @@ namespace Island.App.Services.Peripheral;
 ///  · ValueOffset     电量字段在回包里的偏移（相对回包首字节，**首字节是报告 ID**）。
 ///  · ValueMask/Range 取值后落在 [ValueMin, ValueMax] 才算有效（范围校验）。
 ///  · ChargingOffset  充电位所在偏移；只认明确的 0/1，其它值当"未知"（按未充电显示）。
+///  · Verification    这条协议**有没有在真机上验过**（见 <see cref="PeripheralVerification"/>）。
+///    没验过的条目不得进内置表（内置表只装载已实机验证的条目）—— 绝不能输出没验证过的读数。
 /// </summary>
 public sealed record PeripheralProtocol
 {
@@ -92,6 +149,43 @@ public sealed record PeripheralProtocol
 
     /// <summary>电压换算系数（原始值 × 系数 = 毫伏）。</summary>
     public int MilliVoltsScale { get; init; } = 1;
+
+    // ==================== 验证状态（2026-11-26 task6 新增）====================
+    // 表是纯数据，谁都能加一条。加错一条 = 向用户输出假读数。
+    // 所以每条表项都必须自报家门：验过没验过、什么时候在哪台设备上验的。
+
+    /// <summary>
+    /// 验证状态：这条协议**有没有在真机上验过**（见 <see cref="PeripheralVerification"/>）。
+    /// 默认"未验证" —— 没验过就必须这么写，绝不能默认成"已验证"。
+    /// 内置表只装载"已实机验证"的条目（见 <see cref="PeripheralProtocols.IsBuiltInEligible"/>）。
+    /// </summary>
+    public PeripheralVerification Verification { get; init; } = PeripheralVerification.Unverified;
+
+    /// <summary>验证证据：什么时候、在哪台设备上、回包读到什么（写给后来人看）。</summary>
+    public string VerificationNote { get; init; } = "";
+
+    /// <summary>验证日期（YYYY-MM-DD）；空 = 没记。</summary>
+    public string VerifiedOn { get; init; } = "";
+
+    /// <summary>验证时用的设备型号（在哪台机器上验的）。</summary>
+    public string VerifiedDevice { get; init; } = "";
+
+    // ==================== 表达能力扩展（2026-11-26 task6 新增）====================
+    // 原来表达不了的两种常见协议写法，现在能表达了（详见 docs/peripheral-protocols.md）。
+
+    /// <summary>
+    /// 回显字节必须出现在回包的**这个偏移**（-1 = 不限位置）。
+    /// 有些协议（罗技 HID++ 这类）回包里在固定位置回显特征号 / 功能号；
+    /// 不限定位置的话，回包里别处碰巧出现同样的字节会被当成回显 ⇒ 认错回包。
+    /// </summary>
+    public int EchoOffset { get; init; } = -1;
+
+    /// <summary>
+    /// 充电位在 <see cref="ChargingOffset"/> 那一字节里的**位号**（0..7；-1 = 走 chargingMask 老路）。
+    /// 充电位常常不是字节最低位（HID++ 的统一电池状态里充电标志在第 4 位），
+    /// 没有这个字段就表达不出来（chargingMask 只认 0x01 那一位）。
+    /// </summary>
+    public int ChargingBitOffset { get; init; } = -1;
 }
 
 /// <summary>
@@ -101,13 +195,34 @@ public sealed record PeripheralProtocol
 public static class PeripheralProtocols
 {
     private static readonly List<PeripheralProtocol> Builtin = new();
+    private static readonly List<PeripheralProtocol> DeclaredBuiltin = new();
     private static readonly List<PeripheralProtocol> User = new();
     private static readonly object Gate = new();
 
     static PeripheralProtocols()
     {
-        Builtin.AddRange(BuiltinEntries());
+        foreach (PeripheralProtocol entry in BuiltinEntries())
+        {
+            DeclaredBuiltin.Add(entry);
+            // 内置表**只装载已实机验证的条目**：没验过的协议即便字段都写对了，
+            // 偏移也可能只是猜的 ⇒ 假读数（违反"不伪装"）。
+            // 这里**不装载**（设备回落到 L4 兜底、显示"未知"），而不是"照用再说"。
+            if (IsBuiltInEligible(entry)) Builtin.Add(entry);
+        }
     }
+
+    /// <summary>内置表**声明**的全部条目（含没通过装载资格的）—— 自检与门禁看这个。</summary>
+    public static IReadOnlyList<PeripheralProtocol> DeclaredBuiltinTable => DeclaredBuiltin;
+
+    /// <summary>内置表**实际装载**的条目（只含已实机验证的）。</summary>
+    public static IReadOnlyList<PeripheralProtocol> BuiltinTable => Builtin;
+
+    /// <summary>
+    /// 一条内置表项能不能装载：**必须已实机验证**。
+    /// 没验证过的协议即便字段都写对了，电量偏移也可能只是猜的 ⇒ 假读数。
+    /// </summary>
+    public static bool IsBuiltInEligible(PeripheralProtocol? protocol)
+        => protocol is not null && protocol.Verification == PeripheralVerification.Verified;
 
     /// <summary>
     /// 生效的协议表：**用户条目在前**，内置条目在后。
@@ -212,7 +327,12 @@ public static class PeripheralProtocols
             PropertyNameCaseInsensitive = true,
             ReadCommentHandling = JsonCommentHandling.Skip,
             AllowTrailingCommas = true,
-            Converters = { new HexBytesConverter(), new PeripheralTransportConverter() },
+            Converters =
+            {
+                new HexBytesConverter(),
+                new PeripheralTransportConverter(),
+                new PeripheralVerificationConverter(),
+            },
         };
         return JsonSerializer.Deserialize<List<PeripheralProtocol>>(json, options) ?? new List<PeripheralProtocol>();
     }
@@ -238,8 +358,98 @@ public static class PeripheralProtocols
             ValueMask = 0xFF,
             ValueMin = 0,
             ValueMax = 100,
+            // ---- 验证状态：已实机验证（2026-11-26）----
+            // 证据等级是**推断值**：偏移 5 读出 58%，依据是同型号蓝牙鼠标系统缓存 59%、
+            // 差 1pp、闲置衰减一致；**未做同刻交叉验证**（没在同一时刻对两个来源）。
+            Verification = PeripheralVerification.Verified,
+            VerifiedOn = "2026-11-26",
+            VerifiedDevice = "联想 Idea5003 2.4G 接收器（VID 17EF / PID F006）",
+            VerificationNote = "实机读出 58%（**推断值**：偏移 5，依据同型号蓝牙鼠标系统缓存 59%、"
+                + "差 1pp、闲置衰减一致；未做同刻交叉验证）。",
         };
     }
+}
+
+/// <summary>
+/// **候选表项** —— 别人家的 2.4G 接收器怎么读电量。
+///
+/// 这些条目**不是"内置已支持"**：本机只有一台联想 Idea5003 接收器，
+/// 罗技 / 雷蛇 / VGN 等接收器**没有在本机实机回包验证过**，所以它们一律是
+/// "未验证"状态，**不参与匹配、不参与读数**
+/// （<see cref="PeripheralProtocols.All"/> 与 <see cref="PeripheralProtocols.BuiltinTable"/> 里都没有它们）。
+///
+/// 它们的用途是给用户当**模板**：照着填成自己的用户表 JSON，
+/// 在**有那台设备**的机器上用 <c>hid-probe --selftest</c> 实机验证，
+/// 验证通过再把 verification 改成 "verified"。
+///
+/// 表项里的 vid / pid / 偏移都是**探测起点，不是结论** —— 必须实机确认。
+/// 填写与验证流程见 docs/peripheral-protocols.md。
+/// </summary>
+public static class PeripheralProtocolCandidates
+{
+    /// <summary>候选表项（一律"未验证"，不进匹配表）。</summary>
+    public static IReadOnlyList<PeripheralProtocol> All => Candidates;
+
+    private static readonly List<PeripheralProtocol> Candidates = new()
+    {
+        // ---- 罗技：HID++ 2.0 统一电池状态（vendor feature report 0x11）----
+        new PeripheralProtocol
+        {
+            Key = "logitech-hidpp-battery",
+            Vendor = "罗技",
+            Model = "HID++ 接收器（Unifying / Bolt 等）",
+            Kind = "other",
+            Vid = 0x046D,
+            Pid = 0,          // ← 占位：接收器型号不同 PID 不同，必须用 hid-probe scan 填真实值
+            UsagePage = null,
+            Usage = null,
+            MinReportLength = 16,
+            Transport = PeripheralTransport.Feature,
+            // HID++ 短报告（16 字节）：报告 ID 0x11 + 设备地址 + 特征索引 + 功能号 0x0F（电池状态）。
+            // 这是 HID++ 公开协议里**请求帧**的写法；回包里电池字节的位置**没有确认**（见下面说明）。
+            Command = new byte[]
+            {
+                0x11, 0x03, 0x00, 0x0F, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            },
+            // 回包在固定位置回显特征索引 + 功能号 ⇒ 用 echoOffset 精确卡住位置。
+            Echo = new byte[] { 0x00, 0x0F },
+            EchoOffset = 2,
+            // 电量字节位置**待实机探测**：-1 = 还没定（照着填会读到"未知"，不会读出假读数）。
+            ValueOffset = -1,
+            ValueMask = 0x0F,
+            ValueMin = 0,
+            ValueMax = 4,
+            Verification = PeripheralVerification.Unverified,
+            VerificationNote = "候选：HID++ 2.0 公开协议的请求帧写法（**未实机验证**）。"
+                + "回包里的电池字节位置与档位量程（这里按 0..4 档位写）必须用 hid-probe 实机确认；"
+                + "不同固件的特征索引也可能不同。",
+        },
+        // ---- 雷蛇：8 字节私有报告（骨架，命令帧与电量偏移都要靠探测）----
+        new PeripheralProtocol
+        {
+            Key = "razer-8byte-battery",
+            Vendor = "雷蛇",
+            Model = "2.4G 接收器（8 字节私有报告）",
+            Kind = "other",
+            Vid = 0x1532,
+            Pid = 0,          // ← 占位：必须用 hid-probe scan 填真实值
+            UsagePage = null,
+            Usage = null,
+            MinReportLength = 8,
+            Transport = PeripheralTransport.Control,
+            // 命令帧与回包偏移**都还没探测出来**：空 = 这条表项现在读不到任何东西
+            // （照抄进用户表也不会读出假读数，只会显示"未知"）。
+            Command = Array.Empty<byte>(),
+            ValueOffset = -1,
+            ValueMask = 0xFF,
+            ValueMin = 0,
+            ValueMax = 100,
+            Verification = PeripheralVerification.Unverified,
+            VerificationNote = "候选：**纯骨架**，命令帧与电量偏移都未确认。"
+                + "先用 hid-probe probe / watch 把回包原样抓下来，确认哪个字节是电量后再填。",
+        },
+    };
 }
 
 /// <summary>
@@ -257,7 +467,17 @@ public static class PeripheralProtocolReader
         if (protocol is null || response is null || response.Length == 0) return false;
 
         // ① 回显匹配：回包里必须出现协议声明的字节序列
-        if (protocol.Echo.Length > 0 && !ContainsSequence(response, protocol.Echo)) return false;
+        //    指定了 echoOffset 就必须**精确落在那个位置**（别处碰巧出现同样的字节不算回显）。
+        if (protocol.Echo.Length > 0)
+        {
+            if (protocol.EchoOffset >= 0)
+            {
+                if (protocol.EchoOffset + protocol.Echo.Length > response.Length) return false;
+                for (int j = 0; j < protocol.Echo.Length; j++)
+                    if (response[protocol.EchoOffset + j] != protocol.Echo[j]) return false;
+            }
+            else if (!ContainsSequence(response, protocol.Echo)) return false;
+        }
 
         // ② 电量字段：偏移必须在回包内，取值要落在声明的范围内
         if (protocol.ValueOffset < 0 || protocol.ValueOffset >= response.Length) return false;
@@ -272,8 +492,18 @@ public static class PeripheralProtocolReader
         if (protocol.ChargingOffset is { } chargingOffset)
         {
             if (chargingOffset < 0 || chargingOffset >= response.Length) return false;
-            int bit = response[chargingOffset] & protocol.ChargingMask;
-            if (bit is not (0 or 1)) return false;
+            int bit;
+            if (protocol.ChargingBitOffset >= 0)
+            {
+                // 位号模式：只认这一位 ⇒ 取值必是 0/1，不存在"猜充电状态"的问题。
+                if (protocol.ChargingBitOffset > 7) return false;
+                bit = (response[chargingOffset] >> protocol.ChargingBitOffset) & 1;
+            }
+            else
+            {
+                bit = response[chargingOffset] & protocol.ChargingMask;
+                if (bit is not (0 or 1)) return false;
+            }
             charging = protocol.ChargingIsOne ? bit == 1 : bit == 0;
         }
 
