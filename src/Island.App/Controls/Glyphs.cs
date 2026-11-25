@@ -10,6 +10,10 @@ public enum GlyphKind
 {
     Monitor, Clipboard, Battery, Sliders, Close, Bolt, File, Image, Swatch, Grid, Gear,
     Mouse, Keyboard, Headset, Gamepad,
+    // 收起态 dash 的读数图标（2026-11-26：读数元素改成图标盒形态）。
+    // 形状照抄 mac 的 12×12 几何（src/Island.Avalonia/IslandCanvas.cs BuildIcon），
+    // 坐标 ×4/3 映射到本文件的 16×16 网格 ⇒ 两端图形同构。
+    Cpu, Gpu, Memory, Disk, Ssd,
 }
 
 /// <summary>
@@ -153,6 +157,53 @@ internal static class Glyphs
                 Line(5.6, 7.4, 5.6, 9.4);
                 dc.DrawEllipse(brush, null, P(10.0, 7.6), 0.7 * s, 0.7 * s);
                 dc.DrawEllipse(brush, null, P(11.2, 9.2), 0.7 * s, 0.7 * s);
+                break;
+            // ---- 收起态 dash 的读数图标（mac BuildIcon 的 12×12 几何 ×4/3）----
+            case GlyphKind.Cpu:
+                // CPU 芯片：方框 + 中心点 + 八根引脚（mac Glyph.Cpu）
+                Box(4.0, 4.0, 8.0, 8.0, 0);
+                dc.DrawEllipse(brush, null, P(8.0, 8.0), 1.9 * s, 1.9 * s);
+                Line(6.7, 1.3, 6.7, 4.0);
+                Line(9.3, 1.3, 9.3, 4.0);
+                Line(6.7, 12.0, 6.7, 14.7);
+                Line(9.3, 12.0, 9.3, 14.7);
+                Line(1.3, 6.7, 4.0, 6.7);
+                Line(1.3, 9.3, 4.0, 9.3);
+                Line(12.0, 6.7, 14.7, 6.7);
+                Line(12.0, 9.3, 14.7, 9.3);
+                break;
+            case GlyphKind.Gpu:
+                // GPU：双层方框 + 中心点（mac Glyph.Gpu）
+                Box(2.9, 2.9, 10.2, 10.2, 1.9);
+                dc.DrawRoundedRectangle(brush, null,
+                    new Rect(ox + 5.1 * s, oy + 5.1 * s, 5.9 * s, 5.9 * s), 0, 0);
+                dc.DrawEllipse(brush, null, P(8.0, 8.0), 1.5 * s, 1.5 * s);
+                break;
+            case GlyphKind.Memory:
+                // 内存条：长条 + 四根金手指（mac Glyph.Mem）
+                Box(1.3, 5.3, 13.4, 5.3, 0);
+                Line(3.3, 10.7, 3.3, 13.3);
+                Line(6.3, 10.7, 6.3, 13.3);
+                Line(9.2, 10.7, 9.2, 13.3);
+                Line(12.1, 10.7, 12.1, 13.3);
+                break;
+            case GlyphKind.Disk:
+                // 硬盘：方框 + 中缝（mac Glyph.Disk）
+                Line(1.3, 4.0, 14.7, 4.0);
+                Line(1.3, 4.0, 1.3, 12.0);
+                Line(14.7, 4.0, 14.7, 12.0);
+                Line(1.3, 12.0, 14.7, 12.0);
+                Line(1.3, 8.0, 14.7, 8.0);
+                break;
+            case GlyphKind.Ssd:
+                // 固态盘：圆角盒 + 两块存储块 + 两根触点（mac Glyph.Ssd）
+                Box(1.1, 4.0, 13.8, 8.0, 1.3);
+                dc.DrawRoundedRectangle(brush, null,
+                    new Rect(ox + 2.7 * s, oy + 5.6 * s, 3.2 * s, 4.8 * s), 0, 0);
+                dc.DrawRoundedRectangle(brush, null,
+                    new Rect(ox + 6.8 * s, oy + 5.6 * s, 3.2 * s, 4.8 * s), 0, 0);
+                Line(11.9, 5.9, 11.9, 10.1);
+                Line(13.7, 5.9, 13.7, 10.1);
                 break;
         }
     }

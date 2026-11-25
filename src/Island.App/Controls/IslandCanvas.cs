@@ -929,7 +929,8 @@ public sealed class IslandCanvas : FrameworkElement
         var density = DensityFor();
         var groups = new List<CompactGroup>();
 
-        // 单行项：标签（9.5px 三级文字）+ 间距 3 + 数值（13px 等宽）
+        // 网速项（dash 里**唯一**还是「文字标签 + 数值」的元素）：箭头标签（9.5px 三级文字）+ 间距 3 + 数值（13px 等宽）
+        // mac 的 dash 网速也是纯文字箭头（"↓123.4K"，IslandCanvas.cs L2051-L2052），不是图标盒 ⇒ 保持改动前的排布。
         // 数值槽按**实画宽**推进，窄值再按最小槽宽 21 兜底（mac 的 max(实画宽, CompactValueMinW) 同口径）：
         // 预留宽与实画宽必须同口径，否则组尾比墨迹尾多出一截，分隔线整体右移、且随读数跳变
         // （2026-11-25 复审 Must-fix 1：曾用样本宽 "125°"/"100%" 预留，每项空出 7.1px）。
@@ -944,10 +945,10 @@ public sealed class IslandCanvas : FrameworkElement
             x += CompactSpec.GaugeGap;
         }
 
-        // 一个组：若干单行项，组内用 GaugeGap 隔开
+        // 一个组：若干网速项，组内用 GaugeGap 隔开
         // 组宽按**实画文本宽**预留（不是样本宽）：组宽必须等于这一组真正画出来的宽度，
         // 否则组尾（分隔线的定位基准）会离最后一个字形远一截 —— 与 mac 的 DashLayout.TempW/UsageW 同口径
-        // （mac 量的是 max(实画文本宽, CompactValueMinW)）。
+        // （mac 量的是 max(实画文本宽, 最小槽)）。
         void AddItemGroup(List<(string Label, string Value, Color? Color)> items, bool dividerAfter)
         {
             if (items.Count == 0) return;
@@ -967,6 +968,44 @@ public sealed class IslandCanvas : FrameworkElement
                 },
                 DividerAfter = dividerAfter,
             });
+        }
+
+        // ---- 读数元素：图标盒 + 数值（mac dash 形态，本次两端对齐的目标）----
+        // mac 侧 dash 的读数元素不是「文字标签」，而是「小图标 + 数值」的元素块
+        // （src/Island.Avalonia/IslandCanvas.cs DrawDash L2000-L2022），有两种盒：
+        //   温度项 = 图标盒（10.8×10.8，图标即盒内容）+ 4 + 数值槽（≥21）
+        //   占用项 = 环盒（环 16、线宽 2.2、环心图标 7.2）+ 5 + 数值槽（≥34）
+        // 「盒」是排版槽位，mac 侧不画圆角底板 ⇒ 这里也不画。
+        // 数值槽按**实画宽**推进，窄值按最小槽兜底（mac 的 max(实画宽, 最小槽) 同口径）。
+
+        // 温度项：图标盒（边长 CompactSpec.IconBox = 10.8）+ 间距 4 + 数值槽（≥21）
+        void TempItem(GlyphKind glyph, string value, Color color, ref double x)
+        {
+            Glyphs.Draw(dc, glyph, RenderKit.SafeRect(x, cy - CompactSpec.IconBox / 2,
+                CompactSpec.IconBox, CompactSpec.IconBox), color, CompactSpec.IconStroke);
+            x += CompactSpec.IconBox + CompactSpec.IconGap;
+            double vx = x;
+            x = Num(dc, value, vx, Math.Round(cy + 13 * 0.36), 13, color, true, ppd);
+            x = vx + Math.Max(x - vx, CompactSpec.ValueMinW);   // 窄值按最小槽兜底（与组宽预留同口径）
+            x += CompactSpec.TempGap;
+        }
+
+        // 占用项：环盒（环 16、线宽 2.2、环心图标 7.2）+ 间距 5 + 数值槽（≥34）
+        // 环 / 环心图标 / 数值三处同色（mac 的同色规则），但颜色是 Windows 的**分级色**
+        // （≥70% 警示、≥90% 危险），不是 mac 的「按资源配色」—— 暗色科技的身份不变。
+        void UsageItem(GlyphKind glyph, double share, string value, Color color, ref double x)
+        {
+            RenderKit.Ring(dc, new Point(x + CompactSpec.DashRing / 2, cy), CompactSpec.DashRing,
+                CompactSpec.DashRingThickness, share, pal.Track, color);
+            Glyphs.Draw(dc, glyph, RenderKit.SafeRect(
+                x + (CompactSpec.DashRing - CompactSpec.DashRingIcon) / 2,
+                cy - CompactSpec.DashRingIcon / 2,
+                CompactSpec.DashRingIcon, CompactSpec.DashRingIcon), color, CompactSpec.IconStroke);
+            x += CompactSpec.DashRing + CompactSpec.DashRingGap;
+            double vx = x;
+            x = Num(dc, value, vx, Math.Round(cy + 13 * 0.36), 13, color, true, ppd);
+            x = vx + Math.Max(x - vx, CompactSpec.DashValueMinW);
+            x += CompactSpec.DashItemGap;
         }
 
         // ---- 组 1：核心柱群（保持现状，只改成分组形式）----
@@ -995,23 +1034,56 @@ public sealed class IslandCanvas : FrameworkElement
             });
         }
 
-        // ---- 组 2：温度项组（CPU/GPU/SSD）----
+        // ---- 组 2：温度项组（CPU/GPU/SSD）—— 图标盒形态（mac dash 温度组）----
         double? ct = thermal?.CpuTemp, gt = thermal?.GpuTemp, st = thermal?.SsdTemp;
-        var temps = new List<(string Label, string Value, Color? Color)>();
-        if (Want("cputemp")) temps.Add(("CPU", ct is { } c1 ? $"{Math.Round(c1)}°" : "--", TempColor(ct, pal)));
-        if (Want("gputemp")) temps.Add(("GPU", gt is { } g1 ? $"{Math.Round(g1)}°" : "--", TempColor(gt, pal)));
-        if (Want("ssd")) temps.Add(("SSD", st is { } s1 ? $"{Math.Round(s1)}°" : "--", TempColor(st, pal)));
-        AddItemGroup(temps, dividerAfter: density != CompactDensity.Minimal);
+        var temps = new List<(GlyphKind Glyph, string Value, Color Color)>();
+        if (Want("cputemp")) temps.Add((GlyphKind.Cpu, ct is { } c1 ? $"{Math.Round(c1)}°" : "--", TempColor(ct, pal)));
+        if (Want("gputemp")) temps.Add((GlyphKind.Gpu, gt is { } g1 ? $"{Math.Round(g1)}°" : "--", TempColor(gt, pal)));
+        if (Want("ssd")) temps.Add((GlyphKind.Ssd, st is { } s1 ? $"{Math.Round(s1)}°" : "--", TempColor(st, pal)));
+        if (temps.Count > 0)
+        {
+            // 组宽按**实画文本宽**预留（不是样本宽）—— 与 mac 的 DashLayout.TempW 同口径
+            var values = temps.Select(t => (double)RenderKit.NumWidth(t.Value, 13, true, ppd)).ToArray();
+            groups.Add(new CompactGroup
+            {
+                Width = CompactSpec.TempGroupWidth(temps.Count, i => values[i]),
+                Draw = x =>
+                {
+                    double ix = x;
+                    for (int i = 0; i < temps.Count; i++)
+                        TempItem(temps[i].Glyph, temps[i].Value, temps[i].Color, ref ix);
+                },
+                DividerAfter = density != CompactDensity.Minimal,
+            });
+        }
 
-        // ---- 组 3：占用项组（内存/GPU%/磁盘）----
+        // ---- 组 3：占用项组（内存/GPU/磁盘）—— 环盒形态（mac dash 占用组）----
         // Minimal 档不显示占用组（规格 §3.2 的密度表：Minimal = 核心柱 + 温度组 + 网速）。
         if (density != CompactDensity.Minimal)
         {
-            var usage = new List<(string Label, string Value, Color? Color)>();
-            if (Want("mem")) usage.Add(("MEM", $"{snap.MemoryUsagePercent:F0}%", LevelColor(snap.MemoryUsagePercent, pal.Text, pal)));
-            if (Want("gpu")) usage.Add(("GPU%", $"{snap.GpuUsage:F0}%", LevelColor(snap.GpuUsage, pal.Text, pal)));
-            if (Want("disk")) usage.Add(("DISK", $"{snap.DiskUsagePercent:F0}%", LevelColor(snap.DiskUsagePercent, pal.Text, pal)));
-            AddItemGroup(usage, dividerAfter: true);
+            var usage = new List<(GlyphKind Glyph, double Share, string Value, Color Color)>();
+            if (Want("mem")) usage.Add((GlyphKind.Memory, snap.MemoryUsagePercent / 100.0,
+                $"{snap.MemoryUsagePercent:F0}%", LevelColor(snap.MemoryUsagePercent, pal.Text, pal)));
+            if (Want("gpu")) usage.Add((GlyphKind.Gpu, snap.GpuUsage / 100.0,
+                $"{snap.GpuUsage:F0}%", LevelColor(snap.GpuUsage, pal.Text, pal)));
+            if (Want("disk")) usage.Add((GlyphKind.Disk, snap.DiskUsagePercent / 100.0,
+                $"{snap.DiskUsagePercent:F0}%", LevelColor(snap.DiskUsagePercent, pal.Text, pal)));
+            if (usage.Count > 0)
+            {
+                // 组宽按**实画文本宽**预留（不是样本宽）—— 与 mac 的 DashLayout.UsageW 同口径
+                var values = usage.Select(u => (double)RenderKit.NumWidth(u.Value, 13, true, ppd)).ToArray();
+                groups.Add(new CompactGroup
+                {
+                    Width = CompactSpec.UsageGroupWidth(usage.Count, i => values[i]),
+                    Draw = x =>
+                    {
+                        double ix = x;
+                        for (int i = 0; i < usage.Count; i++)
+                            UsageItem(usage[i].Glyph, usage[i].Share, usage[i].Value, usage[i].Color, ref ix);
+                    },
+                    DividerAfter = true,
+                });
+            }
         }
 
         // ---- 组 4：网速（↓ ↔ ↑ 间距用 CompactSpec.DashNetGap = 10，mac DashLayout.NetGap）----

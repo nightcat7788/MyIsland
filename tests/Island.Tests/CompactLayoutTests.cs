@@ -58,5 +58,41 @@ internal static class CompactLayoutTests
         // combo 640：正好等于宿主窗口宽 —— 满宽但不被裁。
         check("尺寸表：combo 上限 = 宿主窗口宽（满宽不被裁）",
             combo.Width == CompactLayout.HostWindowWidth);
+
+        // ---- dash 胶囊宽：按规格公式复算最坏情况（2026-11-26 读数元素改图标盒形态）----
+        // 实测文本宽（WPF FormattedText，ppd = 1）：
+        //   温度值 "125°" = 28.5867、占用值 "100%" = 28.5867、网速值 "123.4K" = 42.88、箭头 "↓" = 4.4867；
+        //   旧形态的文字标签："CPU" 17.73 / "GPU" 18.3633 / "SSD" 16.7533 /
+        //   "MEM" 21.8667 / "GPU%" 26.1367 / "DISK" 19.7433。
+        const double Val3 = 28.5866666666667;
+        const double NetVal = 42.88;
+        const double ArrowW = 4.48666666666667;
+        double[] tempLabels = { 17.73, 18.3633333333333, 16.7533333333333 };
+        double[] usageLabels = { 21.8666666666667, 26.1366666666667, 19.7433333333333 };
+
+        double cores = 8 * (4 + 2.6);                 // 核心柱群：8 核 × (柱宽 4 + 间距 2.6)
+        double gaps = 3 * CompactSpec.SeparatorBand;  // 4 组之间 3 段 24px 总带
+        double net = CompactSpec.InlineGroupWidth(2, _ => ArrowW, _ => NetVal);
+        // 新形态：温度组 = 图标盒 10.8，占用组 = 环盒 16
+        double newCapsule = cores
+            + CompactSpec.TempGroupWidth(3, _ => Val3)
+            + CompactSpec.UsageGroupWidth(3, _ => Val3)
+            + net + gaps + CompactSpec.DashPadX * 2;
+        // 旧形态（文字标签）的同一算式 —— 用来对照，也用来验证算式本身
+        double oldCapsule = cores
+            + CompactSpec.InlineGroupWidth(3, i => tempLabels[i], _ => Val3)
+            + CompactSpec.InlineGroupWidth(3, i => usageLabels[i], _ => Val3)
+            + net + gaps + CompactSpec.DashPadX * 2;
+
+        check("dash 胶囊宽（旧文字标签形态）复算 = 613.65（与仓库旧注释记录的 613.6 一致 ⇒ 算式可信）",
+            Math.Abs(oldCapsule - 613.6466666666666) < 1e-6);
+        check("dash 胶囊宽（图标盒形态）复算 = 606.69（8 核 + 3 位读数的最坏情况）",
+            Math.Abs(newCapsule - 606.6933333333333) < 1e-6);
+        check("dash 胶囊宽：图标盒形态不比文字标签形态宽（两端对齐后不撑大胶囊）",
+            newCapsule <= oldCapsule);
+        check($"dash 胶囊宽（最坏 {newCapsule:F1}）≤ dash 上限 {dash.Width}",
+            newCapsule <= dash.Width);
+        check($"dash 胶囊宽（最坏 {newCapsule:F1}）≤ 宿主窗口宽 {CompactLayout.HostWindowWidth}",
+            newCapsule <= CompactLayout.HostWindowWidth);
     }
 }
