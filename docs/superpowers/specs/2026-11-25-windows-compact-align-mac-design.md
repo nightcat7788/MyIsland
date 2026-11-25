@@ -20,7 +20,7 @@ Windows 版（`Island.App`，WPF）与 macOS 版（`Island.Avalonia`，Avalonia�
 
 | | mac（基准） | Windows（现状） |
 |---|---|---|
-| 组间分隔线 | Hairline 竖线 + 两侧各 12px 留白 | 无（只有 16px 空白） |
+| 组间分隔线 | Hairline 竖线，组尾 +18px 处画线（组间总带 24px） | 无（只有 16px 空白） |
 | combo 分组 | 4 组：时间 │ 占用环组 │ 温度磁盘环组 │ 网速 | 每个环各自独立成组（8 组） |
 | 环的形状 | `Ring` —— **360° 完整圆环**，环心字母，环外数字 | `Dial` —— **270° 开口环**，环内字母 |
 | 时间字号 | 13px | 16px |
@@ -46,9 +46,11 @@ Windows 版（`Island.App`，WPF）与 macOS 版（`Island.Avalonia`，Avalonia�
 | `ComboDialGap` | 5 | 环 → 数值间距 |
 | `ComboGaugeGap` | 10 | 同组内相邻环间距 |
 | `ComboClockGap` | 12 | 时间 → 第一组间距 |
-| `CompactGroupGap` | 12 | 组间：分隔线居中，两侧各留白 12px |
+| `CompactGroupGap` | 12 | 组间**单侧**间距（组间总带 = 2 × 12 = 24px） |
 | `CompactValueMinW` | 21 | 数值最小槽宽 |
-| `NetGap` | 7 | ↓值 与 ↑ 之间间距 |
+| `NetGap` | 7 | combo 里 ↓值 与 ↑ 之间间距 |
+| `DashPadX`（L1843） | 14 | dash 胶囊左右内边距（combo 是 10） |
+| `DashLayout.NetGap`（L1866） | 10 | dash 里 ↓值 与 ↑ 之间间距（combo 是 7） |
 | `FontValue` | 13 | 收起态主读数字号（时间/网速数值同级） |
 
 ### 2.2 分隔线
@@ -62,7 +64,8 @@ dc.DrawLine(RenderKit.PenOf(pal.Hairline, 1, 0.8),
 
 - 颜色：`pal.Hairline`，1px，透明度 0.8
 - 长度：上下各 9px（总 18px）
-- 位置：组间距正中（两侧各 12px 留白）
+- 位置：**组尾 + 18px** 处（= 组尾 + 1.5 × CompactGroupGap）；下一组从**组尾 + 24px** 开始。组间总带 24px = 2 × CompactGroupGap —— 线不在总带正中，而是偏后 6px。
+  （mac 的 `Gap()` 是「先 `x += CompactGroupGap`，再在当时的 `x + CompactGroupGap / 2` 处画线」，所以线在推进之后。）
 
 ### 2.3 环
 
@@ -76,6 +79,7 @@ DrawGaugeCenter(dc, pal, g.Icon, g.Res, x, cy, L.Dial, g.Arc);
 - `Ring` 是 **360° 完整圆环**：底环（`pal.Track`）+ 从 12 点顺时针的占比弧（`Arc` 色）
 - 环心：`DecorLetters` 开 → 画资源字母 C/M/G/D/B/N；关 → 画矢量图标
 - 环 → 数值间距 5px；数值占位 `max(数值宽, 21)`
+- 弧的占比死区：`f > 0.004` 才画弧（`RenderKit.cs` L191），低于它只剩底环
 
 ### 2.4 combo 分组顺序
 
@@ -88,7 +92,7 @@ DrawGaugeCenter(dc, pal, g.Icon, g.Res, x, cy, L.Dial, g.Arc);
 
 ### 2.5 dash 分组顺序（mac）
 
-单行，组间分隔线：
+单行，组间分隔线（dash 的胶囊左右内边距 14、↓值与↑之间 10，与 combo 的 10/7 不同）：
 
 ```
 频谱柱 │ 剪贴板计数 │ 温度组 │ 占用组(环+字母+数值) │ 电池 │ 设备电量环 │ 网速
@@ -100,17 +104,17 @@ DrawGaugeCenter(dc, pal, g.Icon, g.Res, x, cy, L.Dial, g.Arc);
 
 | # | 项 | mac 基准 | Windows 现状 | 动作 |
 |---|---|---|---|---|
-| 1 | 组间分隔线 | Hairline 1px，cy±9，两侧各 12px | 无 | `DrawCompactGroups` 增加可选分隔线能力 |
+| 1 | 组间分隔线 | Hairline 1px，cy±9，组尾 +18px（组间总带 24px） | 无 | `DrawCompactGroups` 增加可选分隔线能力 |
 | 2 | combo 分组 | 4 组 | 8 组（每环独立） | 重排为 4 组，组内环距 10px |
 | 3 | 时间字号 | 13px | 16px | → 13px |
 | 4 | 数值字号 | 13px | 12.5px | → 13px |
 | 5 | 数值最小槽 | `max(宽, 21)` | `NumWidth(sample, 12.5)` | → 21px 槽 |
-| 6 | 组间距 | 12px（分隔线居中） | 16px 空白 | → 12px |
+| 6 | 组间距 | 单侧 12px（组间总带 24px，线在组尾 +18px） | 16px 空白 | → 单侧 12px |
 | 7 | 组内环距 | 10px | 16px（因每环独立成组） | → 10px |
 | 8 | 环的形状 | 360° 闭环 `Ring` | 270° 开口环 `Dial` | **新增 `Ring`**，收起态改用；`Dial` 保留给展开面板 |
 | 9 | 环心 | 字母 C/M/G/D/B/N 或矢量图标 | 字母 | 沿用 Windows 现有字母集（`Glyphs`）；不引入 mac 的 B/N 扩展 |
-| 10 | 胶囊左右内边距 | 10px | 14px | → 10px |
-| 11 | 网速 | `FormatSpeedFixed` 定宽 6 字符 | `DrawNet` | 核对后对齐为定宽 + 中性色 |
+| 10 | 胶囊左右内边距 | combo 10px（dash 14px） | 14px | combo → 10px；dash → 14px（与 mac 一致） |
+| 11 | 网速 | `FormatSpeedFixed` 定宽 6 字符；combo ↓↔↑ 间距 7、dash 10 | `DrawNet`（↓↔↑ 硬编码 10） | 对齐为定宽 + 中性色；间距改用 `CompactSpec.NetGap` / `DashNetGap` |
 | 12 | dash 布局 | 单行 + 分隔线 | 两行网格，69px | 改单行，组间分隔线；胶囊高度 69 → 44px |
 
 ### 3.1 关于第 8 条（关键决策）
@@ -137,7 +141,7 @@ mac 侧 `Dial` 与 `Ring` **并存**：注释明确写着「和 `Dial`（270° �
 - 胶囊高度 69px → 44px。
 
 **`CompactDensity` 密度的含义随之调整**（这是本规格唯一一处语义变更）：
-旧版它只控制「组间距」（Minimal 16 / 其余 26），而组间距已被第 6 条统一为 12 + 分隔线，
+旧版它只控制「组间距」（Minimal 16 / 其余 26），而组间距已被第 6 条统一为单侧 12px（组间总带 24px）+ 分隔线，
 若仍只管间距，密度分级就没有存在意义了。改为**决定显示哪些组**，阈值（<390 / <560）不变：
 
 | 密度 | 显示的组 |
