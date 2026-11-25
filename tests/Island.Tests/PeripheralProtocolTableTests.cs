@@ -138,10 +138,20 @@ internal static class PeripheralProtocolTableTests
         check("表项校验：milliVoltsOffset = -3 → 错误",
             HasError(PeripheralProtocolTable.ValidateEntry(badMvOffset), "milliVoltsOffset"));
 
-        // 只有警告、没有错误的情形
+        // 读不到电量的表项 = 无效表项（错误级），不是"警告一下就放过"
         var noReadWay = new PeripheralProtocol { Key = "no-way", Vid = 0x1234, Pid = 0x5678 };
-        check("表项校验：既没有直读报告也没有查询命令 → 警告（永远读不到电量），不是静默放过",
-            HasWarning(PeripheralProtocolTable.ValidateEntry(noReadWay), "command"));
+        check("表项校验：既没有直读报告也没有查询命令 → 错误（永远读不到电量，这条表项无效）",
+            HasError(PeripheralProtocolTable.ValidateEntry(noReadWay), "command"));
+
+        var preOnly = new PeripheralProtocol
+        {
+            Key = "pre-only",
+            Vid = 0x1234,
+            Pid = 0x5678,
+            PreCommands = new[] { new byte[] { 0x05, 0x01 } },
+        };
+        check("表项校验：只有握手命令（preCommands）没有查询命令 → 错误（握手完了没人问）",
+            HasError(PeripheralProtocolTable.ValidateEntry(preOnly), "command"));
 
         var unknownKind = Good() with { Kind = "mouce" };
         check("表项校验：kind 拼错 → 警告（只影响图标）",
@@ -201,8 +211,8 @@ internal static class PeripheralProtocolTableTests
             HasWarning(partialReport.Issues, "vid/pid"));
 
         var effective = PeripheralProtocolTable.EffectiveTable(builtin, userOverride);
-        check("生效表：用户条目在前、同 key 的内置条目被顶掉（表里只剩 1 条）",
-            effective.Count == 1 && effective[0].ValueOffset == 9);
+        check("生效表：用户条目在前、内置条目**不删**（2 条）—— 与产品 Match 的规则一致",
+            effective.Count == 2 && effective[0].ValueOffset == 9 && effective[1].ValueOffset == 5);
 
         var effectiveBoth = PeripheralProtocolTable.EffectiveTable(builtin,
             new List<PeripheralProtocol> { Good("other-user") });
@@ -283,7 +293,7 @@ internal static class PeripheralProtocolTableTests
             zeroMaskJsonReport.HasErrors && HasError(zeroMaskJsonReport.Issues, "valueMask"));
 
         // 一条写坏了（类型不对）时，跨字段问题也要一次报全，不能被反序列化失败连带藏起来
-        var mixedJson = """[ { "key": "k", "pid": "abc", "valueMin": 100, "valueMax": 0, "valueMask": 0, "chargingMask": 3 } ]""";
+        var mixedJson = """[ { "key": "k", "pid": "abc", "valueOffset": 8, "valueMin": 100, "valueMax": 0, "valueMask": 0, "chargingOffset": 6, "chargingMask": 3 } ]""";
         var mixedReport = PeripheralProtocolTable.ValidateUserJson(mixedJson, "用户表");
         check("用户 JSON：一条写坏了也要一次报全（类型错 + 跨字段问题同时列出）",
             mixedReport.HasErrors && HasError(mixedReport.Issues, "pid")
@@ -300,7 +310,7 @@ internal static class PeripheralProtocolTableTests
         check("用户 JSON：command 里的十六进制字节非法 → 错误，结论指出是哪个字节",
             badHexReport.HasErrors && Mentions(badHexReport.Issues, "ZZ"));
 
-        var overrideJson = """[ { "key": "lenovo-idea5003", "vid": 6127, "pid": 61446, "valueOffset": 9 } ]""";
+        var overrideJson = """[ { "key": "lenovo-idea5003", "vid": 6127, "pid": 61446, "featureReportId": 193, "valueOffset": 9 } ]""";
         var overrideJsonReport = PeripheralProtocolTable.ValidateUserJson(overrideJson, "用户表", builtin);
         check("用户 JSON：同 key 覆盖内置条目 → 信息级结论、且不是错误",
             !overrideJsonReport.HasErrors
@@ -349,5 +359,142 @@ internal static class PeripheralProtocolTableTests
             "统计表");
         check("统计：错误级与警告级分开计数（ErrorCount / WarningCount / InfoCount）",
             stats.ErrorCount >= 2 && stats.WarningCount >= 0 && stats.InfoCount == 0 && !stats.Ok);
+
+        // ==================== 七、覆盖语义：与产品 Match 同一套规则 ====================
+
+        // Matches 与产品 PeripheralProtocols.Match 必须逐条一致（漂移守卫：产品改了匹配规则这里要跟着改）
+        var probe = Good("drift-probe");
+        bool matchAgrees = true;
+        try
+        {
+            PeripheralProtocols.AddUserProtocols(new[] { probe });
+            foreach (var (vid, pid, page, usage, len) in new (int, int, ushort, ushort, int)[]
+            {
+                (0x17EF, 0xF006, 0xFFCF, 0x00A0, 61),
+                (0x17EF, 0xF006, 0xFFCF, 0x00A1, 61),
+                (0x17EF, 0xF007, 0xFFCF, 0x00A0, 61),
+                (0x17EF, 0xF006, 0x0001, 0x00A0, 61),
+                (0x17EF, 0xF006, 0xFFCF, 0x00A0, 60),
+            })
+            {
+                bool mine = PeripheralProtocolTable.Matches(probe, vid, pid, page, usage, len);
+                bool theirs = ReferenceEquals(
+                    PeripheralProtocols.Match(vid, pid, page, usage, len), probe);
+                if (mine != theirs) matchAgrees = false;
+            }
+        }
+        finally
+        {
+            PeripheralProtocols.ClearUserProtocols();
+        }
+        check("覆盖语义：Matches 与产品 PeripheralProtocols.Match 判定一致（漂移守卫）", matchAgrees);
+
+        // 覆盖回退：用户条目匹配不上时，仍由内置条目顶上（设备不会被弄丢）
+        PeripheralProtocol? fallbackHit = null;
+        PeripheralProtocol? userHit = null;
+        try
+        {
+            PeripheralProtocols.AddUserProtocols(new List<PeripheralProtocol>
+            {
+                Good("lenovo-idea5003") with { Vid = 0x1111, Pid = 0x2222, ValueOffset = 12 },
+            });
+            fallbackHit = PeripheralProtocols.Match(0x17EF, 0xF006, 0xFFCF, 0x00A0, 61);
+            PeripheralProtocols.ClearUserProtocols();
+            PeripheralProtocols.AddUserProtocols(new List<PeripheralProtocol>
+            {
+                Good("lenovo-idea5003") with { ValueOffset = 12 },
+            });
+            userHit = PeripheralProtocols.Match(0x17EF, 0xF006, 0xFFCF, 0x00A0, 61);
+        }
+        finally
+        {
+            PeripheralProtocols.ClearUserProtocols();
+        }
+        check("覆盖回退：用户条目匹配不上（vid/pid 不符）时，仍由内置条目顶上（偏移 5）",
+            fallbackHit is not null && fallbackHit.ValueOffset == 5);
+        check("覆盖回退：用户条目匹配得上时，命中的是用户条目（偏移 12）",
+            userHit is not null && userHit.ValueOffset == 12);
+
+        // 覆盖关系三态
+        var sameCond = Good("lenovo-idea5003") with { ValueOffset = 9 };
+        var wrongVid = Good("lenovo-idea5003") with { Vid = 0x1111 };
+        var noVidEntry = new PeripheralProtocol { Key = "lenovo-idea5003", ValueOffset = 12 };
+        check("覆盖关系：匹配条件一致 → Covers（能顶掉内置条目）",
+            PeripheralProtocolTable.CompareOverride(sameCond, builtin[0]) == PeripheralOverrideRelation.Covers);
+        check("覆盖关系：vid 不符 → None（顶不掉）",
+            PeripheralProtocolTable.CompareOverride(wrongVid, builtin[0]) == PeripheralOverrideRelation.None);
+        check("覆盖关系：没有 vid/pid → None（顶不掉）",
+            PeripheralProtocolTable.CompareOverride(noVidEntry, builtin[0]) == PeripheralOverrideRelation.None);
+        var wideBuiltin = Good("wide") with { UsagePage = null, Usage = null };
+        var narrower = Good("wide") with { UsagePage = null, Usage = 0x00A0 };
+        check("覆盖关系：内置不限 usage、用户限了具体 usage → Partial（只顶掉一部分设备）",
+            PeripheralProtocolTable.CompareOverride(narrower, wideBuiltin) == PeripheralOverrideRelation.Partial);
+        check("覆盖关系：说清楚哪里对不上（vid 不一致要写出两个取值）",
+            PeripheralProtocolTable.DescribeOverrideMismatch(wrongVid, builtin[0]).Contains("vid 不一致")
+            && PeripheralProtocolTable.DescribeOverrideMismatch(wrongVid, builtin[0]).Contains("1111"));
+
+        // 覆盖是否**真的**生效：拿已连接设备判定
+        var deviceKeys = new List<PeripheralDeviceKey>
+        {
+            new PeripheralDeviceKey(0x17EF, 0xF006, 0xFFCF, 0x00A0, 137),
+        };
+        var effectiveUser = new List<PeripheralProtocol> { Good("lenovo-idea5003") with { ValueOffset = 9 } };
+        var overrideOkIssues = PeripheralProtocolTable.ValidateOverrideAgainstDevices(effectiveUser, builtin, deviceKeys);
+        check("覆盖生效性：用户条目能匹配已连接设备 → 信息级（覆盖确实生效）",
+            overrideOkIssues.Any(i => i.Severity == PeripheralProtocolSeverity.Info && i.Value == "lenovo-idea5003")
+            && !overrideOkIssues.Any(i => i.IsError));
+
+        var mismatchUser = new List<PeripheralProtocol>
+        {
+            Good("lenovo-idea5003") with { Vid = 0x1111, ValueOffset = 12 },
+        };
+        var mismatchIssues = PeripheralProtocolTable.ValidateOverrideAgainstDevices(mismatchUser, builtin, deviceKeys);
+        check("覆盖生效性：内置能匹配设备、用户条目匹配不上 → 错误（用户以为改了、产品其实没改）",
+            mismatchIssues.Any(i => i.IsError && i.Message.Contains("不生效")));
+
+        var noDeviceIssues = PeripheralProtocolTable.ValidateOverrideAgainstDevices(
+            mismatchUser, builtin, new List<PeripheralDeviceKey>());
+        check("覆盖生效性：当前没有可验证的设备 → 信息级（无法验证 ≠ 失效）",
+            !noDeviceIssues.Any(i => i.IsError)
+            && noDeviceIssues.Any(i => i.Severity == PeripheralProtocolSeverity.Info));
+
+        // ==================== 八、歧义、缩放、候选表项 ====================
+
+        // usage 宽窄不同（有重叠）也算歧义
+        var widthAmbiguous = new List<PeripheralProtocol>
+        {
+            Good("wide-a") with { Usage = null },
+            Good("narrow-b") with { Usage = 0x00A0 },
+        };
+        var widthReport = PeripheralProtocolTable.ValidateTable(widthAmbiguous, "用户表");
+        check("整表校验：同一 usagePage 下 usage 宽窄不同（有重叠）→ 歧义错误",
+            widthReport.HasErrors && Mentions(widthReport.Issues, "宽窄不同"));
+
+        // 缩放系数为 0：即使没写电压字段也不合法（电压会恒为 0）
+        var zeroScaleNoMv = Good() with { MilliVoltsScale = 0 };
+        check("表项校验：milliVoltsScale = 0（没有电压字段也不合法）→ 错误",
+            HasError(PeripheralProtocolTable.ValidateEntry(zeroScaleNoMv), "milliVoltsScale"));
+        var zeroScaleJson = """[ { "key": "k", "vid": 1, "pid": 2, "featureReportId": 193, "milliVoltsScale": 0 } ]""";
+        var zeroScaleJsonReport = PeripheralProtocolTable.ValidateUserJson(zeroScaleJson, "用户表");
+        check("用户 JSON：milliVoltsScale = 0 → 错误（电压恒为 0＝报假电压）",
+            zeroScaleJsonReport.HasErrors && HasError(zeroScaleJsonReport.Issues, "milliVoltsScale"));
+
+        // 没声明 chargingOffset 时，chargingMask 不参与判定（早期误报）
+        var chargeMaskNoOffsetJson =
+            """[ { "key": "k", "vid": 1, "pid": 2, "featureReportId": 193, "chargingMask": 3 } ]""";
+        var chargeMaskNoOffsetReport = PeripheralProtocolTable.ValidateUserJson(chargeMaskNoOffsetJson, "用户表");
+        check("用户 JSON：没声明 chargingOffset 时 chargingMask 不参与判定（不误报）",
+            !HasError(chargeMaskNoOffsetReport.Issues, "chargingMask"));
+
+        // 候选表项：没被选中的那条也要能捞出来对着真机校验
+        var shadowTable = PeripheralProtocolTable.EffectiveTable(builtin,
+            new List<PeripheralProtocol> { Good("lenovo-idea5003") with { ValueOffset = 12 } });
+        var candidates = PeripheralProtocolTable.CandidatesFor(shadowTable, 0x17EF, 0xF006);
+        check("候选表项：vid/pid 对得上的全部条目都能被捞出来（含没被选中的那条）",
+            candidates.Count == 2 && candidates.Any(c => c.ValueOffset == 12) && candidates.Any(c => c.ValueOffset == 5));
+        var shadowBad = candidates.First(c => c.ValueOffset == 12) with { ValueOffset = 200 };
+        var shadowBadIssues = PeripheralProtocolTable.ValidateAgainstDevice(shadowBad, 64, 64);
+        check("候选表项：没被选中的那条同样要过偏移越界校验（200 > 64 → 错误）",
+            shadowBadIssues.Any(i => i.IsError && i.Field.Contains("valueOffset")));
     }
 }

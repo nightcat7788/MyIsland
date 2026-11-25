@@ -229,6 +229,10 @@ internal static class Program
     /// <summary>厂商协议命中时的信息（读数 + 来源描述）。</summary>
     private sealed record VendorHit(PeripheralReading Reading, string Source);
 
+    /// <summary>工具这一侧对某台设备的判定（用于与产品路径逐设备对齐）。</summary>
+    private sealed record ToolResult(
+        string DeviceKey, string Layer, string? EntryKey, int? Percent, string? ProductName);
+
     /// <summary>
     /// 自检模式：① 校验协议表本身是否合法 ② 报告当前连接的外设命中了表的哪一条、走的哪一层判定。
     ///
@@ -292,19 +296,51 @@ internal static class Program
         Console.WriteLine("---- 一、协议表校验 ----");
         var builtinReport = PeripheralProtocolTable.ValidateTable(builtin, "内置表");
         PrintTableReport(builtinReport);
+
+        // 覆盖是不是**真的**生效了：拿当前已连接的设备逐条判定。
+        // 只查"vid/pid 全为 0"这一种失配是不够的 —— usage 写错、vid 打错一位、
+        // minReportLength 写大，这些失配同样会让覆盖落空，而用户表看起来"配了"。
+        List<PeripheralDeviceKey> deviceKeys = new List<PeripheralDeviceKey>();
+        foreach (HidGroup g in HidBus.GroupByDevice(all))
+            foreach (HidInterface m in g.Members)
+                deviceKeys.Add(new PeripheralDeviceKey(g.Vid, g.Pid, m.UsagePage, m.Usage, m.OutputReportLength));
+        var overrideIssues = PeripheralProtocolTable.ValidateOverrideAgainstDevices(user, builtin, deviceKeys);
+        var mergedIssues = new List<PeripheralProtocolIssue>(userReport.Issues);
+        mergedIssues.AddRange(overrideIssues);
+        userReport = new PeripheralProtocolTableReport(userReport.Source, mergedIssues);
+
         PrintTableReport(userReport);
         if (userLoadError.Length > 0)
             Console.WriteLine("  ! 用户表装载失败（产品会保留旧表）：" + userLoadError);
 
         Console.WriteLine();
-        Console.WriteLine("---- 二、生效的协议表（用户条目在前：同 key 覆盖内置条目）----");
-        foreach (PeripheralProtocol entry in PeripheralProtocolTable.EffectiveTable(builtin, user))
+        Console.WriteLine("---- 二、生效的协议表（与产品同一套匹配规则：用户条目在前，先命中先用）----");
+        IReadOnlyList<PeripheralProtocol> effectiveTable = PeripheralProtocolTable.EffectiveTable(builtin, user);
+        foreach (PeripheralProtocol entry in effectiveTable)
         {
-            Console.WriteLine("  · " + entry.Key + "（" + SourceOf(entry, user) + "）  "
+            string source = SourceOf(entry, user, builtin);
+            Console.WriteLine("  · " + entry.Key + "（" + source + "）  "
                 + PeripheralProtocolTable.MatchSummary(entry)
                 + "  电量偏移=" + entry.ValueOffset + " 掩码=0x" + entry.ValueMask.ToString("X2")
                 + " 量程=" + entry.ValueMin + ".." + entry.ValueMax
                 + " 直读报告=" + entry.FeatureReportId);
+            if (source == "用户表")
+            {
+                foreach (PeripheralProtocol b in builtin)
+                {
+                    if (!string.Equals(b.Key, entry.Key, StringComparison.OrdinalIgnoreCase)) continue;
+                    Console.WriteLine("      ⇒ 与内置条目同 key：" + OverrideRelationText(entry, b));
+                }
+            }
+            else if (source == "内置表")
+            {
+                foreach (PeripheralProtocol u in user)
+                {
+                    if (!string.Equals(u.Key, entry.Key, StringComparison.OrdinalIgnoreCase)) continue;
+                    Console.WriteLine("      ⇒ 被同 key 的用户条目挡在后面（用户条目匹配不上时才会轮到这里）");
+                    break;
+                }
+            }
         }
 
         // ---------- 三、真机命中报告 ----------
@@ -314,9 +350,11 @@ internal static class Program
         if (groups.Count == 0) Console.WriteLine("  （本机没有枚举到任何 HID 集合）");
 
         int l1Count = 0, l3Count = 0, l4Count = 0, noneCount = 0;
+        List<ToolResult> toolResults = new List<ToolResult>();
         foreach (HidGroup group in groups)
         {
             string displayName = PeripheralClassifier.DisplayName(group.Members);
+            string vidPid = group.Vid.ToString("X4") + ":" + group.Pid.ToString("X4");
             Console.WriteLine();
             Console.WriteLine("[设备] " + displayName);
             Console.WriteLine("  VID=" + group.Vid.ToString("X4") + " PID=" + group.Pid.ToString("X4")
@@ -327,6 +365,35 @@ internal static class Program
                 m.UsagePage.ToString("X4") + ":" + m.Usage.ToString("X4")
                 + "(in=" + m.InputReportLength + ",out=" + m.OutputReportLength
                 + ",feat=" + m.FeatureReportLength + ")")));
+
+            // ---- 该设备 vid/pid 对得上的全部表项（含没被选中的那条）都要对着真机校验 ----
+            IReadOnlyList<PeripheralProtocol> candidates =
+                PeripheralProtocolTable.CandidatesFor(effectiveTable, group.Vid, group.Pid);
+            if (candidates.Count > 0)
+            {
+                Console.WriteLine("  ─ 表项对账（该设备 vid/pid 对得上的全部表项，含没被选中的）：");
+                foreach (PeripheralProtocol candidate in candidates)
+                {
+                    Console.WriteLine("      · " + candidate.Key + "（"
+                        + SourceOf(candidate, user, builtin) + "）  "
+                        + PeripheralProtocolTable.MatchSummary(candidate)
+                        + "  电量偏移=" + candidate.ValueOffset);
+                    bool matchedSome = false;
+                    foreach (HidInterface member in group.Members)
+                    {
+                        if (!PeripheralProtocolTable.Matches(candidate, group.Vid, group.Pid,
+                            member.UsagePage, member.Usage, member.OutputReportLength))
+                            continue;
+                        matchedSome = true;
+                        foreach (PeripheralProtocolIssue issue in PeripheralProtocolTable.ValidateAgainstDevice(
+                            candidate, member.FeatureReportLength, member.OutputReportLength,
+                            member.ReportIds))
+                            Console.WriteLine("        ! " + issue.Describe());
+                    }
+                    if (!matchedSome)
+                        Console.WriteLine("        （这条表项匹配不上本设备的任何集合 ⇒ 不会生效）");
+                }
+            }
 
             // ---- L1：标准 HID 电量 ----
             StdHit? std = null;
@@ -343,6 +410,7 @@ internal static class Program
                 Console.WriteLine("      来源：" + std.Source);
                 Console.WriteLine("      电量：" + std.Reading.Percent + "%");
                 Console.WriteLine("      命中层：L1（标准 HID 电量）");
+                toolResults.Add(new ToolResult(vidPid, "L1", null, std.Reading.Percent, displayName));
                 continue;
             }
             Console.WriteLine("  ─ L1 标准 HID 电量：未命中（能力表里没有电量 usage："
@@ -365,12 +433,8 @@ internal static class Program
             {
                 l3Count++;
                 Console.WriteLine("  ─ L3 厂商私有协议表：命中「" + protocol.Key + "」（来源："
-                    + SourceOf(protocol, user) + "）");
+                    + SourceOf(protocol, user, builtin) + "）");
                 Console.WriteLine("      表项：" + PeripheralProtocolTable.MatchSummary(protocol));
-                foreach (PeripheralProtocolIssue issue in PeripheralProtocolTable.ValidateAgainstDevice(
-                    protocol, protocolMember.FeatureReportLength, protocolMember.OutputReportLength,
-                    protocolMember.ReportIds))
-                    Console.WriteLine("      ! " + issue.Describe());
 
                 VendorHit? vendor = ReadVendorSelfTest(protocolMember, protocol);
                 if (vendor is not null)
@@ -391,6 +455,8 @@ internal static class Program
                     Console.WriteLine("      充电位：未知");
                 }
                 Console.WriteLine("      命中层：L3（厂商私有协议表）");
+                toolResults.Add(new ToolResult(vidPid, "L3", protocol.Key,
+                    vendor?.Reading.Percent, ProtocolProductName(protocol, displayName)));
                 continue;
             }
 
@@ -401,11 +467,13 @@ internal static class Program
                 Console.WriteLine("  ─ L4 通用识别兜底：命中（名称含无线/接收器特征）");
                 Console.WriteLine("      电量：未知（没有任何可用的电量来源，不填 0% 或 100%）");
                 Console.WriteLine("      命中层：L4（通用识别兜底）");
+                toolResults.Add(new ToolResult(vidPid, "L4", null, null, displayName));
                 continue;
             }
 
             noneCount++;
             Console.WriteLine("  ─ 命中层：未命中（没有标准 HID 电量 usage，也不在协议表里，名称也不像外设接收器）");
+            toolResults.Add(new ToolResult(vidPid, "未命中", null, null, null));
         }
 
         // ---------- 四、产品路径复核 ----------
@@ -420,7 +488,7 @@ internal static class Program
         }
         if (snapshot.Count == 0)
         {
-            Console.WriteLine("  （产品路径这一轮没有产出读数 —— 这不否定上面的命中报告，只说明产品这轮没读到）");
+            Console.WriteLine("  （产品路径这一轮没有产出读数 —— 见下面的逐设备对齐）");
         }
         foreach (DeviceInfo d in snapshot)
         {
@@ -428,6 +496,72 @@ internal static class Program
             Console.WriteLine("  名称=" + d.Name + " 类型=" + d.Kind + " 电量=" + percent
                 + " 档位=" + (d.LevelText ?? "-") + " 充电=" + d.Charging
                 + " 观测于=" + (d.ObservedAt?.ToString("HH:mm:ss") ?? "-"));
+        }
+
+        // ---- 逐设备对齐：产品路径 vs 工具路径 ----
+        // 之前这里只是把产品快照打印出来，没有任何比较 —— 报告却写着"两个数字一致才算通了"。
+        // 现在真的比：判定层/有没有读数对不上 = 硬不一致（拦门禁）；
+        // 只是百分比不同 = 两次独立读取期间设备读数可能变了（只提示）。
+        Console.WriteLine("  逐设备对齐（产品快照不带 VID:PID 与命中层 ⇒ 按设备名对齐）：");
+        int hardMismatch = 0, softMismatch = 0;
+        List<DeviceInfo> pool = new List<DeviceInfo>(snapshot);
+        foreach (ToolResult r in toolResults)
+        {
+            DeviceInfo? product = null;
+            if (r.ProductName is not null)
+            {
+                for (int i = 0; i < pool.Count; i++)
+                {
+                    if (!string.Equals(pool[i].Name, r.ProductName, StringComparison.Ordinal)) continue;
+                    product = pool[i];
+                    pool.RemoveAt(i);
+                    break;
+                }
+            }
+            string toolText = r.Layer + (r.EntryKey is null ? "" : " / " + r.EntryKey)
+                + " / " + (r.Percent is { } tp ? tp + "%" : "未知");
+            if (product is null)
+            {
+                if (r.ProductName is null)
+                {
+                    Console.WriteLine("    · " + r.DeviceKey + "：工具=" + toolText
+                        + "；产品=（无条目）⇒ ✓ 一致（两路都没产出读数）");
+                }
+                else
+                {
+                    hardMismatch++;
+                    Console.WriteLine("    · " + r.DeviceKey + "：工具=" + toolText
+                        + "；产品=（没有对应条目）⇒ ⚠ 两路不一致");
+                }
+                continue;
+            }
+            int? productPercent = product.LevelText == "未知" ? null : product.Percent;
+            string productText = product.Name + " / "
+                + (productPercent is { } pp ? pp + "%" : "未知");
+            if (productPercent == r.Percent)
+            {
+                Console.WriteLine("    · " + r.DeviceKey + "：工具=" + toolText
+                    + "；产品=" + productText + " ⇒ ✓ 一致");
+            }
+            else if (r.Percent is not null && productPercent is not null)
+            {
+                softMismatch++;
+                Console.WriteLine("    · " + r.DeviceKey + "：工具=" + toolText
+                    + "；产品=" + productText
+                    + " ⇒ ⚠ 读数不同（两次独立读取，设备读数可能在这期间变化）");
+            }
+            else
+            {
+                hardMismatch++;
+                Console.WriteLine("    · " + r.DeviceKey + "：工具=" + toolText
+                    + "；产品=" + productText + " ⇒ ⚠ 两路不一致（一路读到、一路没读到）");
+            }
+        }
+        foreach (DeviceInfo extra in pool)
+        {
+            hardMismatch++;
+            Console.WriteLine("    · 产品多出一条：" + extra.Name
+                + " ⇒ ⚠ 两路不一致（工具这边没有对应设备）");
         }
 
         // ---------- 汇总 ----------
@@ -439,11 +573,16 @@ internal static class Program
             + "（错误 " + userReport.ErrorCount + "，警告 " + userReport.WarningCount + "）");
         Console.WriteLine("  设备命中：共 " + groups.Count + " 台 —— L1 " + l1Count
             + " 台 / L3 " + l3Count + " 台 / L4 " + l4Count + " 台 / 未命中 " + noneCount + " 台");
+        Console.WriteLine("  两路复核（工具 vs 产品）："
+            + (hardMismatch == 0
+                ? "一致"
+                : "⚠ 不一致 " + hardMismatch + " 处（判定/有无读数）")
+            + (softMismatch > 0 ? "，另有 " + softMismatch + " 处只是读数不同" : ""));
 
-        bool failed = builtinReport.HasErrors || userReport.HasErrors;
+        bool failed = builtinReport.HasErrors || userReport.HasErrors || hardMismatch > 0;
         Console.WriteLine(failed
-            ? "  结论：表校验有错误 ⇒ 退出码 1"
-            : "  结论：表校验通过 ⇒ 退出码 0");
+            ? "  结论：表校验有错误或两路复核不一致 ⇒ 退出码 1"
+            : "  结论：表校验通过、两路复核一致 ⇒ 退出码 0");
         return failed ? 1 : 0;
     }
 
@@ -465,13 +604,45 @@ internal static class Program
         }
     }
 
-    /// <summary>这条表项来自用户表还是内置表。</summary>
-    private static string SourceOf(PeripheralProtocol protocol, List<PeripheralProtocol> user)
+    /// <summary>
+    /// 这条表项来自用户表还是内置表 —— 按**对象同一性**判定，不是按 key。
+    ///
+    /// 为什么不能按 key：用户表里存在同 key 条目时，任何同 key 的命中都会被标成"用户表"，
+    /// 哪怕真正命中的是内置条目（用户条目匹配不上 ⇒ 回退内置条目）。
+    /// 命中哪一条由产品 <see cref="PeripheralProtocols.Match"/> 决定，来源标签必须跟着它走。
+    /// </summary>
+    private static string SourceOf(PeripheralProtocol protocol,
+        List<PeripheralProtocol> user, List<PeripheralProtocol> builtin)
     {
         foreach (PeripheralProtocol u in user)
-            if (string.Equals(u.Key, protocol.Key, StringComparison.OrdinalIgnoreCase)) return "用户表";
-        return "内置表";
+            if (ReferenceEquals(u, protocol)) return "用户表";
+        foreach (PeripheralProtocol b in builtin)
+            if (ReferenceEquals(b, protocol)) return "内置表";
+        return "未知来源";
     }
+
+    /// <summary>覆盖关系的人读说明（与事实一致，不说无根据的话）。</summary>
+    private static string OverrideRelationText(PeripheralProtocol user, PeripheralProtocol builtin)
+    {
+        switch (PeripheralProtocolTable.CompareOverride(user, builtin))
+        {
+            case PeripheralOverrideRelation.Covers:
+                return "匹配条件一致或更宽 ⇒ **顶掉**内置条目（用户条目先命中先用）";
+            case PeripheralOverrideRelation.Partial:
+                return "匹配条件有重叠但更窄（"
+                    + PeripheralProtocolTable.DescribeOverrideMismatch(user, builtin)
+                    + "）⇒ **只顶掉一部分**设备，其余仍走内置条目";
+            default:
+                return "**顶不掉**：" + PeripheralProtocolTable.DescribeOverrideMismatch(user, builtin)
+                    + " ⇒ 实际仍会用内置条目";
+        }
+    }
+
+    /// <summary>产品给这台设备起的名字（与产品 PeripheralBatteryService 的算法逐字一致）。</summary>
+    private static string ProtocolProductName(PeripheralProtocol protocol, string fallback)
+        => protocol.Vendor.Length > 0 && protocol.Model.Length > 0
+            ? protocol.Vendor + " " + protocol.Model
+            : (protocol.Model.Length > 0 ? protocol.Model : fallback);
 
     /// <summary>
     /// L1：按标准电量 usage 读（与产品同一套规则：Feature 报告主动读 / Input 报告等上报）。
