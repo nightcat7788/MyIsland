@@ -369,13 +369,18 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: 新增 360° 闭环 RenderKit.R
 ### Task 3: 收起态排版器升级为「视觉组 + 可选分隔线」
 
 **Files:**
-- Modify: `src/Island.App/Controls/IslandCanvas.cs`（新增嵌套类型 `CompactGroup`；替换 `DrawCompactGroups`；改 4 个调用点）
+- Modify: `src/Island.App/Controls/IslandCanvas.cs`（新增嵌套类型 `CompactGroup`；替换 `DrawCompactGroups`；改 **5** 个调用点：monitor / combo / dash / devices / clock）
+- Modify: `src/Island.App/Controls/CompactSpec.cs`（追加 `GroupAdvance` 与排版纯函数 `PlanCompactGroups`）
+- Modify: `src/Island.App/Controls/RenderKit.cs`（只改 `Ring` 的注释：负半径 / NaN 都不抛异常，但形状无意义 ⇒ 提前返回不画）
+- Modify: `tests/Island.Tests/CompactSpecTests.cs`（追加组间距断言 + 15 条截断决策断言）
+- Modify: `tests/Island.Tests/DesignSystemTests.cs`（`Ring` 的坏值防线用例，单列一条有名断言）
 
 **Interfaces:**
-- Consumes: `CompactSpec.SeparatorBand / PadX / ClockGap / DividerHalfHeight / DividerXAfter / GroupAdvance`（Task 1；`GroupAdvance` 在本任务 Step 3 新增）
+- Consumes: `CompactSpec.SeparatorBand / PadX / ClockGap / DividerHalfHeight / DividerXAfter / GroupAdvance / PlanCompactGroups`（Task 1；`GroupAdvance` 与 `PlanCompactGroups` 在本任务 Step 3 新增）
 - Produces:
   - `private sealed class IslandCanvas.CompactGroup`：`double Width { get; init; }`、`Action<double> Draw { get; init; }`、`bool DividerAfter { get; init; }`、`double? TrailingGap { get; init; }`（null = 用渲染层默认组间距）
   - `private double DrawCompactGroups(DrawingContext dc, Palette pal, Rect r, double cy, List<CompactGroup> groups, double gap = 16, double padding = 14, bool drawDividers = false)`
+  - `public static (int Shown, double ContentWidth, double MoreOffset) CompactSpec.PlanCompactGroups(int count, Func<int, double> widthOf, Func<int, double?> trailingGapOf, double defaultGap, double available, Func<int, double> moreWidth)` —— 排版决策的**纯计算**（可见组数 / 内容总宽 / 「+N」偏移）；渲染层只照着画 ⇒「外观不变」由测试守住
   - **本任务是纯重构**：默认值保持旧的 `gap=16 / padding=14`，保证 monitor/devices/clipboard 等视图外观不变；combo 的新规格由 Task 4 显式传参实现。
 
 - [ ] **Step 1: 写失败的测试**
@@ -408,6 +413,44 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: 新增 360° 闭环 RenderKit.R
     /// </summary>
     public static double GroupAdvance(double? trailingGap, double defaultGap)
         => trailingGap ?? defaultGap;
+
+    /// <summary>
+    /// 收起态分组排版（纯计算）：决定能显示几组、「+N」画在哪、内容占多宽。
+    ///
+    /// 规则（与 2026-11-25 修复前的旧渲染层逐条一致，别顺手改）：
+    ///   - 每组拥有它**后面**那一段组间距：组 i 与组 i+1 之间 = 组 i 的 TrailingGap（缺省 defaultGap）；
+    ///   - 预算校验时「+N」跟在候选组**后面**，所以为它预留的空间要用**候选组自己**的 TrailingGap
+    ///     （用上一组的会算错：异质间距时会把候选组错误地挤掉或错误地放进来）；
+    ///   - 第一个放不下的候选组出现时就停，它后面的组全部合并进「+N」。
+    ///
+    /// moreWidth(n) = 「+n」这行字的宽度（n = 被折叠掉的组数）。
+    /// </summary>
+    /// <returns>可见组数 / 收起态内容总宽（不含胶囊左右内边距，含「+N」占位）/ 「+N」左边缘相对第一组左边缘的偏移。</returns>
+    public static (int Shown, double ContentWidth, double MoreOffset) PlanCompactGroups(
+        int count, Func<int, double> widthOf, Func<int, double?> trailingGapOf,
+        double defaultGap, double available, Func<int, double> moreWidth)
+    {
+        double used = 0;        // 已显示内容的宽（不含最后一段组间距）
+        int shown = 0;
+        double prevGap = 0;     // 上一组到本组的间距
+        double lastGap = 0;     // 最后一个可见组之后的间距
+        for (int i = 0; i < count; i++)
+        {
+            double next = used + (shown > 0 ? prevGap : 0) + widthOf(i);
+            int remaining = count - i - 1;
+            double ownGap = GroupAdvance(trailingGapOf(i), defaultGap);
+            // 「+N」跟在候选组后面 ⇒ 为它预留的空间用候选组自己的间距
+            double suffix = remaining > 0 ? ownGap + moreWidth(remaining) : 0;
+            if (next + suffix > available) break;
+            used = next;
+            prevGap = ownGap;
+            lastGap = ownGap;
+            shown++;
+        }
+        double moreOffset = used + (shown > 0 ? lastGap : 0);   // 「+N」的左边缘
+        double contentWidth = shown < count ? moreOffset + moreWidth(count - shown) : used;
+        return (shown, contentWidth, moreOffset);
+    }
 ```
 
 再在 `src/Island.App/Controls/IslandCanvas.cs` 的 `DrawCompactGroups` 方法之前插入：
@@ -441,33 +484,30 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: 新增 360° 闭环 RenderKit.R
     /// 收起态分组排版：组与组之间按「上一组的 TrailingGap（缺省用 gap 参数）」留白，
     /// 需要时在留白里画 Hairline 竖线（mac 的 Gap()：线在「组尾 + 18px」，偏后 6px，不在正中）。
     /// 宽度不够时截断尾部并显示 "+N"；被截断时最后一个可见组**不**画分隔线。
+    ///
+    /// 排版决策（显示几组 / 「+N」画在哪 / 内容多宽）在 <see cref="CompactSpec.PlanCompactGroups"/>
+    /// 里做纯计算，这里只负责照着画 —— 这样「外观不变」由测试守住，不靠人读代码。
     /// </summary>
     private double DrawCompactGroups(DrawingContext dc, Palette pal, Rect r, double cy,
         List<CompactGroup> groups, double gap = 16, double padding = 14,
         bool drawDividers = false)
     {
         double available = Math.Max(0, CompactWidthBudget - padding * 2);
-        double used = 0;
-        int shown = 0;
-        double prevGap = 0;   // 上一组到本组的间距（本组之后用本组的 TrailingGap）
-        for (int i = 0; i < groups.Count; i++)
-        {
-            double next = used + (shown > 0 ? prevGap : 0) + groups[i].Width;
-            int remaining = groups.Count - i - 1;
-            double suffix = remaining > 0 ? prevGap + Text($"+{remaining}", 11, pal.TextDim, ppd: Ppd).Width : 0;
-            if (next + suffix > available) break;
-            used = next;
-            prevGap = CompactSpec.GroupAdvance(groups[i].TrailingGap, gap);
-            shown++;
-        }
+        var plan = CompactSpec.PlanCompactGroups(groups.Count,
+            i => groups[i].Width,
+            i => groups[i].TrailingGap,
+            gap, available,
+            n => Text($"+{n}", 11, pal.TextDim, ppd: Ppd).Width);
         double x = r.X + padding;
-        for (int i = 0; i < shown; i++)
+        for (int i = 0; i < plan.Shown; i++)
         {
             double groupStart = x;
             groups[i].Draw(groupStart);
             double groupEnd = groupStart + groups[i].Width;
-            bool hasNext = i < shown - 1;
-            x = groupEnd + (hasNext ? CompactSpec.GroupAdvance(groups[i].TrailingGap, gap) : 0);
+            bool hasNext = i < plan.Shown - 1;
+            // 每个可见组之后都照常推进一段组间距：最后一个可见组后面是「+N」，
+            // 也得留出这一段（旧行为；塌成紧贴会让「+N」贴住最后一根柱子）。
+            x = groupEnd + CompactSpec.GroupAdvance(groups[i].TrailingGap, gap);
             // 组间分隔线：mac 的 Gap() 在总带里画线（组尾 + 18px = 组尾 + 1.5 × 单侧组间距）；
             // 最后一个可见组后面不画（其后是 +N 或空白）
             if (drawDividers && groups[i].DividerAfter && hasNext)
@@ -478,13 +518,12 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: 新增 360° 闭环 RenderKit.R
                     new Point(lineX, cy + CompactSpec.DividerHalfHeight));
             }
         }
-        if (shown < groups.Count)
+        if (plan.Shown < groups.Count)
         {
-            var more = Text($"+{groups.Count - shown}", 11, pal.TextDim, ppd: Ppd);
-            dc.DrawText(more, new Point(x, cy - more.Height / 2));
-            used += (shown > 0 ? prevGap : 0) + more.Width;
+            var more = Text($"+{groups.Count - plan.Shown}", 11, pal.TextDim, ppd: Ppd);
+            dc.DrawText(more, new Point(r.X + padding + plan.MoreOffset, cy - more.Height / 2));
         }
-        return Math.Min(CompactWidthBudget, Math.Max(80, padding * 2 + used));
+        return Math.Min(CompactWidthBudget, Math.Max(80, padding * 2 + plan.ContentWidth));
     }
 ```
 
@@ -634,20 +673,47 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: 新增 360° 闭环 RenderKit.R
     });
 ```
 
+`DrawClock`（原 L937 附近，**brief 原先漏列，但签名换成 `List<CompactGroup>` 后不改就编译不过**，故一并转换）：
+
+```csharp
+    // 改前
+    var groups = new List<(double Width, Action<double> Draw)>
+    {
+        (tw, x => Num(dc, DateTime.Now.ToString("HH:mm"), x, Math.Round(cy + 15 * 0.36), 15, pal.Text, true, ppd))
+    };
+    // 改后
+    var groups = new List<CompactGroup>
+    {
+        new CompactGroup
+        {
+            Width = tw,
+            Draw = x => Num(dc, DateTime.Now.ToString("HH:mm"), x, Math.Round(cy + 15 * 0.36), 15, pal.Text, true, ppd),
+        },
+    };
+```
+
+（它内部两条 `groups.Add` 同样按上面的写法换成 `new CompactGroup { Width = …, Draw = … }`。）
+
 - [ ] **Step 5: 构建并跑测试，确认全绿**
 
 ```powershell
 & 'D:\YQDESK\.dotnet\dotnet.exe' build 'D:\YQDESK\MyIsland-src\Island.sln' -c Release --nologo
 & 'D:\YQDESK\.dotnet\dotnet.exe' run --project 'D:\YQDESK\MyIsland-src\tests\Island.Tests\Island.Tests.csproj' -c Release --nologo
 ```
-预期：构建 0 警告 0 错误；测试 `全部通过：309 条`（307 + 本任务新增 2 条），退出码 0。
+预期：构建 0 警告 0 错误；测试 `全部通过：325 条`（307 基线 + 本任务新增 2 条组间距断言 + 15 条截断决策断言 + 1 条 Ring 坏值用例），退出码 0。
 
 - [ ] **Step 6: 提交**
 
 ```powershell
-git -C 'D:\YQDESK\MyIsland-src' add src/Island.App/Controls/IslandCanvas.cs tests/Island.Tests/CompactSpecTests.cs
+git -C 'D:\YQDESK\MyIsland-src' add src/Island.App/Controls/CompactSpec.cs src/Island.App/Controls/IslandCanvas.cs src/Island.App/Controls/RenderKit.cs tests/Island.Tests/CompactSpecTests.cs tests/Island.Tests/DesignSystemTests.cs
 git -C 'D:\YQDESK\MyIsland-src' commit -m "refactor: 收起态排版器升级为视觉组 + 可选组间分隔线（对齐 mac 的 Gap/Divider）"
 ```
+
+> **2026-11-25 修复轮 1（评审后）**：本任务的首个提交（逐字照抄上面的代码块）带两处截断路径的外观回归 ——
+> 「+N」紧贴最后一个可见元素、以及 `suffix` 用错组间距导致截断判据放宽。已修：
+> 截断决策抽成纯函数 `CompactSpec.PlanCompactGroups`（可见组数 / 内容总宽 / 「+N」偏移），渲染层只照着画；
+> 「+N」按旧行为推进一个组间距；`suffix` 改用候选组自己的 `TrailingGap`（顺带修掉 Task 4 异质间距的前瞻问题）。
+> 修复提交：`fix: 恢复 +N 截断路径的旧行为（间距与判据），并把截断决策抽成可测纯函数`。
 
 ---
 
