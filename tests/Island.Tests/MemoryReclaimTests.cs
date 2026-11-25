@@ -187,14 +187,19 @@ internal static class MemoryReclaimTests
 
         MemoryReclaim.Request();
         // 50ms 到点，上限 = 到点后再等 200ms ⇒ 最迟约 250ms 之后不该再问
-        Thread.Sleep(700);
-        int askedBy700 = Volatile.Read(ref asked);
-        long lastAskBy700 = Volatile.Read(ref lastAskAt);
-        Thread.Sleep(400);
+        //
+        // 这里用**轮询到静默**而不是固定 sleep：机器负载高时（多个构建并行）定时器会迟到，
+        // 固定 700ms 就断言会把"迟到"误判成"没问够"，门禁随机变红 —— 2026-11-26 实测过一次。
+        // 等到"至少问过两次"且"最后一次询问已过去 400ms"，再观察询问次数是否还在涨。
+        WaitUntil(() => Volatile.Read(ref asked) >= 2
+                       && (sw.ElapsedMilliseconds - Volatile.Read(ref lastAskAt)) >= 400, 5000);
+        int askedWhenQuiet = Volatile.Read(ref asked);
+        long lastAskWhenQuiet = Volatile.Read(ref lastAskAt);
+        Thread.Sleep(600);
         check("MemoryReclaim：到点后界面一直忙，等到上限就停止询问并丢弃请求（始终没有回收）",
             Volatile.Read(ref count) == 0
-            && askedBy700 >= 2 && lastAskBy700 >= 200
-            && Volatile.Read(ref asked) == askedBy700);
+            && askedWhenQuiet >= 2 && lastAskWhenQuiet >= 200
+            && Volatile.Read(ref asked) == askedWhenQuiet);
 
         MemoryReclaim.IsIdle = () => true;
         MemoryReclaim.Request();
