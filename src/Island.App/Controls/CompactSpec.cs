@@ -53,6 +53,38 @@ public static class CompactSpec
     /// <summary>360° 闭环的弧占比死区（mac RenderKit.Ring 的 f 大于 0.004 才画弧，RenderKit.cs L191）。</summary>
     public const double RingDeadZone = 0.004;
 
+    // ---------- dash 读数元素：图标盒（mac dash 的形态，两端对齐的本次目标） ----------
+    // mac 侧 dash 的读数元素不是「文字标签」，而是「小图标 + 数值」的元素块，
+    // 有两种盒（src/Island.Avalonia/IslandCanvas.cs DrawDash L2000-L2022）：
+    //   温度项 = 图标盒（CompactIconBox，图标即盒内容）+ CompactIconGap + 数值槽
+    //   占用项 = 环盒（DashRing 圆环，环心画图标）+ 5 + 数值槽
+    // 「盒」是**排版槽位**（mac 侧不画圆角底板），所以这里的数值全是槽位尺寸。
+
+    /// <summary>图标盒边长（mac CompactIconBox = 12 × 0.9，IslandCanvas.cs L558）。</summary>
+    public const double IconBox = 12 * 0.9;                 // 10.8
+    /// <summary>图标盒 → 数值间距（mac CompactIconGap，IslandCanvas.cs L558）。</summary>
+    public const double IconGap = 4;
+    /// <summary>同组内相邻图标盒间距（mac CompactTempGap，IslandCanvas.cs L558）。</summary>
+    public const double TempGap = 10;
+    /// <summary>dash 占用环直径（mac DashRing，IslandCanvas.cs L1873）。</summary>
+    public const double DashRing = 16;
+    /// <summary>dash 占用环线宽（mac DrawDash 里的 2.2，IslandCanvas.cs L2016 / L2028）。</summary>
+    public const double DashRingThickness = 2.2;
+    /// <summary>环心图标边长（mac DrawGaugeCenter 的 12 × 0.6，IslandCanvas.cs L492）。</summary>
+    public const double DashRingIcon = 12 * 0.6;             // 7.2
+    /// <summary>环 → 数值间距（mac DrawDash 里的 5，IslandCanvas.cs L2018 / L2030）。</summary>
+    public const double DashRingGap = 5;
+    /// <summary>dash 占用组数值最小槽宽（mac DashLayout.UsageW 里的 34，IslandCanvas.cs L1893）。</summary>
+    public const double DashValueMinW = 34;
+    /// <summary>dash 同组内相邻占用项间距（mac DashItemGap，IslandCanvas.cs L1874）。</summary>
+    public const double DashItemGap = 14;
+    /// <summary>
+    /// dash 图标的描边粗细（16 网格单位）：与 mac 对齐。
+    /// mac 描边 = 1.3 × 缩放；Windows 描边 = thickness × 盒边长/16
+    /// ⇒ thickness = 1.3 × 16/12 ≈ 1.7333（IconPen 的 1.3，IslandCanvas.cs L2323）。
+    /// </summary>
+    public const double IconStroke = 1.3 * 16.0 / 12.0;     // 1.7333
+
     /// <summary>
     /// 一组环的总宽：每环 = 环径 + 环→数值间距 + max(数值宽, 最小槽宽)，
     /// 组内相邻环之间再插一个 GaugeGap，末环后面不插。
@@ -147,26 +179,25 @@ public static class CompactSpec
     }
 
     /// <summary>
-    /// dash 单行项宽：标签 + 箭头/数值间距 + 数值槽（窄数值按最小槽兜底）。
+    /// dash **网速项**宽：箭头标签 + 箭头/数值间距 + 数值槽（窄数值按最小槽兜底）。
     ///
-    /// 注意：这是 **Windows 侧**的组合，mac dash 里没有对应公式，别去 mac 找「同步对象」：
-    /// mac dash 是「图标槽 + 图标间距 + max(数值宽, CompactValueMinW) + 温度间距」
-    /// （IslandCanvas.cs L1863），既没有「标签 + 数值」这种行内排布，
-    /// 它的占用值最小槽也是 34（L1864-L1865）而不是本文件的 ValueMinW = 21。
+    /// 适用范围只剩网速：mac dash 的网速是纯文字箭头（"↓123.4K"，IslandCanvas.cs L2051-L2052），
+    /// 不是图标盒，所以网速项保持改动前的行内排布。
+    /// 其余读数项（温度 / 占用）已改成图标盒形态 ⇒ 用 <see cref="IconBoxItemWidth"/>。
     /// 中间那个间距取自 mac 的箭头 → 数值间距（ArrowValueGap，IslandCanvas.cs L596-L597）。
     /// </summary>
     public static double InlineItemWidth(double labelWidth, double valueWidth)
         => labelWidth + ArrowValueGap + Math.Max(valueWidth, ValueMinW);
 
     /// <summary>
-    /// dash 单行项**组**的内容宽：各项宽之和 + 组内间距（(n-1) × GaugeGap）。
+    /// dash **网速组**的内容宽：各项宽之和 + 组内间距（(n-1) × GaugeGap）。
     /// 各项宽由 <see cref="InlineItemWidth"/> 给定。
     ///
     /// ⚠️ valueWidth 必须传**实画文本宽**（不是"最宽样本"）：
     /// 组宽就是这一组真正画出来的宽度，组尾又是分隔线的定位基准（线在组尾 + 18）。
     /// 用样本宽预留会让组尾比最后一个字形多出一截空洞（分隔线整体右移、且随读数跳变）——
     /// 2026-11-25 复审 Must-fix 1 就是这个 bug（每项空出 7.1px）。
-    /// mac 的 DashLayout.TempW / UsageW 同口径：量的是 max(实画文本宽, CompactValueMinW)。
+    /// mac 的 DashLayout.TempW / UsageW 同口径：量的是 max(实画文本宽, 最小槽)。
     /// </summary>
     public static double InlineGroupWidth(int count, Func<int, double> labelWidth, Func<int, double> valueWidth)
     {
@@ -175,6 +206,48 @@ public static class CompactSpec
         for (int i = 0; i < count; i++)
             w += InlineItemWidth(labelWidth(i), valueWidth(i)) + GaugeGap;
         return w - GaugeGap;
+    }
+
+    /// <summary>
+    /// dash **温度项**宽：图标盒 + 盒→数值间距 + 数值槽（窄数值按最小槽兜底）。
+    /// 对应 mac 的 DashLayout.TempW（IslandCanvas.cs L1892）：
+    /// 盒 = <see cref="IconBox"/>、间距 = <see cref="IconGap"/>、最小槽 = <see cref="ValueMinW"/>。
+    /// </summary>
+    public static double TempItemWidth(double valueWidth)
+        => IconBox + IconGap + Math.Max(valueWidth, ValueMinW);
+
+    /// <summary>
+    /// dash **占用项**宽：环盒 + 盒→数值间距 + 数值槽（窄数值按最小槽兜底）。
+    /// 对应 mac 的 DashLayout.UsageW（IslandCanvas.cs L1893）：
+    /// 盒 = <see cref="DashRing"/>、间距 = <see cref="DashRingGap"/>、最小槽 = <see cref="DashValueMinW"/>。
+    /// </summary>
+    public static double UsageItemWidth(double valueWidth)
+        => DashRing + DashRingGap + Math.Max(valueWidth, DashValueMinW);
+
+    /// <summary>
+    /// dash **温度组**的内容宽：Σ项宽 + 组内间距（(n-1) × <see cref="TempGap"/>，末项后面不插）。
+    /// valueWidth 必须传**实画文本宽**（同 <see cref="InlineGroupWidth"/> 的理由：组尾是分隔线的定位基准）。
+    /// </summary>
+    public static double TempGroupWidth(int count, Func<int, double> valueWidth)
+    {
+        if (count <= 0) return 0;
+        double w = 0;
+        for (int i = 0; i < count; i++)
+            w += TempItemWidth(valueWidth(i)) + TempGap;
+        return w - TempGap;
+    }
+
+    /// <summary>
+    /// dash **占用组**的内容宽：Σ项宽 + 组内间距（(n-1) × <see cref="DashItemGap"/>，末项后面不插）。
+    /// valueWidth 必须传**实画文本宽**（同 <see cref="InlineGroupWidth"/> 的理由）。
+    /// </summary>
+    public static double UsageGroupWidth(int count, Func<int, double> valueWidth)
+    {
+        if (count <= 0) return 0;
+        double w = 0;
+        for (int i = 0; i < count; i++)
+            w += UsageItemWidth(valueWidth(i)) + DashItemGap;
+        return w - DashItemGap;
     }
 
     /// <summary>

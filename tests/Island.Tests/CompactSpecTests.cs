@@ -89,6 +89,47 @@ internal static class CompactSpecTests
             CompactSpec.DividerXAfter(CompactSpec.InlineGroupWidth(3, _ => LabelW, _ => V2))
             == CompactSpec.InlineGroupWidth(3, _ => LabelW, _ => V2) + 18);
 
+        // ---- dash 图标盒（2026-11-26 两端形态对齐）----
+        // mac 的 dash 读数元素是「图标盒 + 数值」，不是文字标签。源：
+        //   src/Island.Avalonia/IslandCanvas.cs L558（CompactIconBox = 12×0.9 / CompactIconGap = 4 / CompactTempGap = 10）
+        //   L1873-L1874（DashRing = 16 / DashItemGap = 14）
+        //   L492（环心图标 12×0.6 = 7.2）
+        //   L2016-L2022（环线宽 2.2 / 环→数值 5 / 占用数值最小槽 34）
+        // 图标盒 / 环心图标在 mac 侧是表达式（12 × 0.9、12 × 0.6），IEEE754 下不等于十进制字面量 ⇒ 用容差比较。
+        check("规格：图标盒边长 = 10.8（mac CompactIconBox = 12 × 0.9）",
+            Math.Abs(CompactSpec.IconBox - 10.8) < 1e-9);
+        check("规格：图标盒→数值间距 = 4（mac CompactIconGap）", CompactSpec.IconGap == 4);
+        check("规格：相邻图标盒间距 = 10（mac CompactTempGap）", CompactSpec.TempGap == 10);
+        check("规格：dash 占用环直径 = 16（mac DashRing）", CompactSpec.DashRing == 16);
+        check("规格：dash 占用环线宽 = 2.2（mac DrawDash 的环线宽）", CompactSpec.DashRingThickness == 2.2);
+        check("规格：环心图标边长 = 7.2（mac 12 × 0.6）",
+            Math.Abs(CompactSpec.DashRingIcon - 7.2) < 1e-9);
+        check("规格：环→数值间距 = 5（mac DrawDash）", CompactSpec.DashRingGap == 5);
+        check("规格：dash 占用数值最小槽宽 = 34（mac DashLayout.UsageW）", CompactSpec.DashValueMinW == 34);
+        check("规格：dash 相邻占用项间距 = 14（mac DashItemGap）", CompactSpec.DashItemGap == 14);
+        check("规格：图标描边 = 1.3 × 16/12（对齐 mac 的 1.3 × 缩放）",
+            Math.Abs(CompactSpec.IconStroke - 1.3 * 16.0 / 12.0) < 1e-12);
+
+        // ---- 图标盒项宽 / 组宽 ----
+        // 实测文本宽（Consolas 13 bold，ppd = 1）："125°" / "100%" = 28.5867，"58°" = 21.44，"0%" = 14.2933。
+        const double V3Box = 28.5866666666667;
+        check("图标盒项宽：温度项 = 图标盒 10.8 + 间距 4 + 数值槽",
+            Math.Abs(CompactSpec.TempItemWidth(V3Box) - 43.3866666666667) < 1e-9);
+        check("图标盒项宽：窄值按最小槽 21 兜底",
+            CompactSpec.TempItemWidth(14.2933333333333) == CompactSpec.TempItemWidth(21));
+        check("图标盒项宽：占用项 = 环 16 + 间距 5 + 最小槽 34（\"100%\" 不足 34，按槽宽算）",
+            CompactSpec.UsageItemWidth(V3Box) == 55);
+        check("图标盒组宽：3 个温度项（3 位读数）= 150.16",
+            Math.Abs(CompactSpec.TempGroupWidth(3, _ => V3Box) - 150.16) < 1e-9);
+        check("图标盒组宽：3 个占用项 = 193（项 55 + 组内间距 14 × 2）",
+            CompactSpec.UsageGroupWidth(3, _ => V3Box) == 193);
+        check("图标盒组宽：空组 = 0",
+            CompactSpec.TempGroupWidth(0, _ => V3Box) == 0
+            && CompactSpec.UsageGroupWidth(0, _ => V3Box) == 0);
+        check("图标盒组宽随读数变化（预留宽 = 实画宽，不是样本宽）",
+            Math.Abs(CompactSpec.TempGroupWidth(3, _ => V3Box)
+                   - CompactSpec.TempGroupWidth(3, _ => 21.44) - (V3Box - 21.44) * 3) < 1e-9);
+
         // ---- 360° 闭环几何 ----
         check("环半径 = 直径/2 - 线宽/2", CompactSpec.RingRadius(20, 2.8) == 8.6);
         check("环半径不设下限（mac 公式：线宽=直径时半径为 0）", CompactSpec.RingRadius(4, 4) == 0);
