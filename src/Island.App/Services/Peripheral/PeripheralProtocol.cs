@@ -95,6 +95,7 @@ public sealed record PeripheralProtocol
 
 /// <summary>
 /// 协议表：内置条目 + 用户从 %LOCALAPPDATA%\MyIsland\peripheral-protocols.json 追加的条目。
+/// **用户条目优先**（同 Key 时覆盖内置条目）—— 用户表是唯一的纠错通道，不能是死路。
 /// </summary>
 public static class PeripheralProtocols
 {
@@ -107,13 +108,20 @@ public static class PeripheralProtocols
         Builtin.AddRange(BuiltinEntries());
     }
 
-    /// <summary>表里所有条目（内置在前，用户追加的在后）。</summary>
+    /// <summary>
+    /// 生效的协议表：**用户条目在前**，内置条目在后。
+    ///
+    /// 顺序就是覆盖规则（见 <see cref="Match"/>）：用户条目先被匹配到 ⇒ 用户表覆盖内置表。
+    /// </summary>
     public static IReadOnlyList<PeripheralProtocol> All
     {
-        get { lock (Gate) return Builtin.Concat(User).ToList(); }
+        get { lock (Gate) return User.Concat(Builtin).ToList(); }
     }
 
-    /// <summary>追加用户条目（同 Key 的覆盖旧的）。</summary>
+    /// <summary>
+    /// 追加用户条目（同 Key 的覆盖旧的**用户**条目）。
+    /// 内置条目不删：用户条目匹配不上时还要回退到内置条目（见 <see cref="Match"/>）。
+    /// </summary>
     public static void AddUserProtocols(IEnumerable<PeripheralProtocol> protocols)
     {
         lock (Gate)
@@ -134,6 +142,14 @@ public static class PeripheralProtocols
 
     /// <summary>
     /// 按 VID/PID/集合/报告长度匹配一条协议。匹配不上返回 null（走 L4 兜底）。
+    ///
+    /// **覆盖规则（设计文档 §8.5 的纠错通道，靠这条顺序兑现）**：
+    ///  · 匹配顺序是 用户表 → 内置表（<see cref="All"/> 里用户条目在前）：
+    ///    所以同 Key 的用户条目会被先匹配到 ⇒ **用户条目覆盖内置条目**。
+    ///    协议表是"偏移 5 推断错了就改成 12，不用改代码、不用发版"的那条通道，
+    ///    顺序反了这条承诺就是死的。
+    ///  · 用户条目字段不全（比如只写了 key 与 valueOffset，VID/PID 还是 0）导致匹配不上时，
+    ///    仍然回退内置条目 —— 不因为一条写歪的用户条目就把设备从列表里弄丢。
     /// </summary>
     public static PeripheralProtocol? Match(int vid, int pid, ushort usagePage, ushort usage,
         int outputReportLength)
@@ -308,4 +324,36 @@ public sealed class HexBytesConverter : JsonConverter<byte[]>
     {
         writer.WriteStringValue(string.Join(" ", value.Select(b => b.ToString("X2", CultureInfo.InvariantCulture))));
     }
+}
+
+/// <summary>
+/// HID 能力表（value caps）的"能不能认"判定 —— 纯逻辑，无 Win32 依赖，
+/// 原生层（<c>HidNative.ReadValueCaps</c>）与单元测试共用同一套规则。
+///
+/// 为什么单独拎出来（都是实机踩出来的）：
+///  · <c>HidP_GetValueCaps</c> 的返回值是 **NTSTATUS**（实测：成功 0x00110000、
+///    失败 0xC0110004），**不是**"取到的条数"；条数由 length 出参回写。
+///  · 失败时驱动**可能不回写 length** ⇒ length 保持调用方给的 capacity。
+///    若照着 capacity 解析，就会把 <c>Marshal.AllocHGlobal</c>（**不清零**）的内存
+///    当成 caps；里面若恰好有一条命中电量 usage，它的 LogicalMin/Max 就是垃圾值
+///    ⇒ 可能算出**假百分比**（违反"不伪装"底线）。
+/// 所以判定顺序必须是：状态码成功 → 条数合理（0 &lt; length ≤ capacity）→ 才解析。
+/// </summary>
+public static class HidValueCapsGuard
+{
+    /// <summary><c>HidP_GetValueCaps</c> 的成功状态码（NTSTATUS 0x00110000）。</summary>
+    public const int StatusSuccess = 0x00110000;
+
+    /// <summary>状态码是否表示成功。</summary>
+    public static bool IsSuccess(int status) => status == StatusSuccess;
+
+    /// <summary>回写的条数是否在合理区间（必须落在缓冲容量之内）。</summary>
+    public static bool IsUsableLength(int length, int capacity) => length > 0 && length <= capacity;
+
+    /// <summary>
+    /// 可以放心解析的条数：状态码失败、或条数不合理（没回写 / 超出容量）一律返回 0
+    /// （一条都不认 —— 宁可不报，也不拿未初始化内存充数）。
+    /// </summary>
+    public static int UsableLength(int status, int length, int capacity)
+        => IsSuccess(status) && IsUsableLength(length, capacity) ? length : 0;
 }

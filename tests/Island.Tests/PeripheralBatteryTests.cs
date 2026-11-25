@@ -145,6 +145,96 @@ internal static class PeripheralBatteryTests
         check("协议表：内置联想条目（0x17EF/0xF006）命中，ValueOffset=5、ValueMax=100",
             lenovo is not null && lenovo.ValueOffset == 5 && lenovo.ValueMax == 100);
 
+        // 16. 用户表覆盖内置条目（同 Key）：纠错通道必须是真的
+        //     设计文档 §8.5 承诺"偏移 5 不对就改成 12，不用改代码、不用发版" ——
+        //     这条承诺靠的就是"用户表优先于内置表"。
+        var overrideProto = new PeripheralProtocol
+        {
+            Key = "lenovo-idea5003",
+            Vendor = "联想",
+            Model = "Idea5003 2.4G 接收器",
+            Kind = "other",
+            Vid = 0x17EF,
+            Pid = 0xF006,
+            UsagePage = 0xFFCF,
+            Usage = 0x00A0,
+            MinReportLength = 61,
+            FeatureReportId = 193,
+            ValueOffset = 9,
+        };
+        PeripheralProtocol? overridden = null;
+        bool userFirstInTable = false;
+        try
+        {
+            PeripheralProtocols.AddUserProtocols(new[] { overrideProto });
+            overridden = PeripheralProtocols.Match(0x17EF, 0xF006, 0xFFCF, 0x00A0, 61);
+            userFirstInTable = PeripheralProtocols.All.Count > 0
+                && PeripheralProtocols.All[0].Key == "lenovo-idea5003"
+                && PeripheralProtocols.All[0].ValueOffset == 9;
+        }
+        finally
+        {
+            PeripheralProtocols.ClearUserProtocols();
+        }
+        check("协议表：同 Key 的用户条目覆盖内置条目（偏移 5 → 9 真的生效）",
+            overridden is not null && overridden.ValueOffset == 9);
+        check("协议表：生效表里用户条目排在前面（覆盖顺序不是摆设）", userFirstInTable);
+
+        // 17. 清空用户表后恢复内置条目（纠错通道是可逆的）
+        var restored = PeripheralProtocols.Match(0x17EF, 0xF006, 0xFFCF, 0x00A0, 61);
+        check("协议表：ClearUserProtocols 后又回到内置条目（偏移回到 5）",
+            restored is not null && restored.ValueOffset == 5);
+
+        // 18. 真实工作流：从 JSON 装载的同 Key 用户条目同样覆盖内置条目
+        const string OverrideJson = """
+        [
+          {
+            "key": "lenovo-idea5003",
+            "vendor": "联想",
+            "model": "Idea5003 2.4G 接收器",
+            "vid": 6127,
+            "pid": 61446,
+            "usagePage": 65487,
+            "usage": 160,
+            "minReportLength": 61,
+            "featureReportId": 193,
+            "valueOffset": 9
+          }
+        ]
+        """;
+        var overrideLoaded = TryLoad(OverrideJson, out string? overrideErr);
+        PeripheralProtocol? jsonOverrideHit = null;
+        try
+        {
+            if (overrideLoaded is { Count: 1 })
+            {
+                PeripheralProtocols.AddUserProtocols(overrideLoaded);
+                jsonOverrideHit = PeripheralProtocols.Match(0x17EF, 0xF006, 0xFFCF, 0x00A0, 61);
+            }
+        }
+        finally
+        {
+            PeripheralProtocols.ClearUserProtocols();
+        }
+        check("协议表：从 JSON 装载的同 Key 用户条目也覆盖内置条目（偏移 9 生效）"
+            + (overrideErr is null ? "" : "（装载异常：" + overrideErr + "）"),
+            overrideErr is null && jsonOverrideHit is not null && jsonOverrideHit.ValueOffset == 9);
+
+        // 19. 用户表条目字段不全时仍回退内置条目（不能因为一条写歪的用户条目把设备弄丢）
+        var partialUser = new PeripheralProtocol { Key = "lenovo-idea5003", ValueOffset = 12 };
+        PeripheralProtocol? fallback = null;
+        try
+        {
+            PeripheralProtocols.AddUserProtocols(new[] { partialUser });
+            fallback = PeripheralProtocols.Match(0x17EF, 0xF006, 0xFFCF, 0x00A0, 61);
+        }
+        finally
+        {
+            PeripheralProtocols.ClearUserProtocols();
+        }
+        check("协议表：用户条目匹配不上时回退内置条目（设备不会被弄丢）",
+            fallback is not null && fallback.ValueOffset == 5);
+
         // ================= 三、JSON 装载 =================
 
         const string DemoJson = """
@@ -330,6 +420,78 @@ internal static class PeripheralBatteryTests
             if (parsed || br is not null) allNull = false;
         }
         check("不伪装：所有失败路径都返回 false 且读数为 null（没有 0% 的假读数）", allNull);
+
+        // ================= 七、此前没覆盖到的分支 =================
+
+        // 20. 回显命中 → 解析成功（ContainsSequence 的命中分支）
+        var echoHitProto = Proto("echo-hit") with { Echo = new byte[] { 0x02, 0x03 } };
+        bool echoHit = PeripheralProtocolReader.TryParse(echoHitProto,
+            new byte[] { 0xC1, 58, 0x02, 0x03 }, out PeripheralReading? echoHitRead);
+        check("协议解析：回显字节命中 → 解析成功（58%）",
+            echoHit && echoHitRead is { Percent: 58 });
+
+        // 21. 回显比回包还长 → 失败（ContainsSequence 的"needle 过长"分支）
+        var longEchoProto = Proto("long-echo") with { Echo = new byte[] { 0x01, 0x02, 0x03, 0x04, 0x05 } };
+        bool longEchoOk = PeripheralProtocolReader.TryParse(longEchoProto,
+            new byte[] { 0xC1, 58 }, out PeripheralReading? longEchoRead);
+        check("协议解析：回显比回包还长 → 失败", !longEchoOk && longEchoRead is null);
+
+        // 22. 空回包 → 失败（绝不能返回 0% 假读数）
+        bool emptyOk = PeripheralProtocolReader.TryParse(Proto(), Array.Empty<byte>(),
+            out PeripheralReading? emptyRead);
+        check("协议解析：空回包 → 失败（没有 0% 的假读数）", !emptyOk && emptyRead is null);
+
+        // 23. ValueMask 取位后再比范围
+        var maskProto = Proto("mask-proto") with { ValueMask = 0x0F };
+        bool maskOk = PeripheralProtocolReader.TryParse(maskProto, new byte[] { 0xC1, 0x5A },
+            out PeripheralReading? maskRead);
+        check("协议解析：电量按 ValueMask 取位（0x5A & 0x0F = 10 → 10%）",
+            maskOk && maskRead is { Percent: 10 });
+
+        // 24. 取位后落到范围外 → 失败（掩码不是"随便取个位就报"）
+        var maskLowProto = Proto("mask-low") with { ValueMask = 0x01, ValueMin = 50, ValueMax = 100 };
+        bool maskLowOk = PeripheralProtocolReader.TryParse(maskLowProto, new byte[] { 0xC1, 0x01 },
+            out PeripheralReading? maskLowRead);
+        check("协议解析：取位后落在范围外（掩码后为 1 < 50）→ 失败", !maskLowOk && maskLowRead is null);
+
+        // 25. 量程非法（ValueMax ≤ ValueMin）→ 失败，不换算百分比
+        var badRangeProto = Proto("bad-range") with { ValueMin = 100, ValueMax = 100 };
+        bool badRangeOk = PeripheralProtocolReader.TryParse(badRangeProto, new byte[] { 0xC1, 58 },
+            out PeripheralReading? badRangeRead);
+        var invertedRangeProto = Proto("inverted-range") with { ValueMin = 100, ValueMax = 0 };
+        bool invertedRangeOk = PeripheralProtocolReader.TryParse(invertedRangeProto,
+            new byte[] { 0xC1, 58 }, out PeripheralReading? invertedRangeRead);
+        check("协议解析：ValueMax ≤ ValueMin（量程非法）→ 失败，不换算百分比",
+            !badRangeOk && badRangeRead is null && !invertedRangeOk && invertedRangeRead is null);
+
+        // 26. 充电位偏移越界 → 失败（不猜充电状态）
+        var chargeOobProto = Proto("charge-oob") with { ChargingOffset = 9 };
+        bool chargeOobOk = PeripheralProtocolReader.TryParse(chargeOobProto,
+            new byte[] { 0xC1, 58, 0x00 }, out PeripheralReading? chargeOobRead);
+        check("协议解析：充电位偏移越界 → 失败（不猜充电状态）",
+            !chargeOobOk && chargeOobRead is null);
+
+        // 27. 电压字段偏移为负 → 失败（不是"没有电压"就跳过，而是判失败）
+        var mvNegProto = Proto("mv-neg") with { MilliVoltsOffset = -1 };
+        bool mvNegOk = PeripheralProtocolReader.TryParse(mvNegProto, new byte[] { 0xC1, 58, 0x0F, 0xA0 },
+            out PeripheralReading? mvNegRead);
+        check("协议解析：电压字段偏移为负 → 失败", !mvNegOk && mvNegRead is null);
+
+        // 28. 能力表判定：HidP_GetValueCaps 返回的是 NTSTATUS（实测 0x00110000 / 0xC0110004）
+        check("能力表判定：只有 0x00110000 算成功，0xC0110004 是失败",
+            HidValueCapsGuard.IsSuccess(0x00110000)
+            && !HidValueCapsGuard.IsSuccess(unchecked((int)0xC0110004)));
+
+        // 29. 能力表判定：失败且驱动没回写 length（仍是 capacity）→ 一条都不认
+        //     （否则会把 AllocHGlobal 里未清零的内存当 caps，可能算出假百分比）
+        check("能力表判定：状态码失败且 length 未回写 → 解析 0 条（不解析未初始化内存）",
+            HidValueCapsGuard.UsableLength(unchecked((int)0xC0110004), 8, 8) == 0);
+
+        // 30. 能力表判定：条数为 0 或超出容量 → 一条都不认；条数正常 → 按条数解析
+        check("能力表判定：条数为 0 / 超出容量 → 解析 0 条；条数在容量内 → 按条数解析",
+            HidValueCapsGuard.UsableLength(0x00110000, 0, 8) == 0
+            && HidValueCapsGuard.UsableLength(0x00110000, 9, 8) == 0
+            && HidValueCapsGuard.UsableLength(0x00110000, 3, 8) == 3);
     }
 
     /// <summary>

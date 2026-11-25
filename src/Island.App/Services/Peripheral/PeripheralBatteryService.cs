@@ -31,6 +31,9 @@ internal static class PeripheralBatteryService
     /// <summary>两轮扫描之间的最小间隔（防止频繁枚举 HID 设备树）。</summary>
     private static readonly TimeSpan ScanThrottle = TimeSpan.FromSeconds(20);
 
+    /// <summary>L1 读 Input 报告的等待上限（毫秒）：设备迟迟不上报就当这轮没读到。</summary>
+    private const int InputBatteryReadMs = 250;
+
     /// <summary>用户自带的协议表（填表即可新增品牌，不用改代码）。</summary>
     internal static string UserProtocolFile =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -40,7 +43,11 @@ internal static class PeripheralBatteryService
     private static readonly Dictionary<string, (DeviceInfo Info, DateTime At)> Cache = new();
     private static Task? _scan;
     private static DateTime _lastStart = DateTime.MinValue;
-    private static bool _userTableLoaded;
+    /// <summary>
+    /// 用户协议表文件的"指纹"（是否存在 + 最后写入时间 + 长度）：
+    /// 指纹变了就重新装载（用户改完 JSON 不用重启进程）。
+    /// </summary>
+    private static (bool Exists, DateTime Written, long Length)? _userTableStamp;
     private static string _lastSummary = "";
 
     /// <summary>读数更新时触发（DeviceService 借此刷新快照）。</summary>
@@ -168,8 +175,14 @@ internal static class PeripheralBatteryService
     }
 
     /// <summary>
-    /// L1：按标准电量 usage 读 Feature 报告（用 HidP_GetUsageValue 让系统按描述符解析）。
-    /// 独占集合用 0 权限打开即可（打不开就换下一个集合）。
+    /// L1：按标准电量 usage 读报告（用 HidP_GetUsageValue 让系统按描述符解析）。
+    ///
+    /// 报告类型按能力表区分（这是此前的盲区 —— 硬编码 HIDP_FEATURE 时，
+    /// 只在 Input 能力表里声明电量 usage 的设备永远读不到）：
+    ///  · usage 出现在 **Feature** 能力表里 → 读 Feature 报告（可以主动读）。
+    ///    独占集合用 0 权限打开即可（打不开就换下一个集合）。
+    ///  · usage 只出现在 **Input** 能力表里 → 只能等设备主动上报：
+    ///    得用读写权限打开并读输入报告（只查句柄上的读是同步的，不能用）。
     /// </summary>
     private static PeripheralReading? ReadStandardBattery(HidInterface member)
     {
@@ -177,22 +190,64 @@ internal static class PeripheralBatteryService
         {
             HidUsageRange? caps = StandardHidBattery.FindUsage(member, page, usage);
             if (caps is null) continue;
-            try
+            bool inFeature = member.FeatureUsages.Any(u => u.Covers(page, usage));
+            PeripheralReading? reading = inFeature
+                ? ReadStandardBatteryFeature(member, caps, page, usage)
+                : ReadStandardBatteryInput(member, caps, page, usage);
+            if (reading is not null) return reading;
+        }
+        return null;
+    }
+
+    /// <summary>L1 的 Feature 报告读法（描述符解析按 HIDP_FEATURE 走）。</summary>
+    private static PeripheralReading? ReadStandardBatteryFeature(HidInterface member, HidUsageRange caps,
+        ushort page, ushort usage)
+    {
+        try
+        {
+            using var channel = new HidChannel(member, queryOnly: true);
+            byte[]? report = channel.GetFeature(caps.ReportId, member.FeatureReportLength);
+            if (report is null) return null;
+            if (!channel.TryReadUsageValue(HidNative.HIDP_FEATURE, page, usage, report, out int raw))
+                return null;
+            int? percent = StandardHidBattery.ToPercent(raw, caps.LogicalMin, caps.LogicalMax);
+            return percent is null ? null : new PeripheralReading(percent.Value, false);
+        }
+        catch
+        {
+            // 打不开 / 读失败：换下一个集合，不影响其它设备
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// L1 的 Input 报告读法（描述符解析按 HIDP_INPUT 走）：
+    /// 只在 Input 能力表里声明电量 usage 的设备走这条路 —— 只能等设备主动上报。
+    /// </summary>
+    private static PeripheralReading? ReadStandardBatteryInput(HidInterface member, HidUsageRange caps,
+        ushort page, ushort usage)
+    {
+        try
+        {
+            // 读 Input 报告必须有读权限（只查句柄上的 Read 是同步的，会把扫描线程堵死）
+            using var channel = new HidChannel(member);
+            for (int attempt = 0; attempt < 2; attempt++)
             {
-                using var channel = new HidChannel(member, queryOnly: true);
-                byte[]? report = channel.GetFeature(caps.ReportId, member.FeatureReportLength);
-                if (report is null) continue;
-                if (!channel.TryReadUsageValue(page, usage, report, out int raw)) continue;
+                byte[]? report = channel.Read(InputBatteryReadMs);
+                if (report is null) return null;   // 设备没上报：这轮就没有电量
+                if (!channel.TryReadUsageValue(HidNative.HIDP_INPUT, page, usage, report, out int raw))
+                    continue;   // 这一帧里没这个 usage：再等一帧
                 int? percent = StandardHidBattery.ToPercent(raw, caps.LogicalMin, caps.LogicalMax);
                 if (percent is null) continue;
                 return new PeripheralReading(percent.Value, false);
             }
-            catch
-            {
-                // 打不开 / 读失败：换下一个集合，不影响其它设备
-            }
+            return null;
         }
-        return null;
+        catch
+        {
+            // 打不开（独占集合多半打不开）/ 读失败：换下一个集合
+            return null;
+        }
     }
 
     /// <summary>
@@ -242,26 +297,61 @@ internal static class PeripheralBatteryService
         }
     }
 
-    /// <summary>装载用户自带的协议表（%LOCALAPPDATA%\MyIsland\peripheral-protocols.json）。</summary>
+    /// <summary>
+    /// 装载用户自带的协议表（%LOCALAPPDATA%\MyIsland\peripheral-protocols.json）。
+    ///
+    /// 按文件"指纹"（是否存在 + 最后写入时间 UTC + 长度）判断要不要重读：
+    /// 用户改完 JSON 不重启进程也能生效 —— 协议表本来就是给人改的纠错通道。
+    /// 文件不存在时也要记下指纹（Exists=false），
+    /// 这样之后用户新建了文件能被认出来（而不是被"已经装载过了"挡住）。
+    /// 指纹取的是**读文件之前**的时刻：读的过程中又改了文件，下一轮会再读一次。
+    /// </summary>
     private static void LoadUserTable()
     {
-        lock (Gate)
-        {
-            if (_userTableLoaded) return;
-            _userTableLoaded = true;
-        }
+        string path = UserProtocolFile;
+        bool exists;
+        DateTime written;
+        long length;
         try
         {
-            string path = UserProtocolFile;
-            if (!File.Exists(path)) return;
+            var info = new FileInfo(path);
+            exists = info.Exists;
+            written = exists ? info.LastWriteTimeUtc : DateTime.MinValue;
+            length = exists ? info.Length : 0L;
+        }
+        catch
+        {
+            return;   // 路径取不到（权限/环境问题）：下轮再说
+        }
+
+        lock (Gate)
+        {
+            if (_userTableStamp is { } last
+                && last.Exists == exists && last.Written == written && last.Length == length)
+                return;   // 文件没动：不重读
+        }
+
+        if (!exists)
+        {
+            // 文件不存在 = 没有用户条目：记下指纹（之后新建文件能被认出来）
+            lock (Gate) _userTableStamp = (exists, written, length);
+            PeripheralProtocols.ClearUserProtocols();
+            return;
+        }
+
+        try
+        {
             string json = File.ReadAllText(path);
             var protocols = PeripheralProtocols.LoadFromJson(json);
-            if (protocols.Count == 0) return;
-            PeripheralProtocols.AddUserProtocols(protocols);
+            // 整表重装：文件里删掉的条目也该消失
+            PeripheralProtocols.ClearUserProtocols();
+            if (protocols.Count > 0) PeripheralProtocols.AddUserProtocols(protocols);
+            lock (Gate) _userTableStamp = (exists, written, length);
             DeviceService.LogLine($"HID 外设协议表：已装载用户条目 {protocols.Count} 条（{path}）");
         }
         catch (Exception ex)
         {
+            // 装载失败：保留旧表（不清空），并且**不更新指纹** —— 下轮重试
             DeviceService.LogLineThrottled("HID 外设协议表装载失败：" + ex.Message, TimeSpan.FromMinutes(30));
         }
     }

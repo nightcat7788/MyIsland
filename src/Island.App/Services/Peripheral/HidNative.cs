@@ -15,6 +15,10 @@ namespace Island.App.Services.Peripheral;
 ///     按 60 字节遍历会越界读。这里用显式偏移声明，避开 padding 手算。
 ///  ③ 读独占集合的 Input Report 必须 FILE_FLAG_OVERLAPPED + CancelIoEx：
 ///     阻塞读叠上并发写会把进程直接杀掉。
+///  ④ HidP_GetValueCaps 的返回值是 **NTSTATUS**（实测：成功 0x00110000 /
+///     失败 0xC0110004），**不是**"取到的条数"；条数由 length 出参回写，
+///     失败时驱动可能连 length 都不回写（⇒ 必须先查状态码，否则会拿
+///     未清零的 AllocHGlobal 内存当 caps，可能算出假百分比）。
 ///
 /// 方法论参考 KaBanei/peripheral-battery（MIT）的 HidNative/HidBus/HidChannel，
 /// 本文件按 MyIsland 的口径重写；结构布局以 Windows SDK 与 HID Usage Tables 为准。
@@ -289,8 +293,16 @@ internal static class HidNative
 
     /// <summary>
     /// 读某个报告类型的全部 value caps。
-    /// HidP_GetValueCaps 的返回值是"取到的条数"而不是状态码（很多示例写错了），
-    /// 所以这里只看写回的长度参数，长度为 0 才当失败。
+    ///
+    /// ⚠️ **实测纠正**（旧注释写错了，照抄会出事）：<c>HidP_GetValueCaps</c> 的返回值
+    /// 是 **NTSTATUS**（实测：成功 0x00110000、失败 0xC0110004），**不是**"取到的条数"；
+    /// 条数由 length 出参回写。失败时驱动**可能不回写 length** ⇒ length 仍是调用方
+    /// 给的 capacity。所以必须先看状态码：失败就一条都不认，绝不按 capacity 硬解析。
+    ///
+    /// 兼容性依赖（**不擅自改**）：MSDN 把 ValueCapsLength 记为"字节数"，
+    /// 而本仓库一直按"条数"传（<c>HidBus</c> 传的是 NumberFeature/InputValueCaps）。
+    /// 本机实测两者都能取到正确结果；改成字节会改变行为，需另行实测后再定。
+    /// 换算关系写在这里备查：字节数 = 条数 × <see cref="ValueCapsSize"/>（72）。
     /// </summary>
     public static List<HidUsageRange> ReadValueCaps(IntPtr preparsedData, int reportType, int count)
     {
@@ -305,16 +317,24 @@ internal static class HidNative
             for (int attempt = 0; attempt < 2; attempt++)
             {
                 if (buffer != IntPtr.Zero) Marshal.FreeHGlobal(buffer);
-                buffer = Marshal.AllocHGlobal(size * capacity);
+                int bytes = size * capacity;
+                buffer = Marshal.AllocHGlobal(bytes);
+                // Marshal.AllocHGlobal **不清零**：驱动没写满的那部分留着上次的垃圾字节。
+                // 万一解析越过了实际条数，读到的就是未初始化内存（LogicalMin/Max 是垃圾值）
+                // ⇒ 可能算出**假百分比**（违反"不伪装"底线）。所以分配完先自己清零。
+                ZeroMemory(buffer, bytes);
+
                 int length = capacity;
-                HidP_GetValueCaps(reportType, buffer, ref length, preparsedData);
-                if (length <= 0) return list;
+                int status = HidP_GetValueCaps(reportType, buffer, ref length, preparsedData);
+                if (!HidValueCapsGuard.IsSuccess(status)) return list;   // 状态码失败：一条都不认
                 if (length > capacity)
                 {
                     capacity = length;   // 驱动报回来的条数比预估多：铺大一点再来一次
                     continue;
                 }
-                for (int i = 0; i < length; i++)
+                int usable = HidValueCapsGuard.UsableLength(status, length, capacity);
+                if (usable <= 0) return list;
+                for (int i = 0; i < usable; i++)
                 {
                     var caps = Marshal.PtrToStructure<HidValueCaps>(
                         new IntPtr(buffer.ToInt64() + (long)i * size));
@@ -338,6 +358,20 @@ internal static class HidNative
         finally
         {
             if (buffer != IntPtr.Zero) Marshal.FreeHGlobal(buffer);
+        }
+    }
+
+    /// <summary>把原生缓冲清零（AllocHGlobal 不清零，未初始化的字节不能当数据用）。</summary>
+    private static void ZeroMemory(IntPtr buffer, int bytes)
+    {
+        if (buffer == IntPtr.Zero || bytes <= 0) return;
+        byte[] zeros = new byte[Math.Min(bytes, 4096)];
+        int offset = 0;
+        while (offset < bytes)
+        {
+            int chunk = Math.Min(zeros.Length, bytes - offset);
+            Marshal.Copy(zeros, 0, new IntPtr(buffer.ToInt64() + offset), chunk);
+            offset += chunk;
         }
     }
 
