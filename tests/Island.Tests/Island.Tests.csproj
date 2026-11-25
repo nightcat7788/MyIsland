@@ -96,6 +96,19 @@
     <Compile Include="ThemeTokenTests.cs" />
     <!-- 展开面板规格（2026-11-26 阶段 2：Windows 展开面板对齐 mac 版）：纯常量类，可链进测试工程 -->
     <Compile Include="..\..\src\Island.App\Controls\ExpandedPanelSpec.cs" Link="Merged\ExpandedPanelSpec.cs" />
+    <!-- 离屏渲染视觉回归（2026-11-26）：监控页 / 设备页是纯自绘控件，
+         离屏渲染 + 像素不变量断言（"画面非全黑 + 2×2 栅格几何"）——
+         本机屏幕捕获在锁屏会话里只有全黑，肉眼确认不了的事交给机器判。
+         判定逻辑与 tools/visual-probe 共用同一份源码，免得两处标准漂移。 -->
+    <Compile Include="..\..\src\Island.App\Controls\MonitorPage.cs" Link="Merged\App\MonitorPage.cs" />
+    <Compile Include="..\..\src\Island.App\Controls\DevicesPage.cs" Link="Merged\App\DevicesPage.cs" />
+    <Compile Include="..\..\tools\visual-probe\VisualProbeCore.cs" Link="Merged\VisualProbeCore.cs" />
+    <!-- 设备页的数据源替身：生产的 DeviceService 带 System.Management / WinRT 依赖，进不了零包测试工程；
+         这里给的是合成设备列表，渲染结果确定、可当回归基线。 -->
+    <Compile Include="..\..\tools\visual-probe\DeviceServiceShim.cs" Link="Merged\App\DeviceServiceShim.cs" />
+    <!-- 新测试文件：默认 glob 已包含它，这里显式登记（先移除默认项，避免重复编译项报错） -->
+    <Compile Remove="VisualRenderTests.cs" />
+    <Compile Include="VisualRenderTests.cs" />
     <!-- PDH 通配符读取器（GPU Engine 分组聚合）：纯 P/Invoke，无 NuGet 依赖，可链进测试工程 -->
     <Compile Include="..\..\src\Island.Native\PdhWildcardQuery.cs" Link="Merged\PdhWildcardQuery.cs" />
   </ItemGroup>

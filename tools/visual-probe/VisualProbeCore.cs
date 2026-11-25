@@ -1,0 +1,820 @@
+using System.IO;
+using System.Reflection;
+using System.Runtime.Loader;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using Island.App.Controls;
+using Island.App.Services;
+using Island.App.Themes;
+using Island.Core.Monitoring;
+
+namespace Island.Tools.VisualProbe;
+
+/// <summary>一条渲染不变量的判定结果（名字 / 是否通过 / 实测数值）。</summary>
+public sealed record ProbeCheck(string Name, bool Passed, string Detail);
+
+/// <summary>探针产物：若干张渲染图 + 若干条不变量判定。</summary>
+public sealed class ProbeReport
+{
+    public List<ProbeCheck> Checks { get; } = new();
+    public List<(string Name, BitmapSource Bitmap)> Images { get; } = new();
+
+    /// <summary>全部不变量都通过（探针退出码 / 测试门禁都看它）。</summary>
+    public bool AllPassed => Checks.All(c => c.Passed);
+}
+
+/// <summary>探针参数。</summary>
+public sealed class ProbeOptions
+{
+    /// <summary>渲染画布宽（DIP）—— 560 是 mac 口径的内容宽，卡片宽正好 256。</summary>
+    public int Width { get; init; } = 560;
+
+    /// <summary>渲染画布高（DIP）—— 必须 >= 349 才走"完整档"栅格（181 + 12 + 156）。</summary>
+    public int Height { get; init; } = 420;
+
+    /// <summary>主题（默认深色）。</summary>
+    public Palette? Palette { get; init; }
+
+    /// <summary>PNG 输出目录；null = 只判定不落盘（测试门禁走这条）。</summary>
+    public string? OutputDirectory { get; init; }
+}
+
+/// <summary>
+/// 离屏渲染视觉回归探针的**核心**：渲染被测控件 + 判定渲染不变量。
+///
+/// ⚠️ 覆盖范围：监控页 + 设备页（两个纯自绘的 FrameworkElement）。
+/// **展开面板整体（ExpandedPanel）没有覆盖**，原因是它离屏渲染不可行（不是"懒得做"）：
+///   · ExpandedPanel.xaml 的资源字典写死了 <c>/Island.App;component/Controls/PanelStyles.xaml</c>，
+///     那是**按程序集名**寻址的编译期资源 URI —— 只有真的加载 Island.App 程序集才能解析；
+///   · 要加载 Island.App 就得 ProjectReference 它，而本工程刻意**只链接源文件**：
+///     同一份 MonitorPage 源码一旦既被链接进来、又被 Island.App.dll 带进来，
+///     类型重名会产生 CS0436 警告，门禁要求 0 警告；
+///   · 展开面板还牵着剪贴板服务、控制服务（电源计划子进程）、能力清单等一串运行期依赖，
+///     离屏渲染它们会把"渲染一张图"变成"启动半个应用"。
+///   ⇒ 展开面板的验证仍靠真机截图；监控页 / 设备页这两个**纯绘制**的页面在这里拿门禁。
+///
+/// 设计要点（都是踩过的坑，别改回去）：
+///  · **不建窗口**：元素 Measure/Arrange 之后直接 Render。锁屏会话里"挂到已显示窗口上再
+///    RenderTargetBitmap"会得到全黑，无窗口直渲染才有效（见 docs/改进记录.md 十三节）。
+///  · **必须 STA**：WPF 的离屏渲染要在 STA 线程上做；本类自己开一条 STA 工作线程，
+///    调用方（控制台工具 / 测试门禁）的线程状态不影响结果。
+///  · **DpiScale = 1.0**：位图 96 DPI 且像素尺寸 == DIP 尺寸，1 DIP = 1 像素，
+///    几何断言里的坐标直接就是像素坐标。
+///  · **合成数据**：读数一律来自合成的快照 / 合成设备列表，渲染结果确定、可做回归基线。
+/// </summary>
+public static class VisualProbeCore
+{
+    // ---------- 像素判定阈值（见报告：实测值都留了余量） ----------
+    /// <summary>"有绘制"阈值：与底色的通道最大差 >= 2。卡片 3.5% 白底已超过它。</summary>
+    private const int PaintedDelta = 2;
+
+    /// <summary>"是描边"阈值：发丝线（alpha 0x24）叠在卡片底上后的通道最大差。</summary>
+    private const int BorderDelta = 15;
+
+    /// <summary>"是文字/图形"阈值：按绝对亮度算（文字 ~242、强调色 ~212，卡片底与描边都远低于它）。</summary>
+    private const int InkChannel = 160;
+
+    /// <summary>整体不变量：非背景像素占比下限（防"整张全黑"回归）。</summary>
+    private const double MinPaintedRatio = 0.02;
+
+    /// <summary>整体不变量：高亮内容像素占比下限（防"只画出卡片底、没有文字"）。</summary>
+    private const double MinInkRatio = 0.0005;
+
+    /// <summary>
+    /// 跑一遍探针：渲染两个页面 + 判定全部不变量。
+    /// 全程在一条 STA 工作线程上完成。
+    /// </summary>
+    public static ProbeReport Run(ProbeOptions options)
+    {
+        ProbeReport? report = null;
+        Exception? failure = null;
+
+        var worker = new Thread(() =>
+        {
+            try { report = RunOnStaThread(options); }
+            catch (Exception ex) { failure = ex; }
+        });
+        worker.SetApartmentState(ApartmentState.STA);
+        worker.IsBackground = true;
+        worker.Start();
+        worker.Join();
+
+        if (failure != null) throw failure;
+        return report!;
+    }
+
+    private static ProbeReport RunOnStaThread(ProbeOptions options)
+    {
+        var report = new ProbeReport();
+        var palette = options.Palette ?? Palette.Dark;
+
+        // ---------- 监控页（2×2 卡片栅格） ----------
+        var monitor = new MonitorPage
+        {
+            Palette = palette,
+            Snapshot = SyntheticSnapshot(),
+            Thermal = SyntheticThermal(),
+            CpuHistory = SyntheticHistory(36),
+            NetHistory = SyntheticHistory(36, 0.5),
+            DownHistory = SyntheticHistory(36, 0.3),
+            UpHistory = SyntheticHistory(36, 0.8),
+        };
+        var monitorBitmap = Render(monitor, options.Width, options.Height, palette);
+        report.Images.Add(("monitor-page", monitorBitmap));
+        CheckMonitorPage(report, monitorBitmap, options);
+
+        // ---------- 设备页（卡片网格） ----------
+        var devices = new DevicesPage { Palette = palette };
+        var devicesBitmap = Render(devices, options.Width, options.Height, palette);
+        report.Images.Add(("devices-page", devicesBitmap));
+        CheckDevicesPage(report, devicesBitmap, options);
+
+        // ---------- 落盘（工具侧；测试门禁不落盘） ----------
+        if (!string.IsNullOrEmpty(options.OutputDirectory))
+        {
+            Directory.CreateDirectory(options.OutputDirectory);
+            foreach (var (name, bitmap) in report.Images)
+            {
+                string path = Path.Combine(options.OutputDirectory, name + ".png");
+                SavePng(bitmap, path);
+
+                // 落盘复核：**从文件读回来**再判一次"非全黑"——
+                // 内存里的位图没黑，不代表写出来的 PNG 没黑。
+                var reloaded = LoadPng(path);
+                var pixels = new BitmapPixels(reloaded, palette.Surface);
+                double ratio = pixels.PaintedRatio();
+                report.Checks.Add(new ProbeCheck(
+                    $"PNG 产物非全黑（{name}.png 落盘复核）",
+                    ratio > MinPaintedRatio,
+                    $"重读 {path}：非背景像素占比 {ratio:P2}（下限 {MinPaintedRatio:P0}）"));
+            }
+        }
+
+        return report;
+    }
+
+    // ================= 合成数据 =================
+
+    /// <summary>
+    /// 合成的监控快照：读数固定 ⇒ 渲染结果确定 ⇒ 可以做回归基线。
+    /// 不读真硬件（真硬件每台机器、每个时刻都不一样，PNG 就没法当基线比）。
+    /// </summary>
+    public static MonitorSnapshot SyntheticSnapshot() => new()
+    {
+        Timestamp = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Local),
+        CpuUsage = 42,
+        CpuFrequencyGHz = 3.7,
+        MemoryUsagePercent = 63,
+        MemoryUsedGB = 9.9,
+        MemoryTotalGB = 16,
+        GpuUsage = 18,
+        GpuName = "集成显卡",
+        DiskUsagePercent = 7,
+        DriveUsedGB = 220,
+        DriveTotalGB = 512,
+        DriveName = "C:",
+        Disks = new[] { new DiskStat { Name = "C:", ActivePercent = 7, UsedGB = 220, TotalGB = 512 } },
+        TopProcesses = new[]
+        {
+            new TopProcess { Name = "Code.exe", CpuPercent = 22.5, MemoryMB = 1240, ExePath = "" },
+            new TopProcess { Name = "chrome.exe", CpuPercent = 9.5, MemoryMB = 860, ExePath = "" },
+            new TopProcess { Name = "MyIsland.exe", CpuPercent = 3.2, MemoryMB = 210, ExePath = "" },
+            new TopProcess { Name = "explorer.exe", CpuPercent = 1.1, MemoryMB = 140, ExePath = "" },
+            new TopProcess { Name = "Teams.exe", CpuPercent = 0.8, MemoryMB = 320, ExePath = "" },
+        },
+        TopProcessesByMem = new[]
+        {
+            new TopProcess { Name = "Code.exe", CpuPercent = 22.5, MemoryMB = 1240, ExePath = "" },
+            new TopProcess { Name = "chrome.exe", CpuPercent = 9.5, MemoryMB = 860, ExePath = "" },
+            new TopProcess { Name = "Teams.exe", CpuPercent = 0.8, MemoryMB = 320, ExePath = "" },
+            new TopProcess { Name = "MyIsland.exe", CpuPercent = 3.2, MemoryMB = 210, ExePath = "" },
+            new TopProcess { Name = "explorer.exe", CpuPercent = 1.1, MemoryMB = 140, ExePath = "" },
+        },
+        BatteryPercent = 88,
+        BatteryCharging = false,
+        CpuTemp = 55,
+        GpuTemp = 48,
+        SsdTemp = 42,
+        DownloadSpeed = 1_572_864,
+        UploadSpeed = 131_072,
+        SessionDownload = 12_884_901_888,
+        SessionUpload = 1_073_741_824,
+        TodayDownload = 42_949_672_960,
+        TodayUpload = 5_368_709_120,
+        LinkType = "wifi",
+        UptimeHours = 6.5,
+        ProcessCount = 213,
+        ThreadCount = 1580,
+        CommitGB = 11.2,
+        CommitLimitGB = 25.6,
+        PingMs = 18,
+    };
+
+    /// <summary>合成的温度快照。</summary>
+    public static ThermalSnapshot SyntheticThermal() => new()
+    {
+        CpuTemp = 55,
+        GpuTemp = 48,
+        SsdTemp = 42,
+        MotherboardTemp = 45,
+        GpuMemoryUsedGB = 1.5,
+        GpuMemoryTotalGB = 8,
+        UpdatedAt = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Local),
+    };
+
+    /// <summary>合成的历史序列（固定公式，不用 Random ⇒ 每次渲染结果一致）。</summary>
+    public static double[] SyntheticHistory(int count, double phase = 0)
+    {
+        var data = new double[count];
+        for (int i = 0; i < count; i++)
+            data[i] = 0.5 + 0.4 * Math.Sin((i + phase) * 0.7);
+        return data;
+    }
+
+    // ================= 渲染 =================
+
+    /// <summary>
+    /// 离屏渲染一个控件：铺一层主题底色（面板本来就有底），再 Measure/Arrange/Render。
+    /// 顺序不能换：先 Render 会得到零尺寸或全黑。
+    /// </summary>
+    public static BitmapSource Render(FrameworkElement element, int width, int height, Palette palette)
+    {
+        var host = new Grid
+        {
+            Background = new SolidColorBrush(palette.Surface),
+            Width = width,
+            Height = height,
+        };
+        host.Children.Add(element);
+
+        host.Measure(new Size(width, height));
+        host.Arrange(new Rect(0, 0, width, height));
+        host.UpdateLayout();
+
+        // 96 DPI + 像素尺寸 == DIP 尺寸 ⇒ DpiScale 1.0（1 DIP = 1 像素，坐标可直接当像素用）
+        var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
+        bitmap.Render(host);
+        bitmap.Freeze();
+        return bitmap;
+    }
+
+    /// <summary>存 PNG。</summary>
+    public static void SavePng(BitmapSource bitmap, string path)
+    {
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(bitmap));
+        using var stream = File.Create(path);
+        encoder.Save(stream);
+    }
+
+    /// <summary>读回 PNG（落盘复核用）。</summary>
+    public static BitmapSource LoadPng(string path)
+    {
+        using var stream = File.OpenRead(path);
+        var decoder = new PngBitmapDecoder(stream, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
+        var frame = decoder.Frames[0];
+        var converted = new FormatConvertedBitmap(frame, PixelFormats.Bgra32, null, 0);
+        converted.Freeze();
+        return converted;
+    }
+
+    // ================= 监控页不变量 =================
+
+    private static void CheckMonitorPage(ProbeReport report, BitmapSource bitmap, ProbeOptions options)
+    {
+        var pixels = new BitmapPixels(bitmap, (options.Palette ?? Palette.Dark).Surface);
+        int w = options.Width, h = options.Height;
+
+        // ---- 1. 整体：不是全黑 / 有实际内容 ----
+        double painted = pixels.PaintedRatio();
+        report.Checks.Add(new ProbeCheck(
+            "监控页：渲染结果非全黑（非背景像素占比 > 2%）",
+            painted > MinPaintedRatio,
+            $"非背景像素 {pixels.PaintedCount()}/{w * h} = {painted:P2}（下限 {MinPaintedRatio:P0}）"));
+
+        double ink = pixels.InkRatio();
+        report.Checks.Add(new ProbeCheck(
+            "监控页：有高亮内容（文字/图标像素占比 > 0.05%）",
+            ink > MinInkRatio,
+            $"高亮像素 {pixels.InkCount()}/{w * h} = {ink:P3}（下限 {MinInkRatio:P3}）"));
+
+        // ---- 2. 栅格常量（读 MonitorPage 的私有常量 ⇒ 断言的是产品源码，不是副本） ----
+        double pad = ConstOf(typeof(MonitorPage), "GridPad");
+        double gap = ConstOf(typeof(MonitorPage), "GridGap");
+        double head = ConstOf(typeof(MonitorPage), "CardHeadH");
+        double padX = ConstOf(typeof(MonitorPage), "CardPadX");
+        double topH = ConstOf(typeof(MonitorPage), "TopCardH");
+        double botH = ConstOf(typeof(MonitorPage), "BotCardH");
+        double cardW = (w - pad * 2 - gap) / 2;
+
+        report.Checks.Add(new ProbeCheck(
+            "监控页：栅格常量与 mac 口径一致（卡头 42 / 上排 181 / 下排 156 / 间距 12 / 内缩 15）",
+            head == 42 && topH == 181 && botH == 156 && gap == 12 && padX == 15,
+            $"CardHeadH={head} TopCardH={topH} BotCardH={botH} GridGap={gap} CardPadX={padX}"));
+
+        report.Checks.Add(new ProbeCheck(
+            "监控页：卡片宽 256（内容宽 560 口径）",
+            cardW == 256,
+            $"内容宽 {w} ⇒ 卡片宽 (w - 2×{pad} - {gap})/2 = {cardW}"));
+
+        // ---- 3. 四张卡的矩形：互不相交 + 都在内容区内 ----
+        double x1 = pad, x2 = pad + cardW + gap, y1 = 0, y2 = topH + gap;
+        var cards = new (string Name, double X, double Y, double W, double H)[]
+        {
+            ("CPU", x1, y1, cardW, topH),
+            ("内存", x2, y1, cardW, topH),
+            ("上下速度", x1, y2, cardW, botH),
+            ("进程榜", x2, y2, cardW, botH),
+        };
+
+        bool disjoint = true;
+        for (int i = 0; i < cards.Length; i++)
+            for (int j = i + 1; j < cards.Length; j++)
+                disjoint &= !Overlaps(cards[i], cards[j]);
+        report.Checks.Add(new ProbeCheck(
+            "监控页：四张卡片互不重叠",
+            disjoint,
+            $"左列 x={x1} / 右列 x={x2}（列宽 {cardW}，列间距 {gap}）；上排 y={y1} / 下排 y={y2}（行高 {topH}/{botH}）"));
+
+        bool inside = cards.All(c => c.X >= 0 && c.Y >= 0 && c.X + c.W <= w && c.Y + c.H <= h);
+        report.Checks.Add(new ProbeCheck(
+            "监控页：四张卡片都在内容区内（不越界）",
+            inside,
+            $"内容区 {w}×{h}；卡片底边 y={y2 + botH}"));
+
+        // ---- 4. 像素探针：卡片边界真的落在规格位置上 ----
+        // 左边距必须干净（面板左侧留白 18）。
+        // 注意：卡片的 1px 描边**骑在**矩形边上（覆盖 e-1 与 e 两个像素），所以"干净区"从 e+1 算起。
+        double leftMargin = pixels.MaxDelta(0, 0, (int)pad - 2, h - 1);
+        report.Checks.Add(new ProbeCheck(
+            "监控页：左内缩 18 像素内无任何绘制",
+            leftMargin < PaintedDelta,
+            $"x∈[0,{pad - 1}) 区域与底色的最大通道差 = {leftMargin}（阈值 < {PaintedDelta}）"));
+
+        // 右内缩：右列卡片右缘 542 ⇒ x∈[543,560) 干净
+        double rightMargin = pixels.MaxDelta((int)(x2 + cardW) + 1, 0, w - 1, h - 1);
+        report.Checks.Add(new ProbeCheck(
+            "监控页：右内缩 18 像素内无任何绘制",
+            rightMargin < PaintedDelta,
+            $"x∈[{(int)(x2 + cardW) + 1},{w}) 区域与底色的最大通道差 = {rightMargin}（阈值 < {PaintedDelta}）"));
+
+        // 两列之间的竖向间隙：左卡右缘 e1=274、右卡左缘 e2=286，
+        // 描边各渗到 e-1（273 / 285），真正干净的中间区是 [e1+1, e2-2]。
+        double colGap = pixels.MaxDelta((int)(x1 + cardW) + 1, 0, (int)x2 - 2, h - 1);
+        report.Checks.Add(new ProbeCheck(
+            "监控页：列间距 12 且间隙内无任何绘制",
+            colGap < PaintedDelta,
+            $"x∈[{cardW + pad + 1},{pad + cardW + gap - 1}] 最大通道差 = {colGap}（阈值 < {PaintedDelta}）"));
+
+        // 两排之间的横向间隙：上排底缘 e1=181、下排顶缘 e2=193，干净区是 [e1+1, e2-2]。
+        double rowGap = pixels.MaxDelta(0, (int)topH + 1, w - 1, (int)y2 - 2);
+        report.Checks.Add(new ProbeCheck(
+            "监控页：排间距 12 且间隙内无任何绘制",
+            rowGap < PaintedDelta,
+            $"y∈[{topH + 1},{y2 - 1}] 最大通道差 = {rowGap}（阈值 < {PaintedDelta}）"));
+
+        // 四条边真的画在规格位置（描边像素，允许 ±1 的抗锯齿位移）
+        int midY = (int)(y1 + topH / 2);
+        int midX = (int)(x1 + cardW / 2);
+        report.Checks.Add(new ProbeCheck(
+            "监控页：左列卡片左右缘落在 x=18 / x=274",
+            pixels.AnyBorderNear((int)x1, midY, 1) && pixels.AnyBorderNear((int)(x1 + cardW), midY, 1),
+            $"x={x1} 与 x={x1 + cardW} 处的描边强度 = {pixels.MaxDelta((int)x1 - 1, midY, (int)x1 + 1, midY)}"));
+
+        report.Checks.Add(new ProbeCheck(
+            "监控页：右列卡片左右缘落在 x=286 / x=542",
+            pixels.AnyBorderNear((int)x2, midY, 1) && pixels.AnyBorderNear((int)(x2 + cardW), midY, 1),
+            $"x={x2} 与 x={x2 + cardW} 处的描边强度 = {pixels.MaxDelta((int)x2 - 1, midY, (int)x2 + 1, midY)}"));
+
+        report.Checks.Add(new ProbeCheck(
+            "监控页：上排卡底边落在 y=181、下排卡顶边落在 y=193",
+            pixels.AnyBorderNear(midX, (int)topH, 1) && pixels.AnyBorderNear(midX, (int)y2, 1),
+            $"y={topH} 与 y={y2} 处的描边强度 = {pixels.MaxDelta(midX - 1, (int)topH - 1, midX + 1, (int)topH + 1)}"));
+
+        // ---- 5. 文本不越出卡片：卡内高亮像素不得越过"卡右 - 内缩 15" ----
+        bool textInside = true;
+        var detail = new List<string>();
+        foreach (var card in cards)
+        {
+            int limit = (int)(card.X + card.W - padX) + 1;   // 允许 1 像素抗锯齿
+            int rightmost = pixels.RightmostInk((int)card.X, (int)card.Y, (int)(card.X + card.W - 3), (int)(card.Y + card.H - 1));
+            textInside &= rightmost <= limit;
+            detail.Add($"{card.Name} 最右高亮像素 x={rightmost}（上限 {limit}）");
+        }
+        report.Checks.Add(new ProbeCheck(
+            "监控页：文本不越出卡片（右对齐读数 x <= 卡右 - 内缩 15）",
+            textInside,
+            string.Join("；", detail)));
+
+        // ---- 6. 卡片内部确实画了东西（不是空壳） ----
+        double cpuCard = pixels.PaintedRatio((int)(x1 + 6), (int)(y1 + 6), (int)(x1 + cardW - 6), (int)(y1 + topH - 6));
+        report.Checks.Add(new ProbeCheck(
+            "监控页：CPU 卡内部有实际绘制",
+            cpuCard > 0.5,
+            $"CPU 卡内部非背景像素占比 = {cpuCard:P1}"));
+    }
+
+    // ================= 设备页不变量 =================
+
+    private static void CheckDevicesPage(ProbeReport report, BitmapSource bitmap, ProbeOptions options)
+    {
+        var palette = options.Palette ?? Palette.Dark;
+        var pixels = new BitmapPixels(bitmap, palette.Surface);
+        int w = options.Width, h = options.Height;
+
+        double painted = pixels.PaintedRatio();
+        report.Checks.Add(new ProbeCheck(
+            "设备页：渲染结果非全黑（非背景像素占比 > 2%）",
+            painted > MinPaintedRatio,
+            $"非背景像素 {pixels.PaintedCount()}/{w * h} = {painted:P2}（下限 {MinPaintedRatio:P0}）"));
+
+        double ink = pixels.InkRatio();
+        report.Checks.Add(new ProbeCheck(
+            "设备页：有高亮内容（电量环/读数像素占比 > 0.05%）",
+            ink > MinInkRatio,
+            $"高亮像素 {pixels.InkCount()}/{w * h} = {ink:P3}（下限 {MinInkRatio:P3}）"));
+
+        double cardW = ExpandedPanelSpec.DeviceCardWidth;
+        double cardH = ExpandedPanelSpec.DeviceCardHeight;
+        double gap = ExpandedPanelSpec.DeviceCardGap;
+        report.Checks.Add(new ProbeCheck(
+            "设备页：卡片规格常量（132×150 / 间距 12）",
+            cardW == 132 && cardH == 150 && gap == 12,
+            $"DeviceCardWidth={cardW} DeviceCardHeight={cardH} DeviceCardGap={gap}"));
+
+        // 第一张卡（合成设备 5 台 ⇒ 一行三张）
+        const double inset = 4;
+        // 描边骑在卡边上（渗到 e-1），干净区是 [e1+1, e2-2]
+        double colGap = pixels.MaxDelta((int)(inset + cardW) + 1, 0, (int)(inset + cardW + gap) - 2, h - 1);
+        report.Checks.Add(new ProbeCheck(
+            "设备页：卡片列间距 12 且间隙内无任何绘制",
+            colGap < PaintedDelta,
+            $"x∈[{(int)(inset + cardW) + 1},{(int)(inset + cardW + gap) - 1}] 最大通道差 = {colGap}（阈值 < {PaintedDelta}）"));
+
+        double cardBody = pixels.PaintedRatio((int)(inset + 16), 0, (int)(inset + cardW - 16), (int)cardH - 8);
+        report.Checks.Add(new ProbeCheck(
+            "设备页：卡片内部有实际绘制（电量环 + 读数）",
+            cardBody > 0.2,
+            $"首张卡内部非背景像素占比 = {cardBody:P1}"));
+    }
+
+
+    // ================= 展开面板整体（可选：需要 Island.App 程序集） =================
+
+    /// <summary>
+    /// 尝试渲染展开面板整体（含顶栏页签）。
+    ///
+    /// 为什么要走反射：ExpandedPanel.xaml 的资源字典写死了 <c>/Island.App;component/Controls/PanelStyles.xaml</c>，
+    /// 那是**按程序集名**寻址的编译期资源 —— 只有真的加载 Island.App 程序集才解析得了。
+    /// 而直接 ProjectReference Island.App 会让 MonitorPage / DevicesPage 两份类型重名（CS0436 警告），
+    /// 门禁要求 0 警告，所以这里改成**运行时反射加载**，编译期零耦合。
+    ///
+    /// 找不到 Island.App 程序集、或渲染失败 ⇒ 返回 null，调用方如实报告"没渲染出来"，
+    /// 绝不拿一张全黑图充数。
+    /// </summary>
+    public static BitmapSource? TryRenderExpandedPanel(string islandAppDll, int width, int height, Palette palette)
+        => TryRenderExpandedPanel(islandAppDll, width, height, palette, out _);
+
+    /// <summary>同 <see cref="TryRenderExpandedPanel(string,int,int,Palette)"/>，但把失败原因带出来（如实报告，不猜）。</summary>
+    public static BitmapSource? TryRenderExpandedPanel(string islandAppDll, int width, int height, Palette palette, out string? error)
+    {
+        error = null;
+        BitmapSource? result = null;
+        Exception? failure = null;
+
+        // 展开面板的构造函数会建 WPF 控件（UserControl + XAML），**必须 STA 线程**，
+        // 调用方（控制台主线程）是 MTA ⇒ 这里自己开一条 STA 工作线程。
+        var worker = new Thread(() =>
+        {
+            try { result = RenderExpandedPanelOnSta(islandAppDll, width, height, palette); }
+            catch (Exception ex) { failure = ex; }
+        });
+        worker.SetApartmentState(ApartmentState.STA);
+        worker.IsBackground = true;
+        worker.Start();
+        worker.Join();
+
+        if (failure != null)
+        {
+            error = failure.GetType().Name + ": " + failure.Message
+                + (failure.InnerException is { } inner ? " → " + inner.GetType().Name + ": " + inner.Message : "")
+                + (failure.InnerException?.InnerException is { } inner2 ? " → " + inner2.GetType().Name + ": " + inner2.Message : "");
+        }
+        return result;
+    }
+
+    private static BitmapSource? RenderExpandedPanelOnSta(string islandAppDll, int width, int height, Palette palette)
+    {
+        try
+        {
+            if (!File.Exists(islandAppDll)) return null;
+
+            // 依赖解析：Island.App 的第三方依赖（NAudio / System.Management 等）都在它自己的输出目录里
+            string dir = Path.GetDirectoryName(islandAppDll)!;
+            AssemblyLoadContext.Default.Resolving += (ctx, name) =>
+            {
+                string candidate = Path.Combine(dir, name.Name + ".dll");
+                return File.Exists(candidate) ? ctx.LoadFromAssemblyPath(candidate) : null;
+            };
+
+            Assembly app = AssemblyLoadContext.Default.LoadFromAssemblyPath(islandAppDll);
+            Type? panelType = app.GetType("Island.App.Controls.ExpandedPanel");
+            if (panelType is null) return null;
+
+            object? instance = Activator.CreateInstance(panelType);
+            if (instance is not FrameworkElement panel) return null;
+
+            // 主题：展开面板的控件从**它自己的**资源字典取色，宿主是这么写的
+            // （IslandWindow.UpdatePanelResources → ExpandedPanel.ApplyTheme）。
+            var applyTheme = panelType.GetMethod("ApplyTheme", BindingFlags.Public | BindingFlags.Static);
+            if (applyTheme is not null)
+            {
+                var appPaletteType = app.GetType("Island.App.Themes.Palette")!;
+                // 用被加载程序集里的 Palette 类型取同名静态属性（Dark / OneDark …）
+                object? appPalette = appPaletteType.GetProperty(paletteNameFor(palette),
+                    BindingFlags.Public | BindingFlags.Static)?.GetValue(null);
+                if (appPalette is not null)
+                    applyTheme.Invoke(null, new[] { panel.Resources, appPalette });
+            }
+
+            // 喂读数：展开面板里的监控页读的是**被加载程序集自己的** MonitorSnapshot 类型
+            //（Island.App 把 Island.Core 的源码合并进了自己，类型跟探针这边不是同一个），
+            // 所以要用反射在目标程序集里造一份同样的合成读数。
+            try
+            {
+                InjectSyntheticReadings(app, panel);
+            }
+            catch
+            {
+                // 喂不进去读数不算失败：面板照样能渲染（只是读数位显示 "—"），
+                // 但那样出来的图看不出内容，所以这里让上层知道。
+                throw new InvalidOperationException("展开面板读数注入失败", new InvalidOperationException("见内层异常"));
+            }
+
+            panel.Width = width;
+            panel.Height = height;
+
+            var host = new Grid { Background = new SolidColorBrush(palette.Surface), Width = width, Height = height };
+            host.Children.Add(panel);
+            host.Measure(new Size(width, height));
+            host.Arrange(new Rect(0, 0, width, height));
+            host.UpdateLayout();
+
+            var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
+            bitmap.Render(host);
+            bitmap.Freeze();
+            return bitmap;
+        }
+        catch (Exception ex)
+        {
+            // 渲染不出来就是渲染不出来（原因由调用方报告），不吞异常后假装成功
+            throw new InvalidOperationException("展开面板离屏渲染失败", ex);
+        }
+    }
+
+
+    /// <summary>
+    /// 用反射给展开面板里的监控页喂一份**合成读数**。
+    ///
+    /// 为什么必须用反射：展开面板（连同它内嵌的 MonitorPage）在 Island.App 程序集里，
+    /// 它的 Snapshot 属性类型是**那个程序集自己的** Island.Core.Monitoring.MonitorSnapshot
+    /// ——Island.App 把 Island.Core 的源码合并进了自己，所以同名类型在两边不是同一个 CLR 类型，
+    /// 直接赋值会 TypeLoadException。
+    /// </summary>
+    private static void InjectSyntheticReadings(Assembly app, FrameworkElement panel)
+    {
+        var monitorProp = panel.GetType().GetProperty("Monitor");
+        object? monitor = monitorProp?.GetValue(panel);
+        if (monitor is null) return;
+
+        // 在目标程序集里造 MonitorSnapshot
+        var snapshotType = app.GetType("Island.Core.Monitoring.MonitorSnapshot");
+        if (snapshotType is null) return;
+        object snapshot = Activator.CreateInstance(snapshotType)!;
+
+        var snapshotSource = SyntheticSnapshot();
+        foreach (var name in new[]
+        {
+            "CpuUsage", "CpuFrequencyGHz", "MemoryUsagePercent", "MemoryUsedGB", "MemoryTotalGB",
+            "GpuUsage", "DiskUsagePercent", "DriveUsedGB", "DriveTotalGB", "DriveName",
+            "DownloadSpeed", "UploadSpeed", "SessionDownload", "SessionUpload",
+            "TodayDownload", "TodayUpload", "LinkType", "ProcessCount", "ThreadCount", "UptimeHours",
+        })
+        {
+            var prop = snapshotType.GetProperty(name);
+            var value = snapshotSource.GetType().GetProperty(name)?.GetValue(snapshotSource);
+            if (prop is not null && value is not null && prop.CanWrite)
+                prop.SetValue(snapshot, value);
+        }
+
+        // 电池百分比（可空）
+        var batteryProp = snapshotType.GetProperty("BatteryPercent");
+        var batteryValue = snapshotSource.GetType().GetProperty("BatteryPercent")?.GetValue(snapshotSource);
+        if (batteryProp is not null && batteryValue is not null && batteryProp.CanWrite)
+            batteryProp.SetValue(snapshot, batteryValue);
+
+        // 进程榜（数组类型也要在目标程序集里造）
+        var topType = app.GetType("Island.Core.Monitoring.TopProcess");
+        var topSource = snapshotSource.TopProcesses;
+        if (topType is not null && topSource is not null && topSource.Length > 0)
+        {
+            var array = Array.CreateInstance(topType, topSource.Length);
+            for (int i = 0; i < topSource.Length; i++)
+            {
+                var item = Activator.CreateInstance(topType)!;
+                foreach (var name in new[] { "Name", "CpuPercent", "MemoryMB", "ExePath" })
+                {
+                    var prop = topType.GetProperty(name);
+                    var value = topSource[i].GetType().GetProperty(name)?.GetValue(topSource[i]);
+                    if (prop is not null && value is not null && prop.CanWrite)
+                        prop.SetValue(item, value);
+                }
+                array.SetValue(item, i);
+            }
+            var topProp = snapshotType.GetProperty("TopProcesses");
+            if (topProp is not null && topProp.CanWrite) topProp.SetValue(snapshot, array);
+        }
+
+        var setSnapshot = monitor.GetType().GetProperty("Snapshot");
+        if (setSnapshot is not null && setSnapshot.CanWrite) setSnapshot.SetValue(monitor, snapshot);
+
+        // 温度快照
+        var thermalType = app.GetType("Island.App.Services.ThermalSnapshot");
+        var monitorThermal = monitor.GetType().GetProperty("Thermal");
+        if (thermalType is not null && monitorThermal is not null && monitorThermal.CanWrite)
+        {
+            object thermal = Activator.CreateInstance(thermalType)!;
+            var thermalSource = SyntheticThermal();
+            foreach (var name in new[] { "CpuTemp", "GpuTemp", "SsdTemp", "MotherboardTemp", "GpuMemoryUsedGB", "GpuMemoryTotalGB" })
+            {
+                var prop = thermalType.GetProperty(name);
+                var value = thermalSource.GetType().GetProperty(name)?.GetValue(thermalSource);
+                if (prop is not null && value is not null && prop.CanWrite)
+                    prop.SetValue(thermal, value);
+            }
+            monitorThermal.SetValue(monitor, thermal);
+        }
+
+        // 历史序列（走势图）：目标程序集里造 double[]
+        var historyProp = monitor.GetType().GetProperty("CpuHistory");
+        if (historyProp is not null && historyProp.CanWrite)
+        {
+            var source = SyntheticHistory(36);
+            var array = Array.CreateInstance(typeof(double), source.Length);
+            for (int i = 0; i < source.Length; i++) array.SetValue(source[i], i);
+            historyProp.SetValue(monitor, array);
+        }
+    }
+
+    /// <summary>把探针用的 Palette 名字映射成 Island.App 里同名的静态属性（Dark / OneDark / …）。</summary>
+    private static string paletteNameFor(Palette palette)
+    {
+        foreach (var name in new[] { "Dark", "Light", "OneDark", "GitHubDark", "Dracula", "NightOwl", "Island", "Cyberpunk", "Pixel" })
+        {
+            var candidate = Palette.ByName(name);
+            if (candidate is not null && candidate.Text == palette.Text && candidate.Accent == palette.Accent)
+                return name;
+        }
+        return "Dark";
+    }
+
+    // ================= 工具 =================
+
+    /// <summary>一张位图的"非背景像素占比"（相对给定底色）—— 工具侧用来判断渲染是不是全黑。</summary>
+    public static double PaintedRatioOf(BitmapSource bitmap, Color background)
+        => new BitmapPixels(bitmap, background).PaintedRatio();
+
+    /// <summary>读取一个 const 字段的真实值（断言的是产品源码里的常量，不是抄一份副本）。</summary>
+    private static double ConstOf(Type type, string name)
+    {
+        FieldInfo? field = type.GetField(name, BindingFlags.NonPublic | BindingFlags.Static);
+        if (field == null) throw new InvalidOperationException($"{type.Name} 里找不到常量 {name}");
+        object? value = field.GetRawConstantValue();
+        if (value is not double d) throw new InvalidOperationException($"{type.Name}.{name} 不是 double");
+        return d;
+    }
+
+    private static bool Overlaps(
+        (string Name, double X, double Y, double W, double H) a,
+        (string Name, double X, double Y, double W, double H) b)
+        => a.X < b.X + b.W && b.X < a.X + a.W && a.Y < b.Y + b.H && b.Y < a.Y + a.H;
+
+    /// <summary>
+    /// 位图像素读取 + 判定用的统计。所有坐标都是像素坐标（DpiScale = 1 ⇒ 与 DIP 一一对应）。
+    /// </summary>
+    private sealed class BitmapPixels
+    {
+        private readonly byte[] _data;
+        private readonly int _width;
+        private readonly int _height;
+        private readonly byte _bgR, _bgG, _bgB;
+
+        public BitmapPixels(BitmapSource bitmap, Color background)
+        {
+            _width = bitmap.PixelWidth;
+            _height = bitmap.PixelHeight;
+            _data = new byte[_width * _height * 4];
+            bitmap.CopyPixels(_data, _width * 4, 0);
+            _bgR = background.R;
+            _bgG = background.G;
+            _bgB = background.B;
+        }
+
+        private (byte B, byte G, byte R) At(int x, int y)
+        {
+            int i = (y * _width + x) * 4;
+            return (_data[i], _data[i + 1], _data[i + 2]);
+        }
+
+        /// <summary>与底色的通道最大差。</summary>
+        public int Delta(int x, int y)
+        {
+            var (b, g, r) = At(x, y);
+            return Math.Max(Math.Abs(r - _bgR), Math.Max(Math.Abs(g - _bgG), Math.Abs(b - _bgB)));
+        }
+
+        /// <summary>该像素是不是"有绘制"（与底色有可见差别）。</summary>
+        public bool IsPainted(int x, int y) => Delta(x, y) >= PaintedDelta;
+
+        /// <summary>该像素是不是"高亮内容"（文字/图标/强调色）。</summary>
+        public bool IsInk(int x, int y)
+        {
+            var (b, g, r) = At(x, y);
+            return Math.Max(r, Math.Max(g, b)) >= InkChannel;
+        }
+
+        public int PaintedCount()
+        {
+            int n = 0;
+            for (int y = 0; y < _height; y++)
+                for (int x = 0; x < _width; x++)
+                    if (IsPainted(x, y)) n++;
+            return n;
+        }
+
+        public int InkCount()
+        {
+            int n = 0;
+            for (int y = 0; y < _height; y++)
+                for (int x = 0; x < _width; x++)
+                    if (IsInk(x, y)) n++;
+            return n;
+        }
+
+        public double PaintedRatio() => (double)PaintedCount() / (_width * _height);
+
+        public double InkRatio() => (double)InkCount() / (_width * _height);
+
+        /// <summary>区域内的非背景像素占比。</summary>
+        public double PaintedRatio(int x0, int y0, int x1, int y1)
+        {
+            x0 = Math.Max(0, x0); y0 = Math.Max(0, y0);
+            x1 = Math.Min(_width - 1, x1); y1 = Math.Min(_height - 1, y1);
+            int n = 0, total = 0;
+            for (int y = y0; y <= y1; y++)
+                for (int x = x0; x <= x1; x++)
+                {
+                    total++;
+                    if (IsPainted(x, y)) n++;
+                }
+            return total == 0 ? 0 : (double)n / total;
+        }
+
+        /// <summary>区域内的最大通道差。</summary>
+        public int MaxDelta(int x0, int y0, int x1, int y1)
+        {
+            x0 = Math.Max(0, x0); y0 = Math.Max(0, y0);
+            x1 = Math.Min(_width - 1, x1); y1 = Math.Min(_height - 1, y1);
+            int max = 0;
+            for (int y = y0; y <= y1; y++)
+                for (int x = x0; x <= x1; x++)
+                    max = Math.Max(max, Delta(x, y));
+            return max;
+        }
+
+        /// <summary>附近是否存在描边像素（允许 ±1 像素的抗锯齿位移）。</summary>
+        public bool AnyBorderNear(int x, int y, int tolerance)
+        {
+            for (int dy = -tolerance; dy <= tolerance; dy++)
+                for (int dx = -tolerance; dx <= tolerance; dx++)
+                {
+                    int px = x + dx, py = y + dy;
+                    if (px < 0 || py < 0 || px >= _width || py >= _height) continue;
+                    if (Delta(px, py) >= BorderDelta) return true;
+                }
+            return false;
+        }
+
+        /// <summary>区域里最靠右的高亮像素 x（没有则返回 x0-1）。</summary>
+        public int RightmostInk(int x0, int y0, int x1, int y1)
+        {
+            int rightmost = x0 - 1;
+            for (int y = y0; y <= y1; y++)
+                for (int x = x1; x >= x0; x--)
+                    if (IsInk(x, y)) { rightmost = Math.Max(rightmost, x); break; }
+            return rightmost;
+        }
+    }
+}

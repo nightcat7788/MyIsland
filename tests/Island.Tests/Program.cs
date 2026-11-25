@@ -49,6 +49,7 @@ try
     CompactLayoutTests.Run(Check); // 2026-11-25 验收：收起态尺寸表不得超出宿主窗口宽 640
     CapabilityManifestTests.Run(Check); // 2026-11-26 阶段 4/5：能力清单漂移检查（清单改了、两端没跟着改 ⇒ 红）
     ThemeTokenTests.Run(Check); // 2026-11-26 task9：主题 token 语义清单漂移检查（两端同名 token 必须指同一语义角色）
+    VisualRenderTests.Run(Check); // 2026-11-26 视觉回归探针：离屏渲染 + 像素不变量（防全黑 / 栅格几何 / 文本越界）
 }
 catch (Exception ex)
 {
