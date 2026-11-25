@@ -78,8 +78,16 @@
 
 ## 阶段 D：能力扩展
 
-- [ ] D1 **协议表扩充**：目前只有联想 Idea5003 一条内置条目；「填表加品牌」这条路没被真实用户验证过 ——
-      至少再支持 2–3 个常见 2.4G 接收器（罗技 HID++、雷蛇、VGN 等），每条都要实机回包验证。
+- [x] D1 **协议表扩充**（部分达成，硬件受限）：
+      - 协议表结构扩展：新增**验证状态**（verified / unverified / 说明 / 验证日期 / 验证设备）、
+        `echoOffset`（回显固定位置）、`chargingBitOffset`（充电位在字节第几位）；
+      - **内置表装载层只收「已验证」条目** —— 未验证的候选**不进匹配表**，设备回落「未知」，
+        从根上杜绝「拿未经验证的表项给用户输出读数」；
+      - 新增 `PeripheralProtocolCandidates`（罗技 HID++ / 雷蛇，一律 unverified、**故意留成读不出东西的形态**）；
+      - 新增 `docs/peripheral-protocols.md`：候选条目**完整可填写模板** + 验证流程（用 `hid-probe --selftest` 实机回包验证）；
+      - 联想 Idea5003 是**唯一已实机验证**条目（58%，**推断值**，偏移 5，未做同刻交叉验证）。
+      ↳ **未达成部分（如实记）**：计划里「再支持 2–3 个接收器」**没做成** —— 本机只有联想的接收器，
+        没有其它硬件可验证；凭空写出的条目会变成假读数。达成的是「让加品牌**可被验证**」的基础设施。
 - [ ] D2 **硬件详情面板**：像 LiteMonitor 那样列出全部硬件传感器（现在只能看固定的几个）。
 - [ ] D3 **SSD 温度**：Windows 侧因 0x1EA 蓝屏史一直关闭；需在别的机型上验证，或找不经 SMART 的读法。
 - [ ] D4 收起态 dash 的元素形态对齐（mac 用图标盒，Windows 用文字标签）。
@@ -91,8 +99,15 @@
 - [ ] E1 收起视图集定案：Windows 多出的 monitor/devices/clipboard/window ——
       要么补 mac 视图，要么明确归为平台专属（清单已能表达，等产品定）。
 - [ ] E2 展开页监控的底部状态行统一（两端同结构：9px 一行）。
-- [ ] E3 主题 token 口径：12 个同名 token 在每套主题下取值都不同 ——
-      统一「语义名」还是统一「具体色值」？前者已由清单体现，后者要重做两套主题。
+- [x] E3 主题 token 口径 —— **方向已定并落地：统一「语义名」，不改任何具体色值**。
+      - 新增 `src/Island.Core/Capabilities/ThemeTokenManifest.cs`：12 个共享 token 的语义键 + 语义说明 +
+        两端属性名映射 + 「取值是否两端同值」（一律标「按设计不同」并写明原因：Windows 暗色科技 vs mac 按资源配色）；
+        平台独有项（mac 的 Elevated/Fill/Selection、Windows 的 SquareCorners）也登记；
+      - 新增 `tests/Island.Tests/ThemeTokenTests.cs`：清单自身完整性 + **读源码静态校验**两端 Palette 是否声明了
+        清单里登记的每个属性（沿用 CapabilityManifestTests 的范式）；门禁有效性已实测（故意破坏即变红）；
+      - `docs/capabilities.md` 新增「主题 token 语义口径」一节，公开两端取值差异。
+      ↳ 遗留（如实记）：**渲染层尚未改为从清单取 token**（两端 Palette 属性名仍被直接引用）；
+        本轮锁住的是「两端 Palette 与清单不漂移」，「渲染层用对了语义 token」不在门禁覆盖内。
 
 ---
 
@@ -121,9 +136,9 @@
 
 | 任务 | 交付 | 状态 |
 |---|---|---|
-| Task 1 | 离屏渲染视觉回归探针（`tools/visual-probe`）+ 渲染不变量断言进 `Island.Tests` | 进行中 |
-| Task 2 | 协议表自检：共享层校验逻辑 + `hid-probe --selftest` 真机命中报告 | 进行中 |
-| Task 8 | `release.ps1` 加 `-SkipInstaller` 降级 + dotnet/ISCC 路径可发现 | **完成**（`ae86838`） |
+| Task 1 | 离屏渲染视觉回归探针（`tools/visual-probe`）+ 渲染不变量断言进 `Island.Tests` | **完成**（`63c2679` → 合入 `f5ca2e7`） |
+| Task 2 | 协议表自检：共享层校验逻辑 + `hid-probe --selftest` 真机命中报告 | **完成**（`132ec89` + 两轮修复 `76fa57a`/`fa9b0e8`） |
+| Task 8 | `release.ps1` 加 `-SkipInstaller` 降级 + dotnet/ISCC 路径可发现 | **完成**（`ae86838` → 合入 `501bd46`） |
 
 **本批次的门禁**（与通用门禁相同）：build 0 警告 0 错误、Island.Tests 全过、UTF-8 无 BOM + LF、
 读不到的量一律「未知」（禁止 0 / 默认值 / 换算百分比充数）。
