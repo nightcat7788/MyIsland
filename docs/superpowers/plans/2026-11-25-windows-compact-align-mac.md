@@ -1145,10 +1145,10 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: combo 重排为 mac 的四组�
                 : bat.Percent <= 20 ? pal.Up
                 : bat.Percent <= 40 ? pal.Warning
                 : pal.Text;
-            // 标签统一「电」：充电中 / 低电量靠颜色区分（充电绿 / ≤20% 红 / ≤40% 橙）。
+            // 充电时标签带「+」（旧版两行网格的「电+」标记，改造里不丢信息）；配色仍是充电绿。
             AddItemGroup(new List<(string, string, string, Color?)>
             {
-                ("电", $"{bat.Percent}%", "100%", bc),
+                (bat.Charging ? "电+" : "电", $"{bat.Percent}%", "100%", bc),
             }, dividerAfter: true);
         }
 
@@ -1181,8 +1181,18 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: combo 重排为 mac 的四组�
 改成：
 
 ```csharp
-        "dash" => (560, 44),    // 全读数单行（核心柱│温度组│占用组│电池│网速，组间分隔线；对齐 mac）
+        // 全读数单行（核心柱│温度组│占用组│电池│网速，组间分隔线；对齐 mac）。
+        // 上限 700：单行 5 组实测约 690 宽（8 核）；上限 560 时 8 核会把电池+网速两组折进 "+2"（3 核折掉网速组），默认显示项下看不到网速。
+        // 胶囊按实测内容定宽（CurrentCollapsedSize 用 clamp(实测内容宽, 110, 上限)），上限只防最坏情况。
+        "dash" => (700, 44),
 ```
+
+> **2026-11-25 修复轮 1 裁决**：上限由 560 提到 **700**。
+> 依据与 Task 4 对 combo 的裁决同口径 —— 宿主 `CurrentCollapsedSize()` 里胶囊实际宽度是
+> `Math.Clamp(islandCanvas.CompactContentWidth, 110, fix.Width)`，**胶囊按实测内容定宽**，
+> `fix.Width` 只是上限；提高上限不会让胶囊常态变宽（Minimal 档约 250px、Balanced 约 450px、
+> Full 才到 ~690px），只是把「内容装不下就丢读数」的最坏情况消掉，让 Full 档完整显示 5 组 + 4 条分隔线。
+> 这与 mac 的 `CapsuleW => ContentW + PadX*2`（按内容定宽）同方向。
 
 - [ ] **Step 6: 构建并跑测试**
 
@@ -1208,7 +1218,8 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: dash 改单行（组间分隔�
 > - **规格与代码的一处不一致，按规格实现**：原文 Step 4 的代码把「占用项组」无条件加入组表
 >   （只把它的 `dividerAfter` 写成 `density != Minimal`），这与 Step 4 自己的文档注释、以及规格 §3.2 的密度表
 >   （Minimal = 核心柱 + 温度组 + 网速）矛盾。落地时按**规格**实现：占用组整组在 Minimal 档不加入组表。
->   分隔线数随之变成：Full 4 条 / Balanced 3 条 / Minimal 1 条（核心柱之后）。
+>   分隔线数随之变成：Full 4 条 / Balanced 3 条（4 组全显示时）/ Minimal 1 条（只有核心柱之后有线）——
+>   实际条数还要看宽度截断（组被折进 "+N" 时，对应的分隔线也跟着少）。
 > - **组间距**：按硬性要求传 `gap: CompactSpec.SeparatorBand`(24)、`padding: CompactSpec.DashPadX`(14)、`drawDividers: true`；
 >   分隔线固定画在「组尾 + 18px」，落在 24px 总带里偏后 6px（下一组从「组尾 + 24」开始），与 mac 的 `Gap()` 同构。
 > - **XML 注释里的 `<` 写成 `&lt;`**：`阈值 &lt;390 / &lt;560` 这类写法将来开启文档生成时不会触发 CS1570；
@@ -1223,11 +1234,15 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: dash 改单行（组间分隔�
 >   **改动后 45 条全绿**；5 组全显示时实测 **4 条分隔线**，位置分别是 DIP 84.5 / 276 / 482.5 / 547.5（= 各组尾 + 18）。
 > - **变形帧**（110 / 140 / 170 / 200 / 230 / 260 / 300 / 345 / 420 px）：全部单行、不叠字、不溢出、高度恒为 44px；
 >   宽度不够时按 Task 3 的 `+N` 机制汇总（不是溢出）。
-> - **一个待决事实（未擅自改）**：宿主给 dash 的宽度上限仍是 **560**（Step 5 明确要求 `(560, 44)`），
->   而单行 5 组全显示需要 **≈680px**（8 核实测 678.7）。于是默认显示项（全部）下、560 上限时
->   **网速组会被折进 `+1`**（实测 4 组 + `+1`、3 条分隔线）。旧版两行网格在 560 下同样要折进 `+1`
->   （旧版折掉的是「↑」，新版折掉的是整个网速组），所以不是新引入的截断，但默认配置下用户会看不到网速。
->   要让 5 组全显示，需把上限提到 ~700（同 Task 4 把 combo 上限提到 640 的做法）—— **等决策，未改**。
+> - **宽度上限已定为 700（2026-11-25 修复轮 1 裁决）**：宿主给 dash 的宽度上限由 **560** 提到 **700**
+>   （Step 5 的 `(560, 44)` 改为 `(700, 44)`）。依据与 Task 4 对 combo 的裁决同口径：
+>   胶囊实际宽度 = `Math.Clamp(实测内容宽, 110, fix.Width)`，**按实测内容定宽**，`fix.Width` 只是上限；
+>   提高上限不会让胶囊常态变宽（Minimal 档约 250px、Balanced 约 450px、Full 才到 ~690px），
+>   只是把「内容装不下就丢读数」的最坏情况消掉 —— 5 组全显示实测需要 ≈690px（8 核实测 678.7），
+>   560 上限时**网速组会被折进 `+1`**（旧版两行网格在 560 下同样要折 `+1`，折的是「↑」；
+>   新版折的是整个网速组，默认配置下就看不到网速了）。与 mac 的 `CapsuleW => ContentW + PadX*2` 同方向。
+> - **电池充电标记已恢复**：标签回到旧版口径 —— 充电时「电+」、未充电「电」，配色不变（充电绿）。
+>   brief 里写的 `(bat.Charging ? "电" : "电")` 是同分支笔误，改造里不丢信息。
 > - **顺带处理**：`src/Island.Core/Monitoring/MonitorModels.cs` 里 `CompactSpeed` 的注释已按事实改正
 >   （现只剩 clock / monitor 视图与展开后的监控页在用；combo / dash 都改用 `FormatSpeedFixed`），
 >   只改注释文字，实现没动。
