@@ -32,6 +32,7 @@ try
     SmnChannelTests.Run(Check);
     DeviceBatteryTests.Run(Check);  // 2026-11-25 设备电量增强：档位语义 / 提醒设置
     PeripheralBatteryTests.Run(Check); // 2026-11-26 Windows 外设电量：协议解析三层校验 / 协议表匹配 / 标准 HID 换算 / 识别兜底
+    PeripheralProtocolTableTests.Run(Check); // 2026-11-26 task2：外设协议表自检（表合法性校验 / 覆盖规则 / 字段级 JSON 报错）
     CpuTemperatureTests.Run(Check); // 2026-11-26 CPU 温度取值：分层匹配 + 排除 Distance to TjMax 等干扰项
     HardwareSensorRulesTests.Run(Check); // 2026-11-26 硬件传感器规则：名字→语义 + 分层裁决 + 干扰项排除
     ExpandedPanelSpecTests.Run(Check); // 2026-11-26 阶段 2：展开面板规格（以 mac 现有实现为基准）
