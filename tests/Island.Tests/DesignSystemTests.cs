@@ -76,13 +76,6 @@ internal static class DesignSystemTests
                 RenderKit.Dial(dc, new Point(20, 20), 40, 3, 0.5, Colors.Black, Colors.White, Colors.White, "", 1, glow: double.NaN);
                 RenderKit.Dial(dc, new Point(20, 20), 40, 3, 0.5, Colors.Black, Colors.White, Colors.White, "", 1, glow: -4);
                 RenderKit.Dial(dc, new Point(20, 20), 40, 3, 2, Colors.Black, Colors.White, Colors.White, "", 1, glow: 3);
-                // 360° 闭环环（收起态用）：负半径（线宽 > 直径）/ 零直径 / 坏直径 / 坏占比都不抛异常
-                RenderKit.Ring(dc, new Point(20, 20), 40, 3, 0.5, Colors.Black, Colors.White);
-                RenderKit.Ring(dc, new Point(20, 20), 40, 60, 0.5, Colors.Black, Colors.White);
-                RenderKit.Ring(dc, new Point(20, 20), 0, 3, 0.5, Colors.Black, Colors.White);
-                RenderKit.Ring(dc, new Point(20, 20), double.NaN, 3, 0.5, Colors.Black, Colors.White);
-                RenderKit.Ring(dc, new Point(20, 20), 40, 3, double.NaN, Colors.Black, Colors.White);
-                RenderKit.Ring(dc, new Point(20, 20), 40, 3, 2, Colors.Black, Colors.White);
                 var spot = RenderKit.Spotlight(Palette.Dark.Accent, double.NaN, double.PositiveInfinity);
                 ok &= spot.IsFrozen && RenderKit.ReferenceEquals(spot, RenderKit.Spotlight(Palette.Dark.Accent, double.NaN, double.PositiveInfinity));
                 ok &= RenderKit.Halo(Colors.White, 7).A == 255 && RenderKit.Halo(Colors.White, -1).A == 0;
@@ -118,6 +111,21 @@ internal static class DesignSystemTests
             }
             catch { ok = false; }
             check("Num / Meter / Hairline / Glyphs：NaN、超范围、零尺寸输入不抛异常", ok);
+
+            // 360° 闭环环（收起态用）：分开命名 —— 前两条只证明「提前返回没崩」，
+            // 真正打到坏值路径的是 NaN 直径那条（NaN <= 0 为 false，会走到 DrawEllipse）。
+            bool ringOk = true;
+            try
+            {
+                RenderKit.Ring(dc, new Point(20, 20), 40, 3, 0.5, Colors.Black, Colors.White);              // 正常
+                RenderKit.Ring(dc, new Point(20, 20), 40, 60, 0.5, Colors.Black, Colors.White);             // 线宽 > 直径 ⇒ 半径为负
+                RenderKit.Ring(dc, new Point(20, 20), 0, 3, 0.5, Colors.Black, Colors.White);               // 直径 0 ⇒ 半径为负
+                RenderKit.Ring(dc, new Point(20, 20), double.NaN, 3, 0.5, Colors.Black, Colors.White);      // NaN 直径 ⇒ 半径为 NaN
+                RenderKit.Ring(dc, new Point(20, 20), 40, 3, double.NaN, Colors.Black, Colors.White);       // NaN 占比
+                RenderKit.Ring(dc, new Point(20, 20), 40, 3, 2, Colors.Black, Colors.White);               // 占比超范围
+            }
+            catch { ringOk = false; }
+            check("Ring：半径为 0 / 负时提前返回不画；NaN 直径、NaN 占比、占比超范围不抛异常", ringOk);
         }
 
         // ---------- 温度更新：画面不变不重绘（2026-11-24 展开态降耗） ----------

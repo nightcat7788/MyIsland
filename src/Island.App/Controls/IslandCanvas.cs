@@ -542,33 +542,30 @@ public sealed class IslandCanvas : FrameworkElement
     /// 收起态分组排版：组与组之间按「上一组的 TrailingGap（缺省用 gap 参数）」留白，
     /// 需要时在留白里画 Hairline 竖线（mac 的 Gap()：线在「组尾 + 18px」，偏后 6px，不在正中）。
     /// 宽度不够时截断尾部并显示 "+N"；被截断时最后一个可见组**不**画分隔线。
+    ///
+    /// 排版决策（显示几组 / 「+N」画在哪 / 内容多宽）在 <see cref="CompactSpec.PlanCompactGroups"/>
+    /// 里做纯计算，这里只负责照着画 —— 这样「外观不变」由测试守住，不靠人读代码。
     /// </summary>
     private double DrawCompactGroups(DrawingContext dc, Palette pal, Rect r, double cy,
         List<CompactGroup> groups, double gap = 16, double padding = 14,
         bool drawDividers = false)
     {
         double available = Math.Max(0, CompactWidthBudget - padding * 2);
-        double used = 0;
-        int shown = 0;
-        double prevGap = 0;   // 上一组到本组的间距（本组之后用本组的 TrailingGap）
-        for (int i = 0; i < groups.Count; i++)
-        {
-            double next = used + (shown > 0 ? prevGap : 0) + groups[i].Width;
-            int remaining = groups.Count - i - 1;
-            double suffix = remaining > 0 ? prevGap + Text($"+{remaining}", 11, pal.TextDim, ppd: Ppd).Width : 0;
-            if (next + suffix > available) break;
-            used = next;
-            prevGap = CompactSpec.GroupAdvance(groups[i].TrailingGap, gap);
-            shown++;
-        }
+        var plan = CompactSpec.PlanCompactGroups(groups.Count,
+            i => groups[i].Width,
+            i => groups[i].TrailingGap,
+            gap, available,
+            n => Text($"+{n}", 11, pal.TextDim, ppd: Ppd).Width);
         double x = r.X + padding;
-        for (int i = 0; i < shown; i++)
+        for (int i = 0; i < plan.Shown; i++)
         {
             double groupStart = x;
             groups[i].Draw(groupStart);
             double groupEnd = groupStart + groups[i].Width;
-            bool hasNext = i < shown - 1;
-            x = groupEnd + (hasNext ? CompactSpec.GroupAdvance(groups[i].TrailingGap, gap) : 0);
+            bool hasNext = i < plan.Shown - 1;
+            // 每个可见组之后都照常推进一段组间距：最后一个可见组后面是「+N」，
+            // 也得留出这一段（旧行为；塌成紧贴会让「+N」贴住最后一根柱子）。
+            x = groupEnd + CompactSpec.GroupAdvance(groups[i].TrailingGap, gap);
             // 组间分隔线：mac 的 Gap() 在总带里画线（组尾 + 18px = 组尾 + 1.5 × 单侧组间距）；
             // 最后一个可见组后面不画（其后是 +N 或空白）
             if (drawDividers && groups[i].DividerAfter && hasNext)
@@ -579,13 +576,12 @@ public sealed class IslandCanvas : FrameworkElement
                     new Point(lineX, cy + CompactSpec.DividerHalfHeight));
             }
         }
-        if (shown < groups.Count)
+        if (plan.Shown < groups.Count)
         {
-            var more = Text($"+{groups.Count - shown}", 11, pal.TextDim, ppd: Ppd);
-            dc.DrawText(more, new Point(x, cy - more.Height / 2));
-            used += (shown > 0 ? prevGap : 0) + more.Width;
+            var more = Text($"+{groups.Count - plan.Shown}", 11, pal.TextDim, ppd: Ppd);
+            dc.DrawText(more, new Point(r.X + padding + plan.MoreOffset, cy - more.Height / 2));
         }
-        return Math.Min(CompactWidthBudget, Math.Max(80, padding * 2 + used));
+        return Math.Min(CompactWidthBudget, Math.Max(80, padding * 2 + plan.ContentWidth));
     }
     /// <summary>是否已完成首次内容测量（未测量前宿主流固定设计宽度）。</summary>
     public bool HasMeasuredCompact { get; private set; }

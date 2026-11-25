@@ -73,5 +73,52 @@ internal static class CompactSpecTests
         check("组间距默认取渲染层默认值", CompactSpec.GroupAdvance(null, 24) == 24);
         check("组自带 TrailingGap 时优先用它（combo 的 时间│占用组 = ClockGap 12）",
             CompactSpec.GroupAdvance(12, 24) == 12);
+
+        // ---- 截断决策（2026-11-25 修复轮）：可见组数必须与旧算法一致 ----
+        // 排版决策是纯计算（CompactSpec.PlanCompactGroups），渲染层只负责画 ⇒ 「外观不变」由这里守住。
+        // 「+N」的文字宽度用固定值 20 代入（真实宽度随字体而变；这组用例锁的是判据规则本身）。
+        const double MoreW = 20;
+        (int Shown, double ContentWidth, double MoreOffset) Plan(double[] widths, double?[] gaps, double gap, double avail)
+            => CompactSpec.PlanCompactGroups(widths.Length, i => widths[i], i => gaps[i], gap, avail, _ => MoreW);
+
+        // 评审反例 1：4 组各宽 30、组间距 16 —— 旧算法可用 46…61 时一组都放不下（画面只有「+4」）
+        check("截断：4 组各宽 30、间距 16、可用 46 → 旧算法显示 0 组",
+            Plan(new[] { 30.0, 30, 30, 30 }, new double?[] { null, null, null, null }, 16, 46).Shown == 0);
+        check("截断：4 组各宽 30、间距 16、可用 61 → 旧算法显示 0 组",
+            Plan(new[] { 30.0, 30, 30, 30 }, new double?[] { null, null, null, null }, 16, 61).Shown == 0);
+        check("截断：4 组各宽 30、间距 16、可用 66 → 旧算法显示 1 组",
+            Plan(new[] { 30.0, 30, 30, 30 }, new double?[] { null, null, null, null }, 16, 66).Shown == 1);
+        check("截断：4 组各宽 30、间距 16、可用 111 → 旧算法显示 1 组",
+            Plan(new[] { 30.0, 30, 30, 30 }, new double?[] { null, null, null, null }, 16, 111).Shown == 1);
+        check("截断：4 组各宽 30、间距 16、可用 112 → 旧算法显示 2 组",
+            Plan(new[] { 30.0, 30, 30, 30 }, new double?[] { null, null, null, null }, 16, 112).Shown == 2);
+        check("截断：4 组各宽 30、间距 16、可用 158 → 旧算法显示 3 组",
+            Plan(new[] { 30.0, 30, 30, 30 }, new double?[] { null, null, null, null }, 16, 158).Shown == 3);
+        check("截断：4 组各宽 30、间距 16、可用 168 → 4 组全显示",
+            Plan(new[] { 30.0, 30, 30, 30 }, new double?[] { null, null, null, null }, 16, 168).Shown == 4);
+
+        // 评审反例 2：组宽 [13, 12]、组间距 16 —— 旧算法可用 41…48 时显示 0 组（画面只有「+2」）
+        check("截断：组宽 13/12、间距 16、可用 41 → 旧算法显示 0 组",
+            Plan(new[] { 13.0, 12 }, new double?[] { null, null }, 16, 41).Shown == 0);
+        check("截断：组宽 13/12、间距 16、可用 44 → 旧算法显示 0 组",
+            Plan(new[] { 13.0, 12 }, new double?[] { null, null }, 16, 44).Shown == 0);
+        check("截断：组宽 13/12、间距 16、可用 48 → 旧算法显示 0 组",
+            Plan(new[] { 13.0, 12 }, new double?[] { null, null }, 16, 48).Shown == 0);
+        check("截断：组宽 13/12、间距 16、可用 49 → 旧算法显示 2 组",
+            Plan(new[] { 13.0, 12 }, new double?[] { null, null }, 16, 49).Shown == 2);
+
+        // 「+N」的位置：跟在最后一个可见组之后，且保留一个组间距（旧行为，不能塌成紧贴）
+        var trunc = Plan(new[] { 30.0, 30, 30, 30 }, new double?[] { null, null, null, null }, 16, 100);
+        check("截断：「+N」落在最后一个可见组之后并留一个组间距（组尾 30 + 间距 16 = 46）",
+            trunc.Shown == 1 && trunc.MoreOffset == 46);
+        check("截断：内容宽 = 已显示内容 + 组间距 + 「+N」（30 + 16 + 20 = 66）",
+            trunc.ContentWidth == 66);
+
+        // 异质组间距：为「+N」预留的空间用**候选组自己**的间距，组间距用**上一组自己**的间距
+        var hetero = Plan(new[] { 30.0, 30 }, new double?[] { 12, null }, 16, 62);
+        check("截断：为「+N」预留用候选组自己的间距（组 0 自带 12 ⇒ 30 + 12 + 20 = 62 放得下）",
+            hetero.Shown == 1 && hetero.MoreOffset == 42);
+        check("截断：组间距用上一组自己的间距（组 0 自带 12 ⇒ 组 1 起点 42、终点 72）",
+            Plan(new[] { 30.0, 30 }, new double?[] { 12, null }, 16, 72).Shown == 2);
     }
 }

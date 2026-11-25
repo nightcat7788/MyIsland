@@ -98,6 +98,44 @@ public static class CompactSpec
         => trailingGap ?? defaultGap;
 
     /// <summary>
+    /// 收起态分组排版（纯计算）：决定能显示几组、「+N」画在哪、内容占多宽。
+    ///
+    /// 规则（与 2026-11-25 修复前的旧渲染层逐条一致，别顺手改）：
+    ///   - 每组拥有它**后面**那一段组间距：组 i 与组 i+1 之间 = 组 i 的 TrailingGap（缺省 defaultGap）；
+    ///   - 预算校验时「+N」跟在候选组**后面**，所以为它预留的空间要用**候选组自己**的 TrailingGap
+    ///     （用上一组的会算错：异质间距时会把候选组错误地挤掉或错误地放进来）；
+    ///   - 第一个放不下的候选组出现时就停，它后面的组全部合并进「+N」。
+    ///
+    /// moreWidth(n) = 「+n」这行字的宽度（n = 被折叠掉的组数）。
+    /// </summary>
+    /// <returns>可见组数 / 收起态内容总宽（不含胶囊左右内边距，含「+N」占位）/ 「+N」左边缘相对第一组左边缘的偏移。</returns>
+    public static (int Shown, double ContentWidth, double MoreOffset) PlanCompactGroups(
+        int count, Func<int, double> widthOf, Func<int, double?> trailingGapOf,
+        double defaultGap, double available, Func<int, double> moreWidth)
+    {
+        double used = 0;        // 已显示内容的宽（不含最后一段组间距）
+        int shown = 0;
+        double prevGap = 0;     // 上一组到本组的间距
+        double lastGap = 0;     // 最后一个可见组之后的间距
+        for (int i = 0; i < count; i++)
+        {
+            double next = used + (shown > 0 ? prevGap : 0) + widthOf(i);
+            int remaining = count - i - 1;
+            double ownGap = GroupAdvance(trailingGapOf(i), defaultGap);
+            // 「+N」跟在候选组后面 ⇒ 为它预留的空间用候选组自己的间距
+            double suffix = remaining > 0 ? ownGap + moreWidth(remaining) : 0;
+            if (next + suffix > available) break;
+            used = next;
+            prevGap = ownGap;
+            lastGap = ownGap;
+            shown++;
+        }
+        double moreOffset = used + (shown > 0 ? lastGap : 0);   // 「+N」的左边缘
+        double contentWidth = shown < count ? moreOffset + moreWidth(count - shown) : used;
+        return (shown, contentWidth, moreOffset);
+    }
+
+    /// <summary>
     /// dash 单行项宽：标签 + 箭头/数值间距 + 数值槽（窄数值按最小槽兜底）。
     ///
     /// 注意：这是 **Windows 侧**的组合，mac dash 里没有对应公式，别去 mac 找「同步对象」：

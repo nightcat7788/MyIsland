@@ -328,9 +328,9 @@ internal static class RenderKit
     {
         double radius = CompactSpec.RingRadius(diameter, thickness);
         // CompactSpec.RingRadius 按 mac 取消了 0.5 下限（RenderKit.Ring:187），
-        // 于是 thickness > diameter 时半径为负 —— WPF 的 DrawEllipse 其实不会因此抛异常
-        // （校验负值的是 EllipseGeometry.RadiusX 的属性 setter，DrawEllipse 走的是构造器路径），
-        // 但那样只会静默画出一个无意义的形状，所以这里直接不画，交给调用方保证 thickness <= diameter。
+        // 于是 thickness > diameter 时半径为负（直径为 NaN 时半径也是 NaN）。
+        // 实测（.NET 8 / WPF）：负半径、NaN 半径都不会抛异常，但画出来是无意义的形状，
+        // 所以这里提前返回不画，交给调用方保证 thickness <= diameter。
         if (radius <= 0) return;
         // 底环：整圈
         dc.DrawEllipse(null, PenOf(track, thickness, 0.9), center, radius, radius);
