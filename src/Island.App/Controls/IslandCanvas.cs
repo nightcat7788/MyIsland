@@ -448,26 +448,43 @@ public sealed class IslandCanvas : FrameworkElement
     private static double Num(DrawingContext dc, string s, double x, double baseline, double size, Color color, bool strong, double ppd)
         => RenderKit.Num(dc, s, x, baseline, size, color, strong, ppd);
 
+    /// <summary>网速读数的显示格式。</summary>
+    private enum NetSpeedFormat
+    {
+        /// <summary>定宽（<see cref="MonitorSnapshot.FormatSpeedFixed"/>，恒 6 字符）—— mac 胶囊口径（combo/dash）。</summary>
+        Fixed,
+        /// <summary>旧的紧凑格式（<see cref="MonitorSnapshot.CompactSpeed"/>，3.40M）—— Windows clock/monitor 视图保持改动前外观。</summary>
+        Compact,
+    }
+
+    /// <summary>
+    /// 按格式取网速文本。宽度量算与绘制必须走这一个函数，否则「预留宽度」与「绘制位置」会错位。
+    /// </summary>
+    private static string NetSpeedText(double bytesPerSec, NetSpeedFormat format)
+        => format == NetSpeedFormat.Fixed
+            ? MonitorSnapshot.FormatSpeedFixed(bytesPerSec)
+            : MonitorSnapshot.CompactSpeed(bytesPerSec);
+
     /// <summary>
     /// 紧凑网速单行（↓3.40M ↑420K）占用的宽度：箭头 + 箭头数值间距 + 读数 + 网速间距 + 箭头 + 箭头数值间距 + 读数。
-    /// 读数用定宽格式（<see cref="MonitorSnapshot.FormatSpeedFixed"/>，恒 6 字符）——胶囊里读数跳动不能带得整排抖。
-    /// 网速间距由调用方给（combo = CompactSpec.NetGap=7，dash = CompactSpec.DashNetGap=10），不写死。
+    /// 读数格式由调用方定（combo 用定宽格式，恒 6 字符 —— 读数跳动不能带得整排抖）。
+    /// 网速间距由调用方给（combo = CompactSpec.NetGap=7，其余视图 = CompactSpec.DashNetGap=10），不写死。
     /// </summary>
-    private static double NetWidth(double size, MonitorSnapshot snap, double ppd, double netGap)
+    private static double NetWidth(double size, MonitorSnapshot snap, double ppd, double netGap, NetSpeedFormat format)
         => Text("↓", size, Colors.Black, true, ppd).Width + CompactSpec.ArrowValueGap
-         + RenderKit.NumWidth(MonitorSnapshot.FormatSpeedFixed(snap.DownloadSpeed), size, true, ppd) + netGap
+         + RenderKit.NumWidth(NetSpeedText(snap.DownloadSpeed, format), size, true, ppd) + netGap
          + Text("↑", size, Colors.Black, true, ppd).Width + CompactSpec.ArrowValueGap
-         + RenderKit.NumWidth(MonitorSnapshot.FormatSpeedFixed(snap.UploadSpeed), size, true, ppd);
+         + RenderKit.NumWidth(NetSpeedText(snap.UploadSpeed, format), size, true, ppd);
 
     /// <summary>紧凑网速单行：箭头是次要文字色，读数是等宽数字。返回右端 x。</summary>
-    private static double DrawNet(DrawingContext dc, Palette pal, double x, double bl, double size, MonitorSnapshot snap, double ppd, double netGap)
+    private static double DrawNet(DrawingContext dc, Palette pal, double x, double bl, double size, MonitorSnapshot snap, double ppd, double netGap, NetSpeedFormat format)
     {
         var di = Text("↓", size, pal.TextDim, true, ppd);
         Baseline(dc, di, x, bl); x += di.Width + CompactSpec.ArrowValueGap;
-        x = Num(dc, MonitorSnapshot.FormatSpeedFixed(snap.DownloadSpeed), x, bl, size, pal.Text, true, ppd) + netGap;
+        x = Num(dc, NetSpeedText(snap.DownloadSpeed, format), x, bl, size, pal.Text, true, ppd) + netGap;
         var ui = Text("↑", size, pal.TextDim, true, ppd);
         Baseline(dc, ui, x, bl); x += ui.Width + CompactSpec.ArrowValueGap;
-        return Num(dc, MonitorSnapshot.FormatSpeedFixed(snap.UploadSpeed), x, bl, size, pal.Text, true, ppd);
+        return Num(dc, NetSpeedText(snap.UploadSpeed, format), x, bl, size, pal.Text, true, ppd);
     }
 
     /// <summary>温度的显示色：正常是文字色（不着色），71–85° 警示，&gt;85° 危险；读不到是第三级文字色。</summary>
@@ -693,8 +710,9 @@ public sealed class IslandCanvas : FrameworkElement
         Gauge(snap.DiskUsagePercent, neutral, "D");
         groups.Add(new CompactGroup
         {
-            Width = NetWidth(11, snap, ppd, CompactSpec.DashNetGap),
-            Draw = x => DrawNet(dc, pal, x, Math.Round(cy + 11 * 0.38), 11, snap, ppd, CompactSpec.DashNetGap),
+            // clock / monitor 视图保持改动前外观（旧紧凑格式 + 10 间距）；dash 的网速留给 Task 5 按 mac 对齐
+            Width = NetWidth(11, snap, ppd, CompactSpec.DashNetGap, NetSpeedFormat.Compact),
+            Draw = x => DrawNet(dc, pal, x, Math.Round(cy + 11 * 0.38), 11, snap, ppd, CompactSpec.DashNetGap, NetSpeedFormat.Compact),
         });
         return DrawCompactGroups(dc, pal, r, cy, groups);
     }
@@ -752,11 +770,12 @@ public sealed class IslandCanvas : FrameworkElement
         }
 
         // ---- 组 1：时间 ----
-        // mac 的 ComboStyle.ClockStrong = !_comboNumericHero：数字主角时时钟降为次级文字。
+        // mac 的 ComboStyle.ClockStrong = !_comboNumericHero（IslandCanvas.cs:617-618 + :575）：
+        // 数字主角（hero）模式下时钟是**非粗体**的次级文字；经典版才是粗体主角。
         if (WantCombo("clock"))
         {
             var clock = Text(DateTime.Now.ToString("HH:mm"), CompactSpec.FigureFont,
-                ComboNumericHero ? pal.TextDim : pal.Text, true, ppd);
+                ComboNumericHero ? pal.TextDim : pal.Text, !ComboNumericHero, ppd);
             groups.Add(new CompactGroup
             {
                 Width = clock.WidthIncludingTrailingWhitespace,
@@ -771,18 +790,14 @@ public sealed class IslandCanvas : FrameworkElement
         var dials = new List<(string Letter, double Share, string Text, Color ArcColor, Color TextColor)>();
         if (WantCombo("dials") && snap is not null)
         {
-            if (snap.CpuUsage > 0)
-            {
-                var c = LevelColor(snap.CpuUsage, pal.Accent, pal);
-                dials.Add(("C", snap.CpuUsage / 100.0, $"{Math.Round(snap.CpuUsage)}%", c,
-                    LevelColor(snap.CpuUsage, pal.Text, pal)));
-            }
-            if (snap.MemoryUsagePercent > 0)
-            {
-                var m = LevelColor(snap.MemoryUsagePercent, neutral, pal);
-                dials.Add(("M", snap.MemoryUsagePercent / 100.0, $"{Math.Round(snap.MemoryUsagePercent)}%", m,
-                    LevelColor(snap.MemoryUsagePercent, pal.Text, pal)));
-            }
+            // C/M 无条件画（mac 同款：0% 也画空环 + "0%"）—— 环数恒定，胶囊宽度不因读数跳到 0 而抖。
+            var c = LevelColor(snap.CpuUsage, pal.Accent, pal);
+            dials.Add(("C", snap.CpuUsage / 100.0, $"{Math.Round(snap.CpuUsage)}%", c,
+                LevelColor(snap.CpuUsage, pal.Text, pal)));
+            var m = LevelColor(snap.MemoryUsagePercent, neutral, pal);
+            dials.Add(("M", snap.MemoryUsagePercent / 100.0, $"{Math.Round(snap.MemoryUsagePercent)}%", m,
+                LevelColor(snap.MemoryUsagePercent, pal.Text, pal)));
+            // G 保留 >0 判断：Windows 无独显 / 读不到时不出这个环（改动前的既有取舍，mac 是恒画三个环）。
             if (snap.GpuUsage > 0)
             {
                 var g = LevelColor(snap.GpuUsage, neutral, pal);
@@ -798,17 +813,20 @@ public sealed class IslandCanvas : FrameworkElement
         if (snap is not null)
         {
             double? ct = thermal?.CpuTemp, gt = thermal?.GpuTemp;
+            // 温度 ≤0 视为「读不到」（mac :634-635 的 is > 0 ? … : null）：传感器报 0℃ 时显示占位符，不是 "0°"。
+            double? ctv = ct is > 0 ? ct : null;
+            double? gtv = gt is > 0 ? gt : null;
             if (WantCombo("cputemp"))
             {
-                var c = TempColor(ct, pal);
-                sys.Add(("C", ct is { } t ? Math.Clamp(t / 125.0, 0, 1) : 0,
-                    ct is { } tv ? $"{Math.Round(tv)}°" : "--", c, c));
+                var c = TempColor(ctv, pal);
+                sys.Add(("C", ctv is { } t ? Math.Clamp(t / 125.0, 0, 1) : 0,
+                    ctv is { } tv ? $"{Math.Round(tv)}°" : "--", c, c));
             }
             if (WantCombo("gputemp"))
             {
-                var g = TempColor(gt, pal);
-                sys.Add(("G", gt is { } t2 ? Math.Clamp(t2 / 125.0, 0, 1) : 0,
-                    gt is { } tv2 ? $"{Math.Round(tv2)}°" : "--", g, g));
+                var g = TempColor(gtv, pal);
+                sys.Add(("G", gtv is { } t2 ? Math.Clamp(t2 / 125.0, 0, 1) : 0,
+                    gtv is { } tv2 ? $"{Math.Round(tv2)}°" : "--", g, g));
             }
             if (WantCombo("disk"))
             {
@@ -826,9 +844,9 @@ public sealed class IslandCanvas : FrameworkElement
         {
             groups.Add(new CompactGroup
             {
-                Width = NetWidth(CompactSpec.FigureFont, snap, ppd, CompactSpec.NetGap),
+                Width = NetWidth(CompactSpec.FigureFont, snap, ppd, CompactSpec.NetGap, NetSpeedFormat.Fixed),
                 Draw = x => DrawNet(dc, pal, x, Math.Round(cy + CompactSpec.FigureFont * 0.36),
-                    CompactSpec.FigureFont, snap, ppd, CompactSpec.NetGap),
+                    CompactSpec.FigureFont, snap, ppd, CompactSpec.NetGap, NetSpeedFormat.Fixed),
             });
         }
 
@@ -1125,8 +1143,9 @@ public sealed class IslandCanvas : FrameworkElement
         if (snap is not null)
             groups.Add(new CompactGroup
             {
-                Width = NetWidth(10, snap, ppd, CompactSpec.DashNetGap),
-                Draw = x => DrawNet(dc, pal, x, Math.Round(cy + 10 * 0.38), 10, snap, ppd, CompactSpec.DashNetGap),
+                // clock / monitor 视图保持改动前外观（旧紧凑格式 + 10 间距）；dash 的网速留给 Task 5 按 mac 对齐
+                Width = NetWidth(10, snap, ppd, CompactSpec.DashNetGap, NetSpeedFormat.Compact),
+                Draw = x => DrawNet(dc, pal, x, Math.Round(cy + 10 * 0.38), 10, snap, ppd, CompactSpec.DashNetGap, NetSpeedFormat.Compact),
             });
         return DrawCompactGroups(dc, pal, r, cy, groups, 12, 16);
     }

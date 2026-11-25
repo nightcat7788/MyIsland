@@ -122,12 +122,19 @@ internal static class CompactSpecTests
             Plan(new[] { 30.0, 30 }, new double?[] { 12, null }, 16, 72).Shown == 2);
 
         // ---- combo 的组结构：时间│占用组│温度磁盘组│网速（对应 mac LayoutCombo）----
-        check("combo 占用组 = 3 环（C/M/G）总宽 185", CompactSpec.GaugeGroupWidth(3, _ => 30) == 185);
-        check("combo 系统组 = 3 环（C/G/D）总宽 185", CompactSpec.GaugeGroupWidth(3, _ => 30) == 185);
+        // 环数口径：占用组 = C/M 恒画 + G（仅当有独显读数）⇒ 2~3 环；系统组 = C/G/D（可被显示项开关裁掉）⇒ 0~3 环。
+        // 3 环的宽度（185）已由上面的「环组宽度：3 个环各 30 宽」锁住，这里补 1 环 / 2 环两个真实形态。
+        check("combo 环组宽度：1 环 = 55", CompactSpec.GaugeGroupWidth(1, _ => 30) == 55);
+        check("combo 环组宽度：2 环（C/M，无独显）= 120", CompactSpec.GaugeGroupWidth(2, _ => 30) == 120);
         // mac 的 combo 只有 **两处** 分隔线（占用组│温度磁盘组、温度磁盘组│网速）；
         // 时间│占用组之间没有线，只有 ClockGap=12 的留白。
         double content = CompactSpec.ComboContentWidth(40, 185, 185, 60, 60);
         check("combo 内容宽 = 时钟12 + 占用组 + (24+系统组) + 24 + 网速",
             content == 40 + 12 + 185 + (24 + 185) + 24 + 60 + 7 + 60);
+        // 两处分隔线的边界口径：时钟│占用组 = 12（无线），其余组间 = 24（有线，总带里画线）。
+        check("combo 边界：时钟│占用组 = 12（无线）",
+            CompactSpec.GroupAdvance(CompactSpec.ClockGap, CompactSpec.SeparatorBand) == 12);
+        check("combo 边界：其余组间 = 24（带分隔线）",
+            CompactSpec.GroupAdvance(null, CompactSpec.SeparatorBand) == 24);
     }
 }

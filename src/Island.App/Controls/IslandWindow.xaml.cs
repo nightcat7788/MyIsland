@@ -1223,7 +1223,11 @@ public partial class IslandWindow : Window
     private static (double Width, double Height) CollapsedSize(string view) => view switch
     {
         "clock" => (230, 44),   // 时间 + 天气 + 网速（参考 BrimDeck compact-clock 的信息密度）
-        "combo" => (560, 44),   // 信息胶囊：时间 + 读数表盘(C/M/G 占用) + 温度/硬盘环 + 网速（宽度上限随显示项增加）
+        // 信息胶囊：时间 + 占用环组(C/M/G) + 温度/硬盘环组(C/G/D) + 网速。
+        // 上限 640：内容宽按实测定（宿主 CurrentCollapsedSize 用 clamp(实测内容宽, 110, 上限)），
+        // 上限只决定「最坏情况还装不装得下」——两个读数同时到 100%（4 字符，比最小槽 21 宽约 7px）
+        // 时 560 会把网速整段挤进「+N」，640 才有余量。mac 的 CapsuleW 同样是按内容定宽。
+        "combo" => (640, 44),
         // 2026-11-24：读数带的等宽数字 + 四个表盘 + 网速实测约 470 宽，原来上限 460 会把末尾的 "K" 裁掉
         "monitor" => (500, 44), // 单排高密度读数带
         "dash" => (560, 69),    // LiteMonitor 同款全读数行（含硬盘/SSD 温度/电池）

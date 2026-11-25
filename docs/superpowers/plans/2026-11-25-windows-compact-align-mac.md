@@ -807,11 +807,12 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "refactor: 收起态排版器升级为
         }
 
         // ---- 组 1：时间 ----
-        // mac 的 ComboStyle.ClockStrong = !_comboNumericHero：数字主角时时钟降为次级文字。
+        // mac 的 ComboStyle.ClockStrong = !_comboNumericHero（IslandCanvas.cs:617-618 + :575）：
+        // 数字主角（hero）模式下时钟是**非粗体**的次级文字；经典版才是粗体主角。
         if (WantCombo("clock"))
         {
             var clock = Text(DateTime.Now.ToString("HH:mm"), CompactSpec.FigureFont,
-                ComboNumericHero ? pal.TextDim : pal.Text, true, ppd);
+                ComboNumericHero ? pal.TextDim : pal.Text, !ComboNumericHero, ppd);
             groups.Add(new CompactGroup
             {
                 Width = clock.WidthIncludingTrailingWhitespace,
@@ -826,18 +827,14 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "refactor: 收起态排版器升级为
         var dials = new List<(string Letter, double Share, string Text, Color ArcColor, Color TextColor)>();
         if (WantCombo("dials") && snap is not null)
         {
-            if (snap.CpuUsage > 0)
-            {
-                var c = LevelColor(snap.CpuUsage, pal.Accent, pal);
-                dials.Add(("C", snap.CpuUsage / 100.0, $"{Math.Round(snap.CpuUsage)}%", c,
-                    LevelColor(snap.CpuUsage, pal.Text, pal)));
-            }
-            if (snap.MemoryUsagePercent > 0)
-            {
-                var m = LevelColor(snap.MemoryUsagePercent, neutral, pal);
-                dials.Add(("M", snap.MemoryUsagePercent / 100.0, $"{Math.Round(snap.MemoryUsagePercent)}%", m,
-                    LevelColor(snap.MemoryUsagePercent, pal.Text, pal)));
-            }
+            // C/M 无条件画（mac 同款：0% 也画空环 + "0%"）—— 环数恒定，胶囊宽度不因读数跳到 0 而抖。
+            var c = LevelColor(snap.CpuUsage, pal.Accent, pal);
+            dials.Add(("C", snap.CpuUsage / 100.0, $"{Math.Round(snap.CpuUsage)}%", c,
+                LevelColor(snap.CpuUsage, pal.Text, pal)));
+            var m = LevelColor(snap.MemoryUsagePercent, neutral, pal);
+            dials.Add(("M", snap.MemoryUsagePercent / 100.0, $"{Math.Round(snap.MemoryUsagePercent)}%", m,
+                LevelColor(snap.MemoryUsagePercent, pal.Text, pal)));
+            // G 保留 >0 判断：Windows 无独显 / 读不到时不出这个环（改动前的既有取舍，mac 是恒画三个环）。
             if (snap.GpuUsage > 0)
             {
                 var g = LevelColor(snap.GpuUsage, neutral, pal);
@@ -853,17 +850,20 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "refactor: 收起态排版器升级为
         if (snap is not null)
         {
             double? ct = thermal?.CpuTemp, gt = thermal?.GpuTemp;
+            // 温度 ≤0 视为「读不到」（mac :634-635 的 is > 0 ? … : null）：传感器报 0℃ 时显示占位符，不是 "0°"。
+            double? ctv = ct is > 0 ? ct : null;
+            double? gtv = gt is > 0 ? gt : null;
             if (WantCombo("cputemp"))
             {
-                var c = TempColor(ct, pal);
-                sys.Add(("C", ct is { } t ? Math.Clamp(t / 125.0, 0, 1) : 0,
-                    ct is { } tv ? $"{Math.Round(tv)}°" : "--", c, c));
+                var c = TempColor(ctv, pal);
+                sys.Add(("C", ctv is { } t ? Math.Clamp(t / 125.0, 0, 1) : 0,
+                    ctv is { } tv ? $"{Math.Round(tv)}°" : "--", c, c));
             }
             if (WantCombo("gputemp"))
             {
-                var g = TempColor(gt, pal);
-                sys.Add(("G", gt is { } t2 ? Math.Clamp(t2 / 125.0, 0, 1) : 0,
-                    gt is { } tv2 ? $"{Math.Round(tv2)}°" : "--", g, g));
+                var g = TempColor(gtv, pal);
+                sys.Add(("G", gtv is { } t2 ? Math.Clamp(t2 / 125.0, 0, 1) : 0,
+                    gtv is { } tv2 ? $"{Math.Round(tv2)}°" : "--", g, g));
             }
             if (WantCombo("disk"))
             {
@@ -881,9 +881,9 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "refactor: 收起态排版器升级为
         {
             groups.Add(new CompactGroup
             {
-                Width = NetWidth(CompactSpec.FigureFont, snap, ppd, CompactSpec.NetGap),
+                Width = NetWidth(CompactSpec.FigureFont, snap, ppd, CompactSpec.NetGap, NetSpeedFormat.Fixed),
                 Draw = x => DrawNet(dc, pal, x, Math.Round(cy + CompactSpec.FigureFont * 0.36),
-                    CompactSpec.FigureFont, snap, ppd, CompactSpec.NetGap),
+                    CompactSpec.FigureFont, snap, ppd, CompactSpec.NetGap, NetSpeedFormat.Fixed),
             });
         }
 
@@ -919,18 +919,31 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "refactor: 收起态排版器升级为
    - 顺带清理：`DrawCompactGroups` 循环后的 `x` 是死变量（「+N」按 `plan.MoreOffset` 画），
      改成「最后一个可见组不推进」，并在累加处注明排版口径唯一在 `CompactSpec.PlanCompactGroups`。
 
+5. **网速读数格式必须按视图区分**（修审轮 Important 3）：`NetWidth`/`DrawNet` 再加一个格式参数
+   （`NetSpeedFormat.Fixed` = `FormatSpeedFixed` 恒 6 字符；`NetSpeedFormat.Compact` = 旧的 `CompactSpeed`）：
+   **只有 combo 传定宽**（mac combo/dash 口径），**clock / monitor 传旧格式**（保持改动前外观，
+   它们的网速格式对齐留给 Task 5）。宽度量算与绘制都走 `NetSpeedText()` 一个函数，不许各写一份。
+
+6. **combo 的设计宽度上限 560 → 640**（修审轮 Important 4）：`IslandWindow.xaml.cs` 的
+   `CollapsedSize("combo") => (560, 44)` 改成 `(640, 44)`。
+   胶囊实际宽度仍按实测内容（宿主 `CurrentCollapsedSize()` 用 `clamp(CompactContentWidth, 110, 上限)`），
+   所以常态不变；上限只决定最坏情况还装不装得下：两个读数同时到 100%（4 字符，比最小槽 21 宽约 7px）
+   时 560 会把网速整段挤进「+N」，640 才有余量。⚠️ Task 5 的 Step 5 也改同一张尺寸表（dash 的高度 69→44），
+   两处改动要一起看，别互相覆盖。
+
 - [ ] **Step 5: 构建并跑测试**
 
 ```powershell
 & 'D:\YQDESK\.dotnet\dotnet.exe' build 'D:\YQDESK\MyIsland-src\Island.sln' -c Release --nologo
 & 'D:\YQDESK\.dotnet\dotnet.exe' run --project 'D:\YQDESK\MyIsland-src\tests\Island.Tests\Island.Tests.csproj' -c Release --nologo
 ```
-预期：0 警告 0 错误；`全部通过：328 条`（325 基线 + 本任务新增 3 条 combo 组结构断言），退出码 0。
+预期：0 警告 0 错误；`全部通过：330 条`（325 基线 + 本任务新增 5 条 combo 组结构断言），退出码 0。
 
 - [ ] **Step 6: 离屏渲染核对 combo**
 
 用真实控件离屏渲染出 combo 收起态（沿用 `ui-preview-2026-11-24/` 的做法），确认：时间在最左、**两处**分隔线（占用组│温度磁盘组、温度磁盘组│网速；时间│占用组之间只有 12px 留白、无线）、C/M/G 三个闭环字母环、C/G/D 三个闭环字母环、网速在最右。
-产物放 `D:\YQDESK\ui-preview-2026-11-25\`（`combo-hero.png` / `combo-classic.png` + 离屏渲染用的 `harness/`），**不要提交进仓库**。
+产物放 `D:\YQDESK\ui-preview-2026-11-25\`（`combo-hero.png` / `combo-classic.png` / `combo-zero.png` /
+`combo-worst-640.png` / `combo-worst-560.png` / `combo-temp0.png` + 离屏渲染用的 `harness/`），**不要提交进仓库**。
 
 - [ ] **Step 7: 提交**
 
@@ -954,12 +967,33 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: combo 重排为 mac 的四组�
 > - **离屏核对**（`D:\YQDESK\ui-preview-2026-11-25\combo-hero.png` / `combo-classic.png`）：
 >   两条分隔线落在 DIP 231 与 414，正好是「组尾 + 18px」（组尾 213 / 396），下一组从「组尾 + 24」开始 ——
 >   即线落在 24px 总带里偏后 6px，与 mac 一致；时钟与第一个环之间无线。
-> - **三处已知小偏差（留给评审决定，本任务未擅自改）**：
->   ① 用户把「温度/硬盘」三项全关掉时系统组为空 → 占用组仍带 `DividerAfter=true`，
->   于是占用组与网速之间会多画一条线（mac 在系统组为空时不画这处线；宽度口径两边一致）。
->   ② 温度读不到时本实现显示 `"--"`（brief 原文），mac 显示 `"—"`。
->   ③ `src/Island.Core/Monitoring/MonitorModels.cs` 里 `CompactSpeed` 的注释仍写着「Windows 侧灵动岛用这一档」，
->   胶囊改用 `FormatSpeedFixed` 后这句已不准确（本任务未改该文件：超出 Task 4 的文件清单）。
+> - **一处 Windows 独有的取舍（不是 mac 行为基准）**：用户把「温度/硬盘」三项全关掉时系统组为空 →
+>   占用组仍带 `DividerAfter=true`，于是占用组与网速之间会画一条分隔线。
+>   mac 侧这个状态**不可达**（mac 无条件添加 C/G/D 三个系统环，IslandCanvas.cs:636-643，
+>   `L.SystemGauges.Count > 0` 恒真，:694/:696 的条件是防御性代码），
+>   所以不能拿 mac 当这一处的基准；Windows 有三个独立开关（IslandWindow.xaml.cs + Settings.cs 默认串），
+>   该状态可达，画一条线把「占用组│网速」分开是合理取舍，宽度口径也与 mac 一致（两边都保留 24px 带）。
+> - **延后项（不在本轮处理）**：① 温度占位符用 `"--"`（brief 原文）而 mac 用 `"—"`；
+>   ② `src/Island.Core/Monitoring/MonitorModels.cs` 里 `CompactSpeed` 的注释已漂移（该函数现只剩 dash 与监控页在用）→ 延后到 Task 5/6；
+>   ③ `CompactSpec.PlanCompactGroups` 返回三元组而非具名 record struct → 延后。
+
+> **2026-11-25 修复轮 1（评审后）**：评审逐条对照 mac 源码后确认三条硬性要求（24px 总带 / 时间边界无线 / 网速定宽同口径）
+> 已正确落地、分隔线几何与 mac 逐式一致；但有 4 条 Important 必须修，其中两条与 brief 的**逐字代码**冲突（brief 自身有错）——
+> 裁决以 mac 现有实现为准（本项目总原则），brief 的错误代码已改：
+> - **Important 1（0% 时占用环整环消失）**：去掉 C/M 的 `> 0` 门，恢复无条件画 C/M 环
+>   （mac :625-633 恒画三个环；改动前的旧 Windows 代码也是 C/M 恒画 —— 本次改动把它变成了新引入的回归）。
+>   G 保留 `> 0`（Windows 无独显时的既有取舍，已在注释里写明它不是 mac 口径）。
+> - **Important 2（断言记录了实现无法保证的结构）**：删掉与 Task 1 重复的「3 环 = 185」求值，
+>   改成覆盖真实环数形态（1 环 = 55、2 环 = 120；3 环 = 185 已由 Task 1 的用例锁住）。
+> - **Important 3（格式替换外溢到 clock / monitor）**：`NetWidth`/`DrawNet` 加格式参数，只有 combo 用定宽格式，
+>   clock/monitor 恢复改动前外观（旧 `CompactSpeed` + 10 间距）；dash 留给 Task 5 按 mac 对齐。
+> - **Important 4（最坏情况网速整段消失）**：`CollapsedSize("combo")` 560 → 640
+>   （胶囊仍按实测内容定宽，常态宽度不变；只是把「装不下就丢网速」的最坏情况消掉）。
+> - **Minor 3（温度 0 被当作有效读数）**：温度 ≤0 视为读不到（对齐 mac :634-635）。
+> - **Minor 4（hero 模式时钟字重）**：数字主角模式下时钟用非粗体 + `pal.TextDim`（对齐 mac :617-618 + :575）。
+> - **Minor 7（补钉住「两处分隔线」的断言）**：新增 `GroupAdvance(ClockGap, SeparatorBand) == 12` 与
+>   `GroupAdvance(null, SeparatorBand) == 24` 两条断言。
+> 修复提交：`fix: combo 对齐 mac 细节（0% 仍画环 / 网速格式不外溢 / 宽度上限 640 / 温度与时钟口径）`。
 
 ---
 
