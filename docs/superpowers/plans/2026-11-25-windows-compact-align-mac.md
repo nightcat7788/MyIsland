@@ -1035,17 +1035,18 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: combo 重排为 mac 的四组�
 
 ```csharp
     /// <summary>
-    /// dash 视图（全读数单行）：核心柱群 │ 温度项组 │ 占用项组 │ 电池组 │ 网速，组间画 Hairline 分隔线。
+    /// dash 视图（全读数单行）：核心柱群 │ 温度项组 │ 占用项组 │ 网速，组间画 Hairline 分隔线。
     /// 对应 mac 版 dash 的单行形态（mac: 频谱│剪贴板计数│温度组│占用组│电池│设备环│网速）。
     ///
     /// 与旧版的差别：旧版是「标签在上、数值在下」的两行网格（高 69px）；
     /// 现在是单行（高 44px），标签与数值同行。内容项与「用户定制显示项」语义不变。
     ///
+    /// 电池读数**不在 dash 里**：设备收起视图已经有一份，dash 不重复（2026-11-25 修复轮 2 裁决）。
+    ///
     /// CompactDensity 的含义随之调整：旧版它只控制组间距（16/26），而组间距已被规格统一为
     /// 12 + 分隔线，所以改为**决定显示哪些组**（阈值 &lt;390 / &lt;560 不变）：
-    ///   Minimal  → 核心柱 + 温度组 + 网速
-    ///   Balanced → 上述 + 占用组
-    ///   Full     → 上述 + 电池组
+    ///   Minimal（宽 &lt; 390）→ 核心柱 + 温度组 + 网速
+    ///   其余（宽 ≥ 390）    → 核心柱 + 温度组 + 占用组 + 网速
     /// </summary>
     private double DrawDash(DrawingContext dc, Palette pal, Rect r, double cy,
         MonitorSnapshot? snap, Services.ThermalSnapshot? thermal)
@@ -1137,22 +1138,8 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: combo 重排为 mac 的四组�
             AddItemGroup(usage, dividerAfter: true);
         }
 
-        // ---- 组 4：电池组 ----
-        var bat = DeviceService.Snapshot.FirstOrDefault(d => d.Kind == "battery");
-        if (density == CompactDensity.Full && Want("battery") && bat is not null)
-        {
-            Color bc = bat.Charging ? pal.Down
-                : bat.Percent <= 20 ? pal.Up
-                : bat.Percent <= 40 ? pal.Warning
-                : pal.Text;
-            // 充电时标签带「+」（旧版两行网格的「电+」标记，改造里不丢信息）；配色仍是充电绿。
-            AddItemGroup(new List<(string, string, string, Color?)>
-            {
-                (bat.Charging ? "电+" : "电", $"{bat.Percent}%", "100%", bc),
-            }, dividerAfter: true);
-        }
-
-        // ---- 组 5：网速（↓ ↔ ↑ 间距用 CompactSpec.DashNetGap = 10，mac DashLayout.NetGap）----
+        // ---- 组 4：网速（↓ ↔ ↑ 间距用 CompactSpec.DashNetGap = 10，mac DashLayout.NetGap）----
+        // 电池读数不在这里：设备收起视图已经有一份，dash 不重复（修复轮 2 裁决）。
         if (Want("net"))
         {
             AddItemGroup(new List<(string, string, string, Color?)>
@@ -1182,17 +1169,21 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: combo 重排为 mac 的四组�
 
 ```csharp
         // 全读数单行（核心柱│温度组│占用组│电池│网速，组间分隔线；对齐 mac）。
-        // 上限 700：单行 5 组实测约 690 宽（8 核）；上限 560 时 8 核会把电池+网速两组折进 "+2"（3 核折掉网速组），默认显示项下看不到网速。
-        // 胶囊按实测内容定宽（CurrentCollapsedSize 用 clamp(实测内容宽, 110, 上限)），上限只防最坏情况。
-        "dash" => (700, 44),
+        // 上限 560：宿主窗口宽度**恒定 640 DIP**（ExpandW 560 + margin 40×2，2026-11-24 定下的防抖决策），
+        // 胶囊在窗口内居中画、超出 HWND 的部分由系统裁掉 ⇒ 收起态胶囊必须 ≤ 560（两边各留 40px）。
+        // 电池读数不在 dash 里（设备视图已有一份），dash 不重复。
+        "dash" => (560, 44),
 ```
 
-> **2026-11-25 修复轮 1 裁决**：上限由 560 提到 **700**。
-> 依据与 Task 4 对 combo 的裁决同口径 —— 宿主 `CurrentCollapsedSize()` 里胶囊实际宽度是
-> `Math.Clamp(islandCanvas.CompactContentWidth, 110, fix.Width)`，**胶囊按实测内容定宽**，
-> `fix.Width` 只是上限；提高上限不会让胶囊常态变宽（Minimal 档约 250px、Balanced 约 450px、
-> Full 才到 ~690px），只是把「内容装不下就丢读数」的最坏情况消掉，让 Full 档完整显示 5 组 + 4 条分隔线。
-> 这与 mac 的 `CapsuleW => ContentW + PadX*2`（按内容定宽）同方向。
+> **2026-11-25 修复轮 2 裁决（推翻修复轮 1 的 700）**：上限回到 **560**，同时 dash 去掉电池组。
+> 依据：宿主 `IslandWindow.ApplyWindowSize` 的窗口宽度**恒定 640 DIP**（`ExpandW 560 + margin 40×2`，
+> 2026-11-24 审查定下的防抖决策：「本岛宽度随内容自动变化，窗口跟着抖；所以窗口宽度恒定，只调高度」），
+> 胶囊在窗口内**居中**绘制，超出 HWND 的部分由系统裁掉 ⇒ **任何收起态胶囊都不能超过 640**，
+> 留 40px 边距后上限取 **560**。
+> 修复轮 1 把上限提到 700 是错的：dash 胶囊实测 678.7 DIP ⇒ 左右各超出窗口 19.35 DIP，
+> 第一根核心柱整根被裁、「↑ 410.2K」尾部被切、药丸两端圆角被切平（离屏 harness 自建 BodyRect，看不见这个）。
+> 同时去掉电池组：电池读数在「设备」收起视图里已经有一份，dash 不重复；
+> 4 组（核心柱│温度│占用│网速）实测 **580.6 DIP（3 核）/ 613.6 DIP（8 核）**。
 
 - [ ] **Step 6: 构建并跑测试**
 
@@ -1218,7 +1209,7 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: dash 改单行（组间分隔�
 > - **规格与代码的一处不一致，按规格实现**：原文 Step 4 的代码把「占用项组」无条件加入组表
 >   （只把它的 `dividerAfter` 写成 `density != Minimal`），这与 Step 4 自己的文档注释、以及规格 §3.2 的密度表
 >   （Minimal = 核心柱 + 温度组 + 网速）矛盾。落地时按**规格**实现：占用组整组在 Minimal 档不加入组表。
->   分隔线数随之变成：Full 4 条 / Balanced 3 条（4 组全显示时）/ Minimal 1 条（只有核心柱之后有线）——
+>   分隔线数随之变成：4 组全显示时 **3 条**（核心柱│温度│占用│网速）、Minimal 档 **1 条**（只有核心柱之后有线）——
 >   实际条数还要看宽度截断（组被折进 "+N" 时，对应的分隔线也跟着少）。
 > - **组间距**：按硬性要求传 `gap: CompactSpec.SeparatorBand`(24)、`padding: CompactSpec.DashPadX`(14)、`drawDividers: true`；
 >   分隔线固定画在「组尾 + 18px」，落在 24px 总带里偏后 6px（下一组从「组尾 + 24」开始），与 mac 的 `Gap()` 同构。
@@ -1228,21 +1219,25 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: dash 改单行（组间分隔�
 >   分隔线落在组间总带内」这个 Task 5 的决策），加进去就是绿的 —— `CompactSpec.InlineItemWidth` 与两条 dash 单行项宽断言
 >   在 Task 1（0d04338）就随 `InlineItemWidth` 一起落地了，Step 1/Step 2 的「先红后绿」在本任务里已不可复现；
 >   本任务真正的 RED→GREEN 落在离屏渲染断言上（见下）。
-> - **离屏核对**（`D:\YQDESK\ui-preview-2026-11-25\dash-groups-760.png` 等，harness 在同目录 `harness\`）：
->   离屏 harness 里写了 45 条像素断言（胶囊高 44 / 内容不溢出 / 左右留白 ≥10px / 内容只有一个水平墨迹带 /
->   洋红发丝线渲染数分隔线条数）。**改动前 10 条红**（单行 2-3 条墨迹带、分隔线 0 条），
->   **改动后 45 条全绿**；5 组全显示时实测 **4 条分隔线**，位置分别是 DIP 84.5 / 276 / 482.5 / 547.5（= 各组尾 + 18）。
+> - **离屏核对**（`D:\YQDESK\ui-preview-2026-11-25\dash-*.png`，harness 在同目录 `harness\`）：
+>   离屏 harness 里的像素断言（胶囊高 44 / 内容不溢出 / 左右留白 ≥10px / 内容只有一个水平墨迹带 /
+>   洋红发丝线渲染数分隔线条数 / 胶囊宽 ≤ 宿主窗口宽 640）**改动前 10 条红**（单行 2-3 条墨迹带、分隔线 0 条），
+>   改动后全绿；4 组全显示时实测 **3 条分隔线**（= 各组尾 + 18）。
+>   修复轮 2 又加了「宿主窗口宽 640」「胶囊宽 ≤ 640」两条守门断言（复审发现的裁切回归就卡在这里）。
 > - **变形帧**（110 / 140 / 170 / 200 / 230 / 260 / 300 / 345 / 420 px）：全部单行、不叠字、不溢出、高度恒为 44px；
 >   宽度不够时按 Task 3 的 `+N` 机制汇总（不是溢出）。
-> - **宽度上限已定为 700（2026-11-25 修复轮 1 裁决）**：宿主给 dash 的宽度上限由 **560** 提到 **700**
->   （Step 5 的 `(560, 44)` 改为 `(700, 44)`）。依据与 Task 4 对 combo 的裁决同口径：
->   胶囊实际宽度 = `Math.Clamp(实测内容宽, 110, fix.Width)`，**按实测内容定宽**，`fix.Width` 只是上限；
->   提高上限不会让胶囊常态变宽（Minimal 档约 250px、Balanced 约 450px、Full 才到 ~690px），
->   只是把「内容装不下就丢读数」的最坏情况消掉 —— 5 组全显示实测需要 ≈690px（8 核实测 678.7），
->   560 上限时**网速组会被折进 `+1`**（旧版两行网格在 560 下同样要折 `+1`，折的是「↑」；
->   新版折的是整个网速组，默认配置下就看不到网速了）。与 mac 的 `CapsuleW => ContentW + PadX*2` 同方向。
-> - **电池充电标记已恢复**：标签回到旧版口径 —— 充电时「电+」、未充电「电」，配色不变（充电绿）。
->   brief 里写的 `(bat.Charging ? "电" : "电")` 是同分支笔误，改造里不丢信息。
+> - **宽度上限 = 560（2026-11-25 修复轮 2 裁决，推翻修复轮 1 的 700）**：宿主窗口宽**恒定 640 DIP**
+>   （`ExpandW 560 + margin 40×2`，2026-11-24 审查定下的防抖决策），胶囊在窗口内居中画、超出 HWND 会被系统裁掉
+>   ⇒ 收起态胶囊必须 ≤ 640，留 40px 边距后 dash 上限取 **560**。修复轮 1 的 700 会让 dash 胶囊实测 678.7 DIP、
+>   左右各超出 19.35 DIP（第一根核心柱整根被裁、网速尾部被切、圆角被切平）—— 那是回归，已回滚。
+>   同期去掉电池组（电池读数在「设备」视图，dash 不重复），4 组实测 **580.6 DIP（3 核）/ 613.6 DIP（8 核）**。
+>   实测各档胶囊宽：Minimal（预算 380）**374**、Balanced/Full（预算 500/560）**483 / 516**（网速组折进 `+1`）。
+> - **已知取舍（未擅自改）**：4 组比 dash 上限 560 宽 ⇒ 默认显示项（全部）下**网速组会折进 `+1`**，
+>   画面是 核心柱│温度│占用 + `+1`（2 条分隔线），胶囊 516.4 DIP（不裁切）。
+>   要让 4 组全显示，上限需 ≥ 614（8 核实测 613.6），仍在 640 的窗口内（左右余量约 13 DIP）—— **等决策，未改**。
+> - **电池组已从 dash 移除（修复轮 2）**：电池读数在「设备」收起视图里已经有一份，dash 不重复；
+>   因此 dash 里也不再出现「电 / 电+」标签（修复轮 1 恢复的「电+」充电标记随之不在 dash 出现；
+>   「设备」视图的电池显示不在本次范围、未动）。
 > - **顺带处理**：`src/Island.Core/Monitoring/MonitorModels.cs` 里 `CompactSpeed` 的注释已按事实改正
 >   （现只剩 clock / monitor 视图与展开后的监控页在用；combo / dash 都改用 `FormatSpeedFixed`），
 >   只改注释文字，实现没动。

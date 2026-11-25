@@ -134,13 +134,13 @@ mac 侧 `Dial` 与 `Ring` **并存**：注释明确写着「和 `Dial`（270° �
 对齐的是**形态**（单行、组间分隔线、环/数值规格），**不是内容清单**：
 
 - mac 的 dash 内容是固定结构；
-- Windows 的 dash 有**用户定制能力**（`Want("cores"/"cputemp"/"mem"/"gpu"/"disk"/"ssd"/"battery"/"net")` + `CompactDensity` 三档密度分级）。
+- Windows 的 dash 有**用户定制能力**（`Want("cores"/"cputemp"/"mem"/"gpu"/"disk"/"ssd"/"net")` + `CompactDensity` 密度分级）。
 
 因此 Windows dash 改为单行后：
 
 - 保留全部可定制项与密度分级语义；
 - 每项的「标签在上、数值在下」两行排布改为**单行内联**：标签 9.5px 三级文字 + 数值 13px，间距 3px；
-- 组划分：`核心柱群 │ 温度项组 │ 占用项组 │ 电池/设备组 │ 网速`；
+- 组划分：`核心柱群 │ 温度项组 │ 占用项组 │ 网速`（**电池读数不在 dash 里** —— 「设备」收起视图已经有一份，dash 不重复）；
 - 胶囊高度 69px → 44px。
 
 **`CompactDensity` 密度的含义随之调整**（这是本规格唯一一处语义变更）：
@@ -150,14 +150,14 @@ mac 侧 `Dial` 与 `Ring` **并存**：注释明确写着「和 `Dial`（270° �
 | 密度 | 显示的组 |
 |---|---|
 | Minimal（宽 < 390） | 核心柱 + 温度组 + 网速 |
-| Balanced（宽 < 560） | 上述 + 占用组 |
-| Full | 上述 + 电池组 |
+| 其余（宽 ≥ 390） | 上述 + 占用组 |
 
 这与 mac dash「按可用宽度决定显示什么」的精神一致。
+（Full 档原本只比 Balanced 多一个「电池组」；电池读数移到设备视图后，Full 与 Balanced 的显示内容相同。）
 
 注：这是**形态对齐**（单行 + 组间分隔线 + 环与数值的规格），不是逐项照抄 mac 的内容清单。
-mac 的 dash 把「电池」和「设备电量环」分成两组，Windows 合并为「电池/设备组」一项 ——
-只要组与组之间有分隔线，视觉语义就一致，不必为对齐而拆分 Windows 的显示项。
+mac 的 dash 把「电池」和「设备电量环」分成两组，Windows 的电池读数放在**设备视图**里 ——
+两边不必逐项对应，只要读数都能在自己的视图里看到即可。
 Windows 的可定制项多于 mac，因此 dash 的项数与 mac 不同是预期结果。
 
 ---
@@ -172,7 +172,7 @@ Windows 的可定制项多于 mac，因此 dash 的项数与 mac 不同是预期
 |---|---|
 | `src/Island.App/Controls/RenderKit.cs` | **新增** `Ring(...)`（360° 闭环，签名与语义对齐 mac `RenderKit.Ring`）；`Dial` 不动 |
 | `src/Island.App/Controls/IslandCanvas.cs` | `DrawCompactGroups` 增加分隔线能力与「组」概念（一个 group 可含多个元素）；`DrawCombo` 重排为 4 组；`DrawDash` 改单行；新增规格常量块（照抄 mac 的常量表并注明来源行号） |
-| `src/Island.App/Controls/IslandWindow.xaml.cs` | 收起态尺寸表：`"dash" => (560, 69)` → `(560, 44)`；`CollapsedSize` 与画布实际测量宽度对齐 |
+| `src/Island.App/Controls/IslandWindow.xaml.cs` | 收起态尺寸表：`"dash" => (560, 69)` → `(560, 44)`；`CollapsedSize` 与画布实际测量宽度对齐；dash 上限 560 = 宿主恒定窗口宽 640（`ExpandW 560 + margin 40×2`）减两边边距 —— 胶囊不得超出窗口，否则超出部分被系统裁掉 |
 | `tests/Island.Tests/` | 新增收起态排版断言测试（规格值锁定） |
 | `docs/superpowers/specs/2026-11-25-windows-compact-align-mac-design.md` | 本文件 |
 
@@ -241,7 +241,9 @@ dash 从两行变单行后，元素排布规则改变，宽度过渡期间可能
 
 1. Windows combo 收起态：时间 │ 占用环组 │ 温度磁盘环组 │ 网速，**两处 Hairline 分隔线**（时间与占用环组之间无线，只有 12px 留白），
    环为 360° 闭环、环心字母、环外数值 13px、时间 13px、槽宽 21px。
-2. Windows dash 收起态：单行，组间分隔线，高度 44px，内容项与密度分级语义不变。
+2. Windows dash 收起态：单行（核心柱群 │ 温度项组 │ 占用项组 │ 网速），组间分隔线，高度 44px，
+   可定制项与密度分级语义不变；**电池读数移到「设备」视图**（dash 不重复）。
+   收起态胶囊宽必须 ≤ 宿主恒定窗口宽 640 DIP（`ExpandW 560 + margin 40×2`），超出 HWND 会被系统裁掉。
 3. `dotnet build Island.sln -c Release`：0 警告 0 错误。
 4. `Island.Tests`：全过（含新增排版断言）。
 5. mac 侧代码零改动（`git diff` 中 mac 相关文件为空）。
