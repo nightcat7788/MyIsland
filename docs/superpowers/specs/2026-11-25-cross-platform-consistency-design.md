@@ -36,6 +36,8 @@
 
 即：**数据模型、采样器、设置项、温度链路、天气** 已是同一份代码。
 漂移只发生在**渲染层**（`IslandCanvas` / `IslandWindow` / `RenderKit` / `Themes`）与**平台功能层**。
+⚠️ 补充事实（2026-11-26 核对）：**渲染层不是同一份代码** —— mac 自带 `src/Island.Avalonia/RenderKit.cs`（18 KB），Windows 是 `src/Island.App/Controls/RenderKit.cs`（38 KB），两边各写各的。
+所以阶段 2 的对齐策略是「**以 mac 的数值为准**」（像阶段 1 那样把 mac 的常量抄进规格类、由 Windows 侧断言符合），而不是把两套渲染层合并成一份 —— 后者是重构，不在一致性对齐的范围内。
 
 ---
 
@@ -43,12 +45,14 @@
 
 | 能力 | Windows | macOS | 判定 |
 |---|---|---|---|
-| 收起视图：clock / dash / pet / combo / monitor / devices / clipboard | ✓ | ✓ | 一致 |
+| 收起视图：clock / dash / pet / combo | ✓ | ✓ | 一致 |
+| 收起视图：**monitor / devices / clipboard**（Windows 独有的高密度读数带 / 设备电量行 / 剪贴板提示行） | ✓ | ✗ | **待对齐**（§4.1，2026-11-26 实测修正：原文写「两端一致」不成立，mac 收起态只有 4 个视图） |
 | 收起视图：**window**（活动窗口） | ✓ | ✗ | **待对齐**（§4.1） |
 | 展开页签：监控 / 剪贴板 / 设备 | ✓ | ✓ | 一致 |
 | 展开页签：**系统控制**（亮度/WLAN/蓝牙/麦克风/锁屏/睡眠/清理内存） | ✓ | ✗ | 平台专属（Windows） |
 | 展开页签：**屏幕**（DDC/色温/关内建屏） | ✗ | ✓ | 平台专属（macOS） |
-| 小形象 | ✓ `PetFace.cs` | ✓ `PetFaceAv.cs` | 存在但**款式数不同**（§4.2） |
+| 小形象 | ✓ `src/Island.App/Animation/PetFace.cs` | ✓ `src/Island.Avalonia/PetFaceAv.cs` | **两份独立实现**（mac 工程没有 link 它）；款式数不同（§4.2） |
+| 主题 token（12 个同名色） | 暗色科技配方（近黑底 + 单一强调色） | Apple 系统色配方 | **不同源**，同名 token 在每套主题下取值都不同（§4.3） |
 | 全局热键 | ✓ | ✓ `HotKeyClient` | 一致 |
 | 剪贴板历史保留策略（session/1d/7d/30d） | ✓ | ✓ | 一致 |
 | 剪贴板详情窗 | ✗ | ✓ `ClipDetailWindow` | 平台专属（macOS） |
@@ -69,7 +73,19 @@
 
 ## 4. 已发现的行为不一致（本次要收口）
 
-### 4.1 收起视图集：Windows 多一个 `window`
+### 4.1 收起视图集：Windows 多 4 个（2026-11-26 实测修正）
+
+> 原文只记了 `window` 一个差异，**低估了差距**。实测：
+> - mac 收起态只有 **4** 个视图：`dash / clock / pet / combo`（`IslandWindow.cs:1098`），
+>   且 `IslandCanvas` 对其余键一律 fallback 到 `DrawDash`；
+> - Windows 收起态有 **8** 个：`clock / dash / pet / combo / monitor / devices / clipboard / window`
+>   （`CompactLayout.cs:31-32`，滚轮唯一数据源 `IslandWindow.xaml.cs:1524-1527`）；
+> - 顺带发现 Windows **设置下拉的选项顺序**与**滚轮顺序**也不一致（设置里是 dash, clock, combo, monitor, devices, clipboard, pet, window；滚轮是 clock, dash, …）——属于 Windows 内部两处列表漂移。
+
+**`window` 视图的判定（2026-11-26 定）**：**保留在 Windows，明确标注为平台专属，不搬 mac**。
+依据 §1：它依赖 user32 前台窗口 API（`Island.Native/ScreenContext.cs` 的 `ForegroundDetector`），
+mac 需要 AppKit/NSWorkspace 另一套实现，属典型平台专属能力；§1 的呈现规则要求「平台不支持的能力直接不出现」，
+mac 侧本来就没有这个视图，**当前状态已经符合该规则**。
 
 - Windows：`views = { "clock", "dash", "pet", "combo", "monitor", "devices", "clipboard", "window" }`
   （`src/Island.App/Controls/IslandWindow.xaml.cs` L1527）
@@ -78,7 +94,7 @@
   两条出路：① mac 补「活动窗口」视图（搬功能）；② 明确归为平台专属并在两端呈现规则里说明。
   **倾向 ②**：`window` 视图依赖平台的「前台窗口标题」API，两端实现不同源，强行对齐会引入平台耦合。
 
-### 4.2 小形象款式：mac 8 种 / Windows 5 种
+### 4.2 小形象款式：mac 8 种 / Windows 5 种（阶段 2 批次 2 处理）
 
 - mac（`PetFaceAv.cs` L76-83）：classic / mono / cat / robot / pixel / **alien / ghost / frog**
 - Windows（`PetFace.cs` L160-164）：classic / mono / cat / robot / pixel（其余走 `_ => 0.42` 默认分支）
@@ -90,7 +106,7 @@
 ### 4.3 展开页签集与顺序
 
 - mac：`监控 │ 剪贴板 │ 屏幕(仅mac) │ 设备(仅mac)`
-- Windows：`监控 │ 设备 │ 剪贴板 │ 控制`
+- Windows（代码现状）：`监控 │ 剪贴板·文件 │ 设备 │ 控制` —— **顺序其实已经与 mac 的共享页签一致**（本条记录已过期，按代码为准）
 - 判定：属**阶段 2**（展开面板对齐）的核心；页签**顺序**与**图标**统一，平台专属页签按 §1 规则不出现。
 
 ---
@@ -100,8 +116,8 @@
 | 阶段 | 内容 | 交付物 | 状态 |
 |---|---|---|---|
 | 1 | 收起态胶囊对齐 | `2026-11-25-windows-compact-align-mac-design.md` | **已实施（ec50f03）** |
-| 2 | 展开面板对齐（页签顺序/图标/页内分区/视觉规格） | 独立规格 | 待设计 |
-| 3 | 行为一致性收口（视图集 §4.1 / 小形象款式 §4.2） | 独立规格 | 待设计 |
+| 2 | 展开面板对齐（页签形态/顺序/图标、页内分区、视觉规格） | 规格 `2026-11-26-windows-expanded-align-mac-design.md` / 计划同名 | **实施中**（目标 = mac 现有实现；Windows 侧以「改调用点参数」为主，不合并两套 RenderKit） |
+| 3 | 行为一致性收口（收起视图集 §4.1：Windows 多 monitor/devices/clipboard/window 四个 —— 要么补 mac 收起视图、要么明确归为平台专属） | 独立规格 | 待设计 |
 | 4 | 能力清单与「不支持」呈现规则（§1 规则落到两端 UI + 公开文档） | 独立规格 | 待设计 |
 | 5 | 一致性守护（跨端断言测试 + 能力清单漂移检查） | 独立规格 | 待设计 |
 

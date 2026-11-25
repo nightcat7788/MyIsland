@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
+using System.Windows.Documents;
 using System.Windows.Media;
 using System.Windows.Media.Effects;
 using System.Windows.Threading;
@@ -39,6 +40,13 @@ public partial class ExpandedPanel : UserControl
 
     private Button[] _pageBtns = null!;
     private UIElement[] _pages = null!;
+
+    /// <summary>页签的三样零件：激活底（Border）/ 图标（GlyphIcon）/ 文字（TextBlock）。
+    /// 与 XAML 里 x:Name 一一对应，顺序 = 页签顺序（监控 │ 剪贴板 │ 设备 │ 控制）。</summary>
+    private Border[] _tabFills = null!;
+    private GlyphIcon[] _tabIcons = null!;
+    private TextBlock[] _tabTexts = null!;
+
     private readonly DispatcherTimer _clock;
 
     /// <summary>监控页（宿主直接注入快照数据，不走绑定）。</summary>
@@ -121,6 +129,10 @@ public partial class ExpandedPanel : UserControl
         InitializeComponent();
         _pageBtns = new[] { btnMonitor, btnShelf, btnDevices, btnControl };
         _pages = new UIElement[] { monitorPage, pageShelf, pageDevices, pageControl };
+        _tabFills = new[] { tabFillMonitor, tabFillShelf, tabFillDevices, tabFillControl };
+        _tabIcons = new[] { tabIconMonitor, tabIconShelf, tabIconDevices, tabIconControl };
+        _tabTexts = new[] { tabTextMonitor, tabTextShelf, tabTextDevices, tabTextControl };
+        ApplySpecGeometry();
         SelectPage(0);
 
         _clock = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
@@ -320,23 +332,91 @@ public partial class ExpandedPanel : UserControl
         if (_plans is not null) FillPowerPlans(_plans, _activePlan);
     }
 
-    /// <summary>页签的选中态：强调色图标 + 一层压色；没选中的是次要文字色。</summary>
+    /// <summary>
+    /// 把规格常量（<see cref="ExpandedPanelSpec"/>）落到顶栏几何上。
+    /// XAML 里写的是同一批数值（XAML 读不到 const），这里再按常量覆写一次 —— 规格类才是唯一事实来源。
+    /// </summary>
+    private void ApplySpecGeometry()
+    {
+        // 面板内容区内边距：左右 18 / 上 14 / 下 18
+        rootGrid.Margin = new Thickness(
+            ExpandedPanelSpec.ContentPadX, ExpandedPanelSpec.ContentPadTop,
+            ExpandedPanelSpec.ContentPadX, ExpandedPanelSpec.ContentPadBottom);
+
+        // 顶栏高度 = 图标 14 + 上下各 5 = 24；顶栏到内容区 40（= 24 + 16）
+        double barH = ExpandedPanelSpec.TabIconSize + ExpandedPanelSpec.TabPadY * 2;
+        topBar.Height = barH;
+        topBar.Margin = new Thickness(0, 0, 0, ExpandedPanelSpec.ContentTopOffset - barH);
+
+        // 页签左端离面板左边缘 20（内容区左内边距 18 + 2）
+        tabBar.Margin = new Thickness(
+            ExpandedPanelSpec.TabLeftOffset - ExpandedPanelSpec.ContentPadX, 0, 0, 0);
+
+        for (int i = 0; i < _pageBtns.Length; i++)
+        {
+            Button b = _pageBtns[i];
+            b.Width = double.NaN;    // Auto：页签宽度跟着「图标 + 文字」走
+            b.Height = double.NaN;
+            b.Padding = new Thickness(ExpandedPanelSpec.TabPadX, ExpandedPanelSpec.TabPadY,
+                                      ExpandedPanelSpec.TabPadX, ExpandedPanelSpec.TabPadY);
+            b.Margin = new Thickness(0);   // 页签间距由外层 Grid 承担
+
+            GlyphIcon icon = _tabIcons[i];
+            icon.Width = ExpandedPanelSpec.TabIconSize;
+            icon.Height = ExpandedPanelSpec.TabIconSize;
+
+            TextBlock txt = _tabTexts[i];
+            txt.FontSize = ExpandedPanelSpec.TabFontSize;
+            txt.Margin = new Thickness(ExpandedPanelSpec.TabIconGap, 0, 0, 0);   // 图标与文字的间距
+
+            // 激活底的圆角（mac：8）
+            _tabFills[i].CornerRadius = new CornerRadius(ExpandedPanelSpec.TabActiveCorner);
+        }
+
+        // 相邻页签间距 6（最后一个不留尾距）
+        for (int i = 0; i < _tabFills.Length; i++)
+        {
+            if (_tabFills[i].Parent is Grid host)
+                host.Margin = new Thickness(0, 0,
+                    i < _tabFills.Length - 1 ? ExpandedPanelSpec.TabGap : 0, 0);
+        }
+
+        // 时钟：12 号 Regular 比例字体（不套 DataText 的等宽体），右侧留白 24
+        clockText.FontSize = ExpandedPanelSpec.ClockFontSize;
+        clockText.FontWeight = FontWeights.Normal;
+        clockText.Margin = new Thickness(0, 0, ExpandedPanelSpec.ClockRightMargin, 0);
+    }
+
+    /// <summary>
+    /// 页签的选中态（对齐 mac 的 Tab(...)）：激活 = Accent 20% 底（圆角 8）+ 文字主色 + 图标强调色；
+    /// 未激活 = 文字次色 + 图标次色（底透明）。
+    /// </summary>
     private void UpdateTabVisuals()
     {
         // 不给页签挂辉光：Effect 会把按钮先画成位图再合成，软件渲染下图标会被重新采样，强调色发灰、边缘发糊。
         // 发光留给实心的电源计划按钮（AccentBtn）和监控页的 CPU 主读数。
         var accent = TryFindResource("Accent") as Brush;
+        var fg = TryFindResource("Fg") as Brush;
         var dim = TryFindResource("FgDim") as Brush;
-        var pressed = TryFindResource("Pressed") as Brush;
         for (int i = 0; i < _pageBtns.Length; i++)
         {
             bool on = i == _page;
-            _pageBtns[i].Foreground = on ? accent ?? Brushes.White : dim ?? Brushes.Gray;
-            // BrimDeck 式分段页签：选中态同时保留浅压色和 1px 强调边，
-            // 让当前页面在低亮度主题、无障碍缩放和图标相近时仍然一眼可辨。
-            _pageBtns[i].Background = on ? pressed ?? Brushes.Transparent : Brushes.Transparent;
-            _pageBtns[i].BorderBrush = on ? accent ?? Brushes.White : Brushes.Transparent;
-            _pageBtns[i].BorderThickness = on ? new Thickness(1) : new Thickness(0);
+            _tabFills[i].Background = on ? AccentFill(accent) : Brushes.Transparent;
+            TextElement.SetForeground(_tabIcons[i], on ? accent ?? Brushes.White : dim ?? Brushes.Gray);
+            _tabTexts[i].Foreground = on ? fg ?? Brushes.White : dim ?? Brushes.Gray;
+            _pageBtns[i].Foreground = on ? fg ?? Brushes.White : dim ?? Brushes.Gray;
         }
+    }
+
+    /// <summary>激活页签的底色：强调色按 TabActiveFillAlpha（20%）调淡（不是把整个元素 Opacity 调淡，
+    /// 否则文字和图标也会跟着变淡）。</summary>
+    private static Brush AccentFill(Brush? accent)
+    {
+        if (accent is not SolidColorBrush scb) return Brushes.Transparent;
+        Color c = scb.Color;
+        byte a = (byte)Math.Round(c.A * ExpandedPanelSpec.TabActiveFillAlpha);
+        var fill = new SolidColorBrush(Color.FromArgb(a, c.R, c.G, c.B));
+        fill.Freeze();   // 冻结后才能安全共用
+        return fill;
     }
 }

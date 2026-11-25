@@ -75,6 +75,8 @@
     <Compile Include="..\..\src\Island.App\Services\Peripheral\HidReportDescriptor.cs" Link="Merged\Peripheral\HidReportDescriptor.cs" />
     <!-- CPU 温度取值规则（2026-11-26）：纯函数，无硬件库依赖，可链进测试工程 -->
     <Compile Include="..\..\src\Island.App\Services\CpuTemperatureRule.cs" Link="Merged\App\CpuTemperatureRule.cs" />
+    <!-- 展开面板规格（2026-11-26 阶段 2：Windows 展开面板对齐 mac 版）：纯常量类，可链进测试工程 -->
+    <Compile Include="..\..\src\Island.App\Controls\ExpandedPanelSpec.cs" Link="Merged\ExpandedPanelSpec.cs" />
     <!-- PDH 通配符读取器（GPU Engine 分组聚合）：纯 P/Invoke，无 NuGet 依赖，可链进测试工程 -->
     <Compile Include="..\..\src\Island.Native\PdhWildcardQuery.cs" Link="Merged\PdhWildcardQuery.cs" />
   </ItemGroup>

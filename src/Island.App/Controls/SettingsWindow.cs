@@ -90,7 +90,7 @@ public sealed class SettingsWindow : Window
         ("devices", "设备电量"), ("clipboard", "剪贴板"), ("pet", "小形象"), ("window", "活动窗口"),
     };
     private static readonly (string Id, string Label)[] PetStyles =
-        { ("classic", "经典双眼"), ("mono", "独眼"), ("cat", "猫咪"), ("robot", "机器人"), ("pixel", "像素") };
+        { ("alien", "外星人"), ("ghost", "幽灵"), ("frog", "青蛙"), ("classic", "经典双眼"), ("mono", "独眼"), ("cat", "猫咪"), ("robot", "机器人"), ("pixel", "像素") };
     private static readonly string[] Cities =
         { "北京", "上海", "广州", "深圳", "杭州", "成都", "重庆", "西安", "武汉", "南京", "苏州", "厦门", "长沙", "青岛" };
 

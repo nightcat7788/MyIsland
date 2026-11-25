@@ -504,7 +504,8 @@ internal static class RenderKit
     }
 
     // ---------- 平滑走势图（Catmull-Rom + 16% 填充，右缘最新） ----------
-    public static void DrawSpark(DrawingContext dc, Rect area, double[]? data, Color color, int n = 36)
+    public static void DrawSpark(DrawingContext dc, Rect area, double[]? data, Color color, int n = 36,
+        double strokeWidth = 1.2)
     {
         if (data is null || data.Length < 3 || area.Width < 8 || area.Height < 4) return;
         int count = Math.Min(n, data.Length);

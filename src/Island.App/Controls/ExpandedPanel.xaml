@@ -54,32 +54,80 @@
         </ResourceDictionary>
     </UserControl.Resources>
 
-    <!-- 面板整体：底色由岛体本体（IslandCanvas）画，这里只排内容 -->
-    <Grid Margin="16,10,16,12">
+    <!-- 面板整体：底色由岛体本体（IslandCanvas）画，这里只排内容
+         内容区内边距 = 左右 18 / 上 14 / 下 18（ExpandedPanelSpec.ContentPadX / ContentPadTop / ContentPadBottom），
+         code-behind 里再按常量覆写一次（XAML 读不到 const，规格类才是唯一事实来源）。 -->
+    <Grid x:Name="rootGrid" Margin="18,14,18,18">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
-        <!-- 顶栏：左 页签（矢量图标）｜ 中 时间 ｜ 右 设置齿轮 + 收起 -->
-        <Grid Grid.Row="0" Margin="-8,0,-8,10">
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center">
-                <Button x:Name="btnMonitor" Tag="0" Click="OnPage" ToolTip="系统监控" Style="{StaticResource TabBtn}">
-                    <local:GlyphIcon Kind="Monitor" Width="16" Height="16"/>
-                </Button>
-                <Button x:Name="btnShelf" Tag="1" Click="OnPage" ToolTip="剪贴板 · 文件" Style="{StaticResource TabBtn}">
-                    <local:GlyphIcon Kind="Clipboard" Width="16" Height="16"/>
-                </Button>
-                <Button x:Name="btnDevices" Tag="2" Click="OnPage" ToolTip="设备电量" Style="{StaticResource TabBtn}">
-                    <local:GlyphIcon Kind="Battery" Width="16" Height="16"/>
-                </Button>
-                <Button x:Name="btnControl" Tag="3" Click="OnPage" ToolTip="控制" Style="{StaticResource TabBtn}">
-                    <local:GlyphIcon Kind="Sliders" Width="16" Height="16"/>
-                </Button>
+        <!-- 顶栏（对齐 mac 的 IslandCanvas.DrawExpanded / Tab(...)）：左 页签（图标 + 文字）｜ 右 时间 + 设置齿轮 + 收起
+             顶栏高度 = 图标 14（TabIconSize）+ 上下各 5（TabPadY）= 24；顶栏到内容区 40（ContentTopOffset = 24 + 16）。
+             页签整体仍左对齐（mac 就是左对齐）；时钟靠右、排在齿轮左边 ——
+             Windows 专属的「设置齿轮 / 收起 ✕」保留（mac 靠移开鼠标收起）。 -->
+        <Grid x:Name="topBar" Grid.Row="0" Height="24" Margin="0,0,0,16">
+            <!-- 页签：图标 14（TabIconSize）+ 间距 5（TabIconGap）+ 文字 12（TabFontSize）；
+                 热区左右 7 / 上下 5（TabPadX / TabPadY），相邻间距 6（TabGap），左端离面板左边缘 20（TabLeftOffset）；
+                 激活底 = Accent 20%（TabActiveFillAlpha）+ 圆角 8（TabActiveCorner），由代码写入。
+                 XAML 读不到 const，上面这些数值在 code-behind 里按 ExpandedPanelSpec 再覆写一次。 -->
+            <StackPanel x:Name="tabBar" Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center"
+                        Margin="2,0,0,0">
+                <Grid Margin="0,0,6,0">
+                    <Border x:Name="tabFillMonitor" Background="Transparent" CornerRadius="8"/>
+                    <Button x:Name="btnMonitor" Tag="0" Click="OnPage" ToolTip="系统监控" Style="{StaticResource TabBtn}"
+                            Width="Auto" Height="Auto" Padding="7,5" Margin="0" Background="Transparent" BorderThickness="0">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <local:GlyphIcon x:Name="tabIconMonitor" Kind="Monitor" Width="14" Height="14"
+                                             VerticalAlignment="Center" TextElement.Foreground="{DynamicResource FgDim}"/>
+                            <TextBlock x:Name="tabTextMonitor" Text="监控" FontSize="12" VerticalAlignment="Center"
+                                       Margin="5,0,0,0" Foreground="{DynamicResource FgDim}"/>
+                        </StackPanel>
+                    </Button>
+                </Grid>
+                <Grid Margin="0,0,6,0">
+                    <Border x:Name="tabFillShelf" Background="Transparent" CornerRadius="8"/>
+                    <Button x:Name="btnShelf" Tag="1" Click="OnPage" ToolTip="剪贴板 · 文件" Style="{StaticResource TabBtn}"
+                            Width="Auto" Height="Auto" Padding="7,5" Margin="0" Background="Transparent" BorderThickness="0">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <local:GlyphIcon x:Name="tabIconShelf" Kind="Clipboard" Width="14" Height="14"
+                                             VerticalAlignment="Center" TextElement.Foreground="{DynamicResource FgDim}"/>
+                            <TextBlock x:Name="tabTextShelf" Text="剪贴板" FontSize="12" VerticalAlignment="Center"
+                                       Margin="5,0,0,0" Foreground="{DynamicResource FgDim}"/>
+                        </StackPanel>
+                    </Button>
+                </Grid>
+                <Grid Margin="0,0,6,0">
+                    <Border x:Name="tabFillDevices" Background="Transparent" CornerRadius="8"/>
+                    <Button x:Name="btnDevices" Tag="2" Click="OnPage" ToolTip="设备电量" Style="{StaticResource TabBtn}"
+                            Width="Auto" Height="Auto" Padding="7,5" Margin="0" Background="Transparent" BorderThickness="0">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <local:GlyphIcon x:Name="tabIconDevices" Kind="Battery" Width="14" Height="14"
+                                             VerticalAlignment="Center" TextElement.Foreground="{DynamicResource FgDim}"/>
+                            <TextBlock x:Name="tabTextDevices" Text="设备" FontSize="12" VerticalAlignment="Center"
+                                       Margin="5,0,0,0" Foreground="{DynamicResource FgDim}"/>
+                        </StackPanel>
+                    </Button>
+                </Grid>
+                <Grid>
+                    <Border x:Name="tabFillControl" Background="Transparent" CornerRadius="8"/>
+                    <Button x:Name="btnControl" Tag="3" Click="OnPage" ToolTip="控制" Style="{StaticResource TabBtn}"
+                            Width="Auto" Height="Auto" Padding="7,5" Margin="0" Background="Transparent" BorderThickness="0">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <local:GlyphIcon x:Name="tabIconControl" Kind="Sliders" Width="14" Height="14"
+                                             VerticalAlignment="Center" TextElement.Foreground="{DynamicResource FgDim}"/>
+                            <TextBlock x:Name="tabTextControl" Text="控制" FontSize="12" VerticalAlignment="Center"
+                                       Margin="5,0,0,0" Foreground="{DynamicResource FgDim}"/>
+                        </StackPanel>
+                    </Button>
+                </Grid>
             </StackPanel>
-            <TextBlock x:Name="clockText" HorizontalAlignment="Center" VerticalAlignment="Center" Style="{StaticResource DataText}"
-                       FontSize="12.5" FontWeight="Bold" Foreground="{DynamicResource FgDim}"/>
+            <!-- 右侧一组：时钟 → 齿轮 → 收起。时钟 12 号 Regular 比例字体（去掉 DataText 的等宽体），
+                 颜色 FgDim，右侧留白 24（ClockRightMargin）。 -->
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                <TextBlock x:Name="clockText" VerticalAlignment="Center" FontSize="12" FontWeight="Normal"
+                           Foreground="{DynamicResource FgDim}" Margin="0,0,24,0"/>
                 <!-- 设置齿轮（BrimDeck 顶栏同款：右端齿轮直达设置中心，不用退到托盘） -->
                 <Button x:Name="btnSettings" Click="OnSettings" ToolTip="设置中心" Style="{StaticResource TabBtn}" Margin="0,0,2,0">
                     <local:GlyphIcon Kind="Gear" Width="15" Height="15"/>
