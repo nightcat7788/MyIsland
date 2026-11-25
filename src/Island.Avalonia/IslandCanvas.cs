@@ -1187,25 +1187,35 @@ public sealed class IslandCanvas : Control
             var box = SafeRect(cx, cy, cardW, cardH);
             dc.DrawRectangle(RenderKit.BrushOf(pal.Elevated), RenderKit.PenOf(pal.Rim, 1, 0.55), new RoundedRect(box, 12));
 
-            // 电量色：低红 / 偏低橙 / 正常蓝；充电中绿
-            Color c = dev.Charging ? DownC : dev.Percent <= 20 ? pal.Up : dev.Percent <= 40 ? pal.Warning : ResColor(Res.Batt, pal);
+            // 电量色：低红 / 偏低橙 / 正常蓝；充电中绿。
+            // 读不到电量的设备（只有识别没有读数）用暗色 —— 不能拿 0% 画成"满电环以外的样子"。
+            bool unknown = dev.LevelText is not null;
+            Color c = unknown ? pal.TextDim
+                 : dev.Charging ? DownC
+                 : dev.Percent <= 20 ? pal.Up
+                 : dev.Percent <= 40 ? pal.Warning : ResColor(Res.Batt, pal);
 
             // 大环（60px）+ 环内设备图标
             const double ring = 60;
             double rx = cx + cardW / 2, ry = cy + 20 + ring / 2;
             RenderKit.Ring(dc, new Point(rx, ry), ring, 5, dev.Percent / 100.0, pal.Track, c);
-            // 图标按设备类型：内置电池 / 蓝牙设备
-            Glyph g = dev.Kind == "内置" ? Glyph.Battery : Glyph.Disk;
+            // 图标按设备类型：内置电池 / 其它设备（mac 侧没有鼠标键盘的矢量图标，统一用圆盘）
+            Glyph g = dev.Kind == "battery" ? Glyph.Battery : Glyph.Disk;
             DrawIcon(dc, g, rx - (12 * 1.1) / 2, ry, pal.Text, 1.1);
 
-            // 大号百分比
-            var pct = RenderKit.Text($"{dev.Percent}%", 26, c, true);
+            // 大号读数：有百分数显示百分比；只有档位/未知时显示那行文字（不画假的 0%）
+            var pct = unknown
+                ? RenderKit.Text(dev.LevelText!, 20, c, true)
+                : RenderKit.Text($"{dev.Percent}%", 26, c, true);
             dc.DrawText(pct, new Point(rx - pct.WidthIncludingTrailingWhitespace / 2, cy + 20 + ring + 6));
             // 设备名
             var nm = RenderKit.Trimmed(dev.Name, 11, pal.Text, cardW - 16, true);
             dc.DrawText(nm, new Point(rx - nm.WidthIncludingTrailingWhitespace / 2, cy + 20 + ring + 38));
-            // 状态
-            string state = dev.Charging ? "充电中" : dev.Percent <= 20 ? "电量低" : dev.Percent <= 40 ? "电量偏低" : "正常";
+            // 状态："未知"必须排在百分数判断前面（否则读不到电量的设备会显示"正常"）
+            string state = unknown ? "电量未知"
+                     : dev.Charging ? "充电中"
+                     : dev.Percent <= 20 ? "电量低"
+                     : dev.Percent <= 40 ? "电量偏低" : "正常";
             var st = RenderKit.Text(state, 10, dev.Charging ? DownC : dev.Percent <= 40 ? pal.Warning : pal.TextTertiary);
             dc.DrawText(st, new Point(rx - st.WidthIncludingTrailingWhitespace / 2, cy + 20 + ring + 56));
         }
