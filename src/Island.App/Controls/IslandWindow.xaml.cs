@@ -474,11 +474,10 @@ public partial class IslandWindow : Window
         if (thermalWanted)
             islandCanvas.Thermal = _thermal.Current;
 
-        // 设备电量按需轮询（devices 视图或面板展开时才跑）；低电量提醒开着时退到 5 分钟慢轮询兜底
+        // 设备电量按需轮询（devices 视图或面板展开时才跑）；低电量提醒开着时退到 5 分钟慢轮询兜底。
+        // dash 不再显示电池读数（电池在 devices 视图），所以 dash 视图下不启动这段采样。
         Services.DeviceService.SetWanted(_expanded || (!_expanded &&
-            (islandCanvas.CompactView == "devices" ||
-             (islandCanvas.CompactView == "dash" &&
-              (islandCanvas.DashItems is null || islandCanvas.DashItems.Contains("battery"))))));
+            islandCanvas.CompactView == "devices"));
         Services.DeviceService.BackgroundWatch = _settings.BatteryAlertEnabled;
 
         // 毛玻璃刷新：展开时 8fps，收起且静止时 2fps（省 CPU）
@@ -1231,10 +1230,12 @@ public partial class IslandWindow : Window
         // 2026-11-24：读数带的等宽数字 + 四个表盘 + 网速实测约 470 宽，原来上限 460 会把末尾的 "K" 裁掉
         "monitor" => (500, 44), // 单排高密度读数带
         // 全读数单行（核心柱│温度组│占用组│网速，组间分隔线；对齐 mac）。
-        // 上限 560：宿主窗口宽度**恒定 640 DIP**（ExpandW 560 + margin 40×2，2026-11-24 定下的防抖决策），
-        // 胶囊在窗口内居中画、超出 HWND 的部分由系统裁掉 ⇒ 收起态胶囊必须 ≤ 560（两边各留 40px）。
+        // 上限 620：宿主窗口宽度**恒定 640 DIP**（ExpandW 560 + margin 40×2，2026-11-24 定下的防抖决策），
+        // 胶囊在窗口内居中画、超出 HWND 的部分由系统裁掉 ⇒ 硬约束是「胶囊 ≤ 640」。
+        // 620 < 640 ⇒ 任何读数组合下都不会被裁（装不下的内容折进 "+N"）；4 组实测 580.6（3 核）/ 613.6（8 核），
+        // 在 620 内 ⇒ 4 组全显示、网速可见，并留 20px 安全余量。
         // 电池读数不在 dash 里（设备视图已有一份），dash 不重复。
-        "dash" => (560, 44),
+        "dash" => (620, 44),
         "window" => (360, 44),  // 活动窗口（YASB ActiveWindow 同款：进程名 + 标题）
         "devices" => (300, 64),
         "clipboard" => (240, 44),
