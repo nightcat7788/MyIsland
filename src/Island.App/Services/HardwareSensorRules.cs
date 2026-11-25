@@ -535,3 +535,60 @@ public static class HardwareSensorRules
         return false;
     }
 }
+
+// =====================================================================================
+// 硬件传感器的数据契约（2026-11-26 task4：硬件详情面板）
+// =====================================================================================
+
+/// <summary>
+/// 一个**已枚举到**的硬件传感器（只读数据）。
+///
+/// 为什么要单独一个类型：温度服务只把"挑出来的那几个"读数放进 <c>ThermalSnapshot</c>，
+/// 其它被 LibreHardwareMonitor 枚举到、却没有任何入口能看的传感器（各电压轨、各风扇转速、
+/// 每颗内存 / 每个 PCIe 设备的温度、主板 SuperIO 温度……）就永远沉在库里。
+/// 这个类型把"枚举结果"本身暴露出来，让它们能被列出来。
+///
+/// ⚠️ <see cref="Value"/> 为 null 表示**读不到**（权限不足 / 驱动缺失 / 该传感器本来就没值），
+/// 与"读数为 0"是两回事：0 是合法读数（风扇停转 0 RPM、显卡空闲 0 W），显示层必须区分开。
+///
+/// ⚠️ 本类型放在**这个文件**里而不是 Controls 下：Island.Avalonia（mac 端）也编译这个文件
+/// （它同样编译 ThermalService.cs），数据契约必须两端都在同一个地方，
+/// 否则 mac 端会因为"找不到 Island.App.Controls"而编译不过。
+/// 显示层（单位 / 格式 / 告警级别）在 <c>Controls/HardwareSensorList.cs</c>。
+/// </summary>
+/// <param name="Hardware">硬件名（CPU / 显卡 / 主板……）。</param>
+/// <param name="Sensor">传感器名（LibreHardwareMonitor 的 ISensor.Name）。</param>
+/// <param name="Category">传感器类别（温度 / 功耗 / 风扇 / 电压……）。</param>
+/// <param name="Value">当前读数；null = 读不到（**不是 0**）。</param>
+/// <param name="RequiresElevation">该传感器是否需要管理员权限才读得到（主板 / SuperIO、CPU 的 MSR 温度等）。</param>
+public sealed record HardwareSensorEntry(
+    string Hardware,
+    string Sensor,
+    HardwareSensorCategory Category,
+    double? Value,
+    bool RequiresElevation)
+{
+    /// <summary>行内唯一键：刷新时用它判断"还是同一批传感器吗"（决定原地更新还是重建列表）。</summary>
+    public string Key => Hardware + "|" + Sensor + "|" + Category;
+
+    /// <summary>是否有读数（读不到 = false，**不等于**读数为 0）。</summary>
+    public bool HasValue => Value.HasValue;
+}
+
+/// <summary>
+/// 硬件传感器的数据源。窗口只认这个接口，不认具体服务 ⇒ 视图层不依赖硬件库，可离屏渲染、可链进测试。
+/// </summary>
+public interface IHardwareSensorSource
+{
+    /// <summary>最近一次枚举到的全部传感器（顺序 = 枚举顺序）。</summary>
+    IReadOnlyList<HardwareSensorEntry> Sensors { get; }
+
+    /// <summary>枚举结果更新后触发（**可能在后台线程上**触发，订阅方要自己切回 UI 线程）。</summary>
+    event Action? SensorsChanged;
+
+    /// <summary>请求立刻重新枚举一次（可从任意线程调用；实现方自己决定在哪个线程干活）。</summary>
+    void RequestRefresh();
+
+    /// <summary>当前进程是否以管理员身份运行（决定"读不到"显示"需管理员"还是"未知"）。</summary>
+    bool Elevated { get; }
+}

@@ -34,7 +34,9 @@ try
     PeripheralBatteryTests.Run(Check); // 2026-11-26 Windows 外设电量：协议解析三层校验 / 协议表匹配 / 标准 HID 换算 / 识别兜底
     PeripheralProtocolTableTests.Run(Check); // 2026-11-26 task2：外设协议表自检（表合法性校验 / 覆盖规则 / 字段级 JSON 报错）
     CpuTemperatureTests.Run(Check); // 2026-11-26 CPU 温度取值：分层匹配 + 排除 Distance to TjMax 等干扰项
-    HardwareSensorRulesTests.Run(Check); // 2026-11-26 硬件传感器规则：名字→语义 + 分层裁决 + 干扰项排除
+    HardwareSensorRulesTests.Run(Check);
+    HardwareSensorListTests.Run(Check); // 2026-11-26 task4 硬件传感器列表：单位 / 格式 / 状态词（读不到≠0）+ 名字→语义映射
+    HardwareSensorsViewTests.Run(Check); // 2026-11-26 task4 硬件详情面板：离屏渲染 + 读数位 + 刷新不重建 // 2026-11-26 硬件传感器规则：名字→语义 + 分层裁决 + 干扰项排除
     ExpandedPanelSpecTests.Run(Check); // 2026-11-26 阶段 2：展开面板规格（以 mac 现有实现为基准）
     HidDescriptorTests.Run(Check); // 2026-11-26 mac 对齐：HID 报告描述符解析（mac 没有 HidP_GetUsageValue） // 2026-11-26 CPU 温度取值：分层匹配 + 排除 Distance to TjMax 等干扰项
     ThemeTests.Run(Check);

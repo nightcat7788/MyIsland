@@ -578,6 +578,26 @@
                             </Grid>
                         </StackPanel>
                     </Border>
+                    <!-- 硬件传感器（2026-11-26 task4）：只读窗口的入口。
+                         LHM 枚举到的传感器里，绝大部分（各电压轨 / 各风扇转速 / 每颗内存的温度 /
+                         主板 SuperIO 温度……）此前没有任何入口能看到 ⇒ 这里开一扇只读的门。
+                         入口放在控制页签内（Windows 专属），**不新增展开页签**（页签集合是能力清单的产品决策）。 -->
+                    <Border Style="{StaticResource GroupCard}" Margin="0">
+                        <StackPanel>
+                            <TextBlock Text="硬件" Style="{StaticResource GroupLabel}"/>
+                            <Grid Style="{StaticResource Row}" MinHeight="26">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="56"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="传感器" Style="{StaticResource RowLabel}"/>
+                                <TextBlock x:Name="sensorEntryHint" Grid.Column="1" Text="全部硬件读数" Style="{StaticResource RowState}" Margin="0,0,6,0"/>
+                                <Button Grid.Column="2" Content="查看" Style="{StaticResource QuietBtn}" Click="OnShowHardwareSensors"
+                                        ToolTip="打开只读的硬件传感器列表"/>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
                 </StackPanel>
 
                 <!-- 右栏：连接 / 电源 / 系统 -->
