@@ -1230,10 +1230,11 @@ public partial class IslandWindow : Window
         "combo" => (640, 44),
         // 2026-11-24：读数带的等宽数字 + 四个表盘 + 网速实测约 470 宽，原来上限 460 会把末尾的 "K" 裁掉
         "monitor" => (500, 44), // 单排高密度读数带
-        // 全读数单行（核心柱│温度组│占用组│电池│网速，组间分隔线；对齐 mac）。
-        // 上限 700：单行 5 组实测约 690 宽（8 核）；上限 560 时 8 核会把电池+网速两组折进 "+2"（3 核折掉网速组），默认显示项下看不到网速。
-        // 胶囊按实测内容定宽（CurrentCollapsedSize 用 clamp(实测内容宽, 110, 上限)），上限只防最坏情况。
-        "dash" => (700, 44),
+        // 全读数单行（核心柱│温度组│占用组│网速，组间分隔线；对齐 mac）。
+        // 上限 560：宿主窗口宽度**恒定 640 DIP**（ExpandW 560 + margin 40×2，2026-11-24 定下的防抖决策），
+        // 胶囊在窗口内居中画、超出 HWND 的部分由系统裁掉 ⇒ 收起态胶囊必须 ≤ 560（两边各留 40px）。
+        // 电池读数不在 dash 里（设备视图已有一份），dash 不重复。
+        "dash" => (560, 44),
         "window" => (360, 44),  // 活动窗口（YASB ActiveWindow 同款：进程名 + 标题）
         "devices" => (300, 64),
         "clipboard" => (240, 44),
@@ -1634,17 +1635,19 @@ public partial class IslandWindow : Window
     {
         var preview = new IslandCanvas
         {
+            // 预览高度跟收起态胶囊一致（dash 是单行 44px）；原来是两行网格时代的 69px
             CompactView = "dash", Palette = _palette, IsHitTestVisible = false,
-            Width = 660, Height = 69,
+            Width = 660, Height = 44,
         };
         preview.LayoutTransform = new ScaleTransform(0.78, 0.78);
         OpenModuleSettings(
             "仪表盘显示项",
             new ModuleSettingsWindow.Module[]
             {
+                // 没有「电池」项：电池读数在「设备」收起视图里，dash 不重复（2026-11-25 修复轮 2 裁决）
                 new("cores", "核心柱"), new("cputemp", "CPU 温度"), new("gputemp", "GPU 温度"),
                 new("mem", "内存"), new("gpu", "GPU 使用率"), new("disk", "硬盘活动"),
-                new("ssd", "SSD 温度"), new("battery", "电池"), new("net", "网速 ↓↑"),
+                new("ssd", "SSD 温度"), new("net", "网速 ↓↑"),
             },
             preview,
             () => _settings.DashItems,

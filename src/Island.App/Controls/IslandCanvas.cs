@@ -887,8 +887,10 @@ public sealed class IslandCanvas : FrameworkElement
     /// 旧语义是「只管组间距」（Minimal 16 / 其余 26）；组间距已被规格统一为 24px 总带 + 分隔线，
     /// 密度再不管间距就没有意义了，改成按可用宽度决定显示什么（规格 §3.2 的密度表）：
     ///   Minimal（宽 &lt; 390） → 核心柱 + 温度组 + 网速
-    ///   Balanced（宽 &lt; 560）→ 上述 + 占用组
-    ///   Full                 → 上述 + 电池组
+    ///   其余（宽 ≥ 390）     → 核心柱 + 温度组 + 占用组 + 网速
+    ///
+    /// 阈值（&lt;390 / &lt;560）保持不变；Full 档原本只比 Balanced 多一个「电池组」，
+    /// 电池组已移出 dash（设备视图已有一份电池读数）⇒ 现在 Full 与 Balanced 的显示内容相同。
     /// </summary>
     private enum CompactDensity { Minimal, Balanced, Full }
 
@@ -902,17 +904,18 @@ public sealed class IslandCanvas : FrameworkElement
         : CompactWidthBudget < 560 ? CompactDensity.Balanced : CompactDensity.Full;
 
     /// <summary>
-    /// dash 视图（全读数单行）：核心柱群 │ 温度项组 │ 占用项组 │ 电池组 │ 网速，组间画 Hairline 分隔线。
+    /// dash 视图（全读数单行）：核心柱群 │ 温度项组 │ 占用项组 │ 网速，组间画 Hairline 分隔线。
     /// 对应 mac 版 dash 的单行形态（mac: 频谱│剪贴板计数│温度组│占用组│电池│设备环│网速）。
     ///
     /// 与旧版的差别：旧版是「标签在上、数值在下」的两行网格（高 69px）；
     /// 现在是单行（高 44px），标签与数值同行。内容项与「用户定制显示项」语义不变。
     ///
+    /// 电池读数**不在 dash 里**：设备收起视图已经有一份，dash 不重复（2026-11-25 修复轮 2 裁决）。
+    ///
     /// CompactDensity 的含义随之调整：旧版它只控制组间距（16/26），而组间距已被规格统一为
     /// 12 + 分隔线，所以改为**决定显示哪些组**（阈值 &lt;390 / &lt;560 不变）：
-    ///   Minimal  → 核心柱 + 温度组 + 网速
-    ///   Balanced → 上述 + 占用组
-    ///   Full     → 上述 + 电池组
+    ///   Minimal（宽 &lt; 390）→ 核心柱 + 温度组 + 网速
+    ///   其余（宽 ≥ 390）    → 核心柱 + 温度组 + 占用组 + 网速
     /// </summary>
     private double DrawDash(DrawingContext dc, Palette pal, Rect r, double cy,
         MonitorSnapshot? snap, Services.ThermalSnapshot? thermal)
@@ -1004,22 +1007,8 @@ public sealed class IslandCanvas : FrameworkElement
             AddItemGroup(usage, dividerAfter: true);
         }
 
-        // ---- 组 4：电池组 ----
-        var bat = DeviceService.Snapshot.FirstOrDefault(d => d.Kind == "battery");
-        if (density == CompactDensity.Full && Want("battery") && bat is not null)
-        {
-            Color bc = bat.Charging ? pal.Down
-                : bat.Percent <= 20 ? pal.Up
-                : bat.Percent <= 40 ? pal.Warning
-                : pal.Text;
-            // 充电时标签带「+」（旧版两行网格的「电+」标记，改造里不丢信息）；配色仍是充电绿。
-            AddItemGroup(new List<(string, string, string, Color?)>
-            {
-                (bat.Charging ? "电+" : "电", $"{bat.Percent}%", "100%", bc),
-            }, dividerAfter: true);
-        }
-
-        // ---- 组 5：网速（↓ ↔ ↑ 间距用 CompactSpec.DashNetGap = 10，mac DashLayout.NetGap）----
+        // ---- 组 4：网速（↓ ↔ ↑ 间距用 CompactSpec.DashNetGap = 10，mac DashLayout.NetGap）----
+        // 电池读数不在这里：设备收起视图已经有一份，dash 不重复（修复轮 2 裁决）。
         if (Want("net"))
         {
             AddItemGroup(new List<(string, string, string, Color?)>
