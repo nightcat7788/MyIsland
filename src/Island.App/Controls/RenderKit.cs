@@ -316,6 +316,50 @@ internal static class RenderKit
         dc.DrawGeometry(null, PenOf(color, th), geo);
     }
 
+    // ---------- 360° 完整圆环（mac RenderKit.Ring 同款）----------
+    /// <summary>
+    /// 360° 完整圆环：底环 + 按占比的彩色弧（从 12 点顺时针）。
+    /// 与 <see cref="Dial"/>（270° 开口环 + 环内字母）不同：这里是闭环，数字放环外。
+    /// 收起态用这个；展开面板的 CPU 主读数环仍是 <see cref="Dial"/>，两者并存（mac 侧同样并存）。
+    /// 源：src/Island.Avalonia/RenderKit.cs L184-L215。
+    /// </summary>
+    public static void Ring(DrawingContext dc, Point center, double diameter, double thickness,
+        double share, Color track, Color arc)
+    {
+        double radius = CompactSpec.RingRadius(diameter, thickness);
+        // CompactSpec.RingRadius 按 mac 取消了 0.5 下限（RenderKit.Ring:187），
+        // 于是 thickness > diameter 时半径为负 —— WPF 的 DrawEllipse 会因负半径抛异常，
+        // 而 mac 的 Avalonia 路径不会。参数不合法的调用直接不画，交给调用方保证 thickness <= diameter。
+        if (radius <= 0) return;
+        // 底环：整圈
+        dc.DrawEllipse(null, PenOf(track, thickness, 0.9), center, radius, radius);
+        double sweep = CompactSpec.RingSweep(share);
+        // 占比死区与 mac 一致（RenderKit.cs L191）：f <= 0.004 不画弧
+        if (sweep <= CompactSpec.RingDeadZone * 2 * Math.PI) return;
+        // 弧：从 12 点（-90°）顺时针；超过半圈要拆两段（一次 ArcTo 画不出 180° 以上）
+        var geo = new StreamGeometry();
+        using (var ctx = geo.Open())
+        {
+            Point At(double a) => new(center.X + radius * Math.Sin(a), center.Y - radius * Math.Cos(a));
+            if (sweep <= Math.PI)
+            {
+                ctx.BeginFigure(At(0), false, false);
+                ctx.ArcTo(At(sweep), new Size(radius, radius), 0, false, SweepDirection.Clockwise, true, false);
+            }
+            else
+            {
+                ctx.BeginFigure(At(0), false, false);
+                ctx.ArcTo(At(Math.PI), new Size(radius, radius), 0, false, SweepDirection.Clockwise, true, false);
+                ctx.ArcTo(At(sweep), new Size(radius, radius), 0, sweep - Math.PI > Math.PI, SweepDirection.Clockwise, true, false);
+            }
+            // WPF 的 StreamGeometryContext 没有 EndFigure（那是 Avalonia 的 API）：
+            // figure 随 using 结束时关闭上下文而结束，开口与否在 BeginFigure 的 isClosed 上
+            // （这里 false = 不补闭合线段，与 mac 侧 EndFigure(false) 等价）。
+        }
+        geo.Freeze();
+        dc.DrawGeometry(null, PenOf(arc, thickness), geo);
+    }
+
     // ---------- 取色（BrimDeck MusicVisuals.Accent 移植：饱和度加权平均 + HSL 亮度钳制） ----------
     /// <summary>从图片提取主彩色（16×16 降采样，灰色像素权重 0.12）。无彩色返回 null。</summary>
     public static Color? DominantColor(BitmapSource? source, bool dark)
