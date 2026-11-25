@@ -75,6 +75,9 @@
     <!-- HID 报告描述符解析器（2026-11-26 macOS 端 L1 标准电量）：纯逻辑、无 Win32 依赖，
          两端共用同一份规则（mac 工程同样链接它） -->
     <Compile Include="..\..\src\Island.App\Services\Peripheral\HidReportDescriptor.cs" Link="Merged\Peripheral\HidReportDescriptor.cs" />
+    <!-- 外设协议表自检层（2026-11-26 task2）：表合法性校验 + 覆盖规则 + 与真机对账，
+         纯逻辑、无 Win32 依赖 ⇒ 可链进零包测试工程 -->
+    <Compile Include="..\..\src\Island.App\Services\Peripheral\PeripheralProtocolTable.cs" Link="Merged\Peripheral\PeripheralProtocolTable.cs" />
     <!-- CPU 温度取值规则（2026-11-26）：纯函数，无硬件库依赖，可链进测试工程 -->
     <Compile Include="..\..\src\Island.App\Services\CpuTemperatureRule.cs" Link="Merged\App\CpuTemperatureRule.cs" />
     <!-- 硬件传感器取值规则（2026-11-26）：分层匹配 + 干扰项排除，纯逻辑，无硬件库依赖，可链进测试工程 -->
@@ -82,6 +85,9 @@
     <!-- 新测试文件：默认 glob 已包含它，这里显式登记（先移除默认项，避免重复编译项报错） -->
     <Compile Remove="HardwareSensorRulesTests.cs" />
     <Compile Include="HardwareSensorRulesTests.cs" />
+    <!-- 协议表自检层的新测试文件：同样先移除默认项再显式登记 -->
+    <Compile Remove="PeripheralProtocolTableTests.cs" />
+    <Compile Include="PeripheralProtocolTableTests.cs" />
     <!-- 能力清单漂移检查（2026-11-26 阶段 4/5）：清单改了、两端没跟着改 ⇒ 门禁红 -->
     <Compile Remove="CapabilityManifestTests.cs" />
     <Compile Include="CapabilityManifestTests.cs" />
