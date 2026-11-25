@@ -2,7 +2,7 @@
 #define AppName "MyIsland"
 ; 版本可由命令行注入：ISCC /DAppVersion=1.0.2 MyIsland.iss
 #ifndef AppVersion
-#define AppVersion "1.0.6"
+#define AppVersion "1.1.2"
 #endif
 ; 发布者 = 证书 Subject 之外的展示名；用户端"发布者"那一行取自签名证书的 Subject
 #define AppPublisher "MyIsland"
@@ -13,7 +13,7 @@
 ;    相对路径在 [Setup]/[Files] 里按**脚本所在目录**解析，效果正是想要的。
 ;    需要指定别的输出位置时用命令行覆盖：ISCC /DSrcDir=... /DOutDir=... MyIsland.iss
 #ifndef SrcDir
-#define SrcDir "..\MyIsland\publish\win-x64"
+#define SrcDir "..\publish\win-x64"
 #endif
 #ifndef OutDir
 #define OutDir dist
@@ -45,7 +45,7 @@ CloseApplications=yes
 CloseApplicationsFilter=*.exe
 RestartApplications=no
 UninstallDisplayIcon={app}\{#AppExe}
-SetupIconFile=..\MyIsland\src\Island.App\app.ico
+SetupIconFile=..\src\Island.App\app.ico
 ; 安装包在编译期签名。
 ; ⚠️ Inno 7 的 SignTool= 必须引用一个"已命名"的签名工具：名字要在 ISCC 命令行
 ;    用 --signtool=<名字>=<完整命令> 定义（名字里不能有空格或等号）。
