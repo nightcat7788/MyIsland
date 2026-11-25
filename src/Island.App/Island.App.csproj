@@ -1,0 +1,87 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!-- 允许在 macOS/Linux 上编译 Windows 目标：否则 NETSDK1100，Windows 版回归无法在 Mac 上验证 -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- 自产代码全部链接进单一 exe：本机 WDAC 策略逐 DLL 检查，
+         合并后只需签一个 exe 即可运行（参考 BrimDeck.Sensors 链接源文件的做法） -->
+    <SatelliteResourceLanguages>zh-Hans;en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <!-- obj\ 下有 publish 生成的 *.g.cs（App.g.cs 等）。默认排除在编译项外；
+       重定向 BaseIntermediateOutputPath 时 SDK 的默认排除会失效，这里显式写死，
+       避免把生成代码当源码二次编译。 -->
+  <PropertyGroup>
+    <DefaultItemExcludes>$(DefaultItemExcludes);obj\**;bin\**</DefaultItemExcludes>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- SDK 的默认源码 glob 在 props 阶段就已展开（晚于上面的 DefaultItemExcludes），
+         故再显式移除一次，保证 obj\ / bin\ 下的生成代码不会被当成源码二次编译。 -->
+    <Compile Remove="obj\**;bin\**" />
+  </ItemGroup>
+
+  <!-- 常驻应用的 GC 调优（参考 BrimDeck 的同名注释）：
+       岛体长期挂在桌面顶层，大部分时间不动，不需要后台并发回收线程；
+       把最年轻代的回收预算压到 4MB——静止时分配的读数、天气、播放器对象很快填满这个额度，
+       而它们都算在工作集里；这一代的回收不到 1 毫秒。 -->
+  <PropertyGroup>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+  </PropertyGroup>
+  <ItemGroup>
+    <RuntimeHostConfigurationOption Include="System.GC.ConserveMemory" Value="5" />
+    <RuntimeHostConfigurationOption Include="System.GC.Gen0MaxBudget" Value="4194304" />
+  </ItemGroup>
+
+  <!-- 发布版（带 RuntimeIdentifier）才开：预编译代码 + 关分层编译。
+       分层编译会在启动几分钟后于后台重编译热方法，表现为首次展开面板时的 CPU 突刺；
+       代价是冷启动略慢一点，对常驻应用是净收益。 -->
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">
+    <TieredCompilation>false</TieredCompilation>
+    <PublishReadyToRun>true</PublishReadyToRun>
+    <PublishReadyToRunComposite>false</PublishReadyToRunComposite>
+  </PropertyGroup>
+
+  <!-- 以源文件链接方式并入 Core 与 Native（不再 ProjectReference 出 DLL） -->
+  <ItemGroup>
+    <Compile Include="..\Island.Core\Monitoring\*.cs" Link="Merged\Core\%(Filename)%(Extension)" />
+    <Compile Include="..\Island.Native\*.cs" Link="Merged\Native\%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Management" Version="10.0.2" />
+    <PackageReference Include="System.Diagnostics.PerformanceCounter" Version="8.0.0" />
+    <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.6" />
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.0" />
+    <!-- 控制台输出编码：powercfg /LIST 走管道输出的是本机代码页字节（本机 ACP=936=GBK），
+         .NET 默认按 UTF-8 解码会让中文电源计划名变乱码；.NET 8 不内置 GBK，
+         必须引用 CodePagesEncodingProvider 才能 Encoding.GetEncoding(936)。 -->
+    <PackageReference Include="System.Text.Encoding.CodePages" Version="8.0.0" />
+  </ItemGroup>
+
+  <!-- inpoutx64.dll 故意不随包发布：它一被加载就会把未签名的 inpoutx64.sys 内核驱动装进系统，
+       配合 ECAM 物理内存映射会导致 0x1EA 蓝屏（2026-11-23 实机三次）。
+       需要 AMD SMN 直读的高级用户请自行放入 dll 并在设置里开启 EnableSmnDirectRead。 -->
+
+  <!-- 产品 logo：托盘图标 + 可执行文件图标 -->
+  <ItemGroup>
+    <Content Include="..\..\branding\island-logo-32.png">
+      <Link>island-logo-32.png</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\branding\island-logo.ico">
+      <Link>island-logo.ico</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <None Include="..\..\branding\island-logo.ico">
+      <Link>app.ico</Link>
+    </None>
+  </ItemGroup>
+</Project>

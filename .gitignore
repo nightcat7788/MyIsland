@@ -1,0 +1,43 @@
+# ===== 构建产物 =====
+# bin/ obj/ 在任何层级下都不入库（Island.sln 下有 4 个工程 + 测试工程）
+[Bb]in/
+[Oo]bj/
+# 发布与打包输出（体积大且可由源码重建；publish/ 单独 200MB）
+[Pp]ublish/
+[Dd]ist/
+tools/display-tools/publish/
+# Native helper binaries are built from the checked-in sources.
+tools/display-tools/ddc-helper
+tools/display-tools/screen-guardian
+tools/display-tools/island-screens
+tools/screen-list/island-screens
+tools/thermal-probe/island-thermal
+# 构建号计数器：每次 make-app.sh 自增，属于本机状态而非源码
+packaging/macos/.build-num
+
+# ===== IDE / 系统 =====
+.vs/
+.idea/
+*.user
+*.suo
+.vscode/
+.DS_Store
+Thumbs.db
+
+# ===== 高危二进制：不入库 =====
+# tools/inpout/ 下的 inpoutx64.dll / inpout32.dll：
+#   加载后会安装未签名内核驱动 inpoutx64.sys —— 2026-11-23 三次 0x1EA 蓝屏的元凶。
+#   11-23 的修复只把它们从「分发产物」里移除；源码目录里的这两个文件仍然存在。
+#   这里不让 git 跟踪它们，避免给高危二进制建立永久快照（否则任何 checkout 都能翻出来）。
+#   是否从磁盘删除由项目所有者决定 —— .gitignore 只影响跟踪，不动文件。
+#   运行时门禁：Services/SmnChannel.cs 保证默认绝不加载（tests/Island.Tests/ThermalChannelTests.cs）。
+tools/inpout/*.dll
+tools/inpout/LibreHardwareMonitor.Resources.inpout*
+
+# ===== 运行期产物 / 诊断 =====
+*.log
+crash.log
+*.tmp
+*.pdb
+# Avalonia transient build task files
+.avalonia-build-tasks/

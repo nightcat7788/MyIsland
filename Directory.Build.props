@@ -1,0 +1,25 @@
+<Project>
+  <!--
+    全解决方案共享属性。MSBuild 会自动把本文件应用到本目录及以下的所有工程
+    （包括 tests/ 下的测试工程），版本号在这里定义一次即可，不必逐个 csproj 改。
+
+    【为什么要加这个文件】
+    此前各 csproj 都没有声明 Version，程序集版本一直是 .NET 默认的 1.0.0，
+    而安装包 / Info.plist 写的是 1.0.1 —— 文件属性、崩溃日志里的版本号
+    和「关于」里显示的对不上，排障时会混淆。现在统一到这里。
+
+    改版本号时需要同步的三处：
+      1. 本文件的 <Version>
+      2. packaging/macos/Info.plist 的 CFBundleShortVersionString
+      3. installer/MyIsland.iss 的 MyAppVersion
+    另外，产物文件名（MyIsland-Setup-x.y.z.exe 等）里也带版本号。
+  -->
+  <PropertyGroup>
+    <!-- 语义化版本：1.1.2 —— 小形象新增弹簧式互动弹跳与待机重心转移 -->
+    <Version>1.1.2</Version>
+    <!-- 程序集版本：只取主次版本（1.1.0.0），补丁号变更时不破坏强命名/绑定引用 -->
+    <AssemblyVersion>1.1.0.0</AssemblyVersion>
+    <FileVersion>1.1.0.0</FileVersion>
+    <InformationalVersion>1.1.2</InformationalVersion>
+  </PropertyGroup>
+</Project>

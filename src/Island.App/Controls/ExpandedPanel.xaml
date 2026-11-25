@@ -1,0 +1,343 @@
+<UserControl x:Class="Island.App.Controls.ExpandedPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:Island.App.Controls">
+    <UserControl.Resources>
+        <SolidColorBrush x:Key="PanelBg" Color="#F20D1117"/>
+        <SolidColorBrush x:Key="CardBg" Color="#282B36"/>
+        <SolidColorBrush x:Key="Fg" Color="White"/>
+        <SolidColorBrush x:Key="FgDim" Color="#A0A6B6"/>
+        <SolidColorBrush x:Key="FgTertiary" Color="#6B7486"/>
+        <SolidColorBrush x:Key="Accent" Color="#5A96FF"/>
+        <SolidColorBrush x:Key="Track" Color="#303640"/>
+        <SolidColorBrush x:Key="Down" Color="#3CBE78"/>
+        <SolidColorBrush x:Key="WarmOrange" Color="#E8906F"/>
+        <SolidColorBrush x:Key="WarmYellow" Color="#E8C88F"/>
+        <SolidColorBrush x:Key="DataBlue" Color="#2E9BFF"/>
+        <SolidColorBrush x:Key="DataCyan" Color="#4FE3D7"/>
+        <SolidColorBrush x:Key="DataPink" Color="#F272A8"/>
+        <BooleanToVisibilityConverter x:Key="BoolVis"/>
+        <controls:InverseBoolToVis x:Key="InvVis"/>
+        <controls:MuteTextConverter x:Key="MuteText"/>
+
+        <!-- BrimDeck 式扁平按钮（页签/关闭/媒体控制共用）：透明底、圆角、悬停淡亮 -->
+        <Style x:Key="FlatBtn" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="8">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="#1FFFFFFF" TargetName="bd"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter Property="Background" Value="#33FFFFFF" TargetName="bd"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </UserControl.Resources>
+
+    <!-- 面板整体：BrimDeck 式近黑深底 + 大圆角 -->
+    <Border Background="Transparent" CornerRadius="26" Padding="2">
+        <Grid Margin="14,10,14,12">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <!-- 顶栏（BrimDeck 式）：左 页面切换分段胶囊 ｜ 中 时间 ｜ 右 关闭 -->
+            <Grid Grid.Row="0" Margin="2,0,2,10">
+                <Border HorizontalAlignment="Left" VerticalAlignment="Center"
+                        Background="{DynamicResource CardBg}" CornerRadius="11" Padding="2">
+                    <StackPanel Orientation="Horizontal">
+                        <Button x:Name="btnMonitor" Tag="0" Click="OnPage" ToolTip="系统监控"
+                                Width="32" Height="24" Style="{StaticResource FlatBtn}">
+                            <TextBlock Text="📈" FontSize="12" Foreground="{DynamicResource FgDim}"/>
+                        </Button>
+                        <Button x:Name="btnShelf" Tag="1" Click="OnPage" ToolTip="剪贴板 · 文件"
+                                Width="32" Height="24" Style="{StaticResource FlatBtn}">
+                            <TextBlock Text="⎘" FontSize="12" Foreground="{DynamicResource FgDim}"/>
+                        </Button>
+                        <Button x:Name="btnDevices" Tag="2" Click="OnPage" ToolTip="设备电量"
+                                Width="32" Height="24" Style="{StaticResource FlatBtn}">
+                            <TextBlock Text="🔋" FontSize="11" Foreground="{DynamicResource FgDim}"/>
+                        </Button>
+                        <Button x:Name="btnControl" Tag="3" Click="OnPage" ToolTip="控制"
+                                Width="32" Height="24" Style="{StaticResource FlatBtn}">
+                            <TextBlock Text="🎛" FontSize="12" Foreground="{DynamicResource FgDim}"/>
+                        </Button>
+                    </StackPanel>
+                </Border>
+                <TextBlock x:Name="clockText" HorizontalAlignment="Center" VerticalAlignment="Center"
+                           FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource FgDim}"/>
+                <Button x:Name="btnClose" HorizontalAlignment="Right" VerticalAlignment="Center"
+                        Click="OnClose" ToolTip="收起" Width="28" Height="24" Style="{StaticResource FlatBtn}">
+                    <TextBlock Text="✕" FontSize="11" Foreground="{DynamicResource FgDim}"/>
+                </Button>
+            </Grid>
+
+            <!-- 页面容器：一次只显示一页 -->
+            <Grid Grid.Row="1">
+
+                <!-- 页0：系统监控（自绘 ftop 式） -->
+                <controls:MonitorPage x:Name="monitorPage"/>
+
+                <!-- 页1：剪贴板 · 文件 -->
+                <Grid x:Name="pageShelf" Visibility="Collapsed" Margin="0,4,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="8"/>
+                        <ColumnDefinition Width="200"/>
+                    </Grid.ColumnDefinitions>
+                    <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <ItemsControl ItemsSource="{Binding Clipboard}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Background="{DynamicResource CardBg}" CornerRadius="10"
+                                                Padding="10,7" Margin="0,0,0,6" ToolTip="{Binding Full}">
+                                            <DockPanel>
+                                                <TextBlock DockPanel.Dock="Right" Text="{Binding Time}" FontSize="9"
+                                                           Foreground="{DynamicResource FgDim}" VerticalAlignment="Center"/>
+                                                <TextBlock Text="{Binding Preview}" FontSize="11"
+                                                           Foreground="{DynamicResource Fg}" TextTrimming="CharacterEllipsis"/>
+                                            </DockPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <TextBlock Text="复制文字/图片后自动记录（仅本地内存）" Foreground="{DynamicResource FgDim}"
+                                       FontSize="10" HorizontalAlignment="Center" Margin="0,6,0,0"/>
+                        </StackPanel>
+                    </ScrollViewer>
+                    <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <TextBlock Text="文件中转（拖入岛体暂存）" FontSize="10"
+                                       Foreground="{DynamicResource FgDim}" Margin="2,0,0,6"/>
+                            <ItemsControl ItemsSource="{Binding Files}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Background="{DynamicResource CardBg}" CornerRadius="10"
+                                                Padding="10,7" Margin="0,0,0,6" ToolTip="{Binding Full}">
+                                            <StackPanel>
+                                                <TextBlock Text="{Binding Name}" FontSize="11"
+                                                           Foreground="{DynamicResource Fg}" TextTrimming="CharacterEllipsis"/>
+                                                <TextBlock Text="{Binding Size}" FontSize="9"
+                                                           Foreground="{DynamicResource FgDim}"/>
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
+
+                <!-- 页2：设备电量 -->
+                <ScrollViewer x:Name="pageDevices" Visibility="Collapsed"
+                              VerticalScrollBarVisibility="Auto" Margin="0,4,0,0">
+                    <!-- 设备电量页（BrimDeck 同款：大电量环 + 图标 + 大号百分比 + 名称 + 状态），整页自绘 -->
+                    <controls:DevicesPage x:Name="devicesPage" Height="330"/>
+                </ScrollViewer>
+
+                <!-- 页3：控制 -->
+                <ScrollViewer x:Name="pageControl" Visibility="Collapsed"
+                              VerticalScrollBarVisibility="Auto" Margin="0,4,0,0">
+                    <StackPanel>
+                        <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Left" Text="亮度" FontSize="12"
+                                           Foreground="{DynamicResource Fg}" VerticalAlignment="Center" Width="60"/>
+                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                    <Button Content="－" Width="30" Height="26" Style="{StaticResource FlatBtn}"
+                                            Foreground="{DynamicResource Fg}" Command="{Binding BrightnessDown}"/>
+                                    <TextBlock Text="{Binding Brightness}" FontSize="13" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource Fg}" Width="52" TextAlignment="Center"
+                                               VerticalAlignment="Center"/>
+                                    <Button Content="＋" Width="30" Height="26" Style="{StaticResource FlatBtn}"
+                                            Foreground="{DynamicResource Fg}" Command="{Binding BrightnessUp}"/>
+                                </StackPanel>
+                                <ProgressBar Height="6" Maximum="1" Value="{Binding BrightnessValue, Mode=OneWay}"
+                                             Foreground="{DynamicResource Accent}" Background="{DynamicResource Track}"
+                                             VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            </DockPanel>
+                        </Border>
+                        <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
+                            <DockPanel>
+                                <StackPanel DockPanel.Dock="Left">
+                                    <TextBlock Text="WLAN" FontSize="12" Foreground="{DynamicResource Fg}"/>
+                                    <TextBlock Text="{Binding WlanState}" FontSize="10" Foreground="{DynamicResource FgDim}"/>
+                                    <!-- 连接状态与适配器开关是两回事（"开着没连热点" vs "已关闭"），分开显示 -->
+                                    <TextBlock Text="{Binding WlanAdapterState}" FontSize="10" Foreground="{DynamicResource FgDim}"/>
+                                </StackPanel>
+                                <Button DockPanel.Dock="Right" Content="切换" Width="52" Height="26"
+                                        Style="{StaticResource FlatBtn}" Foreground="{DynamicResource Fg}" FontSize="11"
+                                        Command="{Binding ToggleWlan}" HorizontalAlignment="Right"/>
+                                <TextBlock Text="（切换需管理员确认）" FontSize="9" Foreground="{DynamicResource FgDim}"
+                                           HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            </DockPanel>
+                        </Border>
+                        <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
+                            <DockPanel>
+                                <StackPanel DockPanel.Dock="Left">
+                                    <TextBlock Text="蓝牙" FontSize="12" Foreground="{DynamicResource Fg}"/>
+                                    <TextBlock Text="{Binding BtState}" FontSize="10" Foreground="{DynamicResource FgDim}"/>
+                                </StackPanel>
+                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
+                                    <Button Content="切换" Width="52" Height="26" Style="{StaticResource FlatBtn}"
+                                            Foreground="{DynamicResource Fg}" FontSize="11"
+                                            Command="{Binding ToggleBt}" Margin="0,0,6,0"/>
+                                    <Button Content="设置" Width="52" Height="26" Style="{StaticResource FlatBtn}"
+                                            Foreground="{DynamicResource Fg}" FontSize="11"
+                                            Command="{Binding OpenBtSettings}"/>
+                                </StackPanel>
+                                <TextBlock Text="bthserv 服务开关" FontSize="9" Foreground="{DynamicResource FgDim}"
+                                           HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- 音量（滑杆 + 静音 + 麦克风） -->
+                        <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Left" Text="音量" FontSize="12"
+                                           Foreground="{DynamicResource Fg}" VerticalAlignment="Center" Width="60"/>
+                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                    <Button x:Name="btnMic" Width="60" Height="26" Style="{StaticResource FlatBtn}"
+                                            Foreground="{DynamicResource Fg}" FontSize="11" Content="麦克风"
+                                            ToolTip="切换麦克风静音" Click="OnMicToggle" Margin="0,0,6,0"/>
+                                    <Button Width="66" Height="26" Style="{StaticResource FlatBtn}"
+                                            Foreground="{DynamicResource Fg}" FontSize="11"
+                                            Content="{Binding IsMuted, Converter={StaticResource MuteText}}"
+                                            Click="OnMuteToggle"/>
+                                </StackPanel>
+                                <Slider Minimum="0" Maximum="1" TickFrequency="0.05"
+                                        Value="{Binding VolumeValue, Mode=OneWay}"
+                                        ValueChanged="OnVolumeSlider"
+                                        VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- 电源计划（YASB PowerPlan 同款：powercfg 枚举/切换） -->
+                        <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
+                            <DockPanel>
+                                <StackPanel DockPanel.Dock="Left">
+                                    <TextBlock Text="电源计划" FontSize="12" Foreground="{DynamicResource Fg}"/>
+                                    <TextBlock Text="平衡 / 高性能 / 节能（即时切换）" FontSize="10"
+                                               Foreground="{DynamicResource FgDim}"/>
+                                </StackPanel>
+                                <WrapPanel DockPanel.Dock="Right" x:Name="powerPlanHost"
+                                           HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- 系统浅色模式（深色开关） -->
+                        <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
+                            <DockPanel>
+                                <StackPanel DockPanel.Dock="Left">
+                                    <TextBlock Text="系统浅色模式" FontSize="12" Foreground="{DynamicResource Fg}"/>
+                                    <TextBlock Text="切换 Windows 应用深/浅色（即时生效）" FontSize="10"
+                                               Foreground="{DynamicResource FgDim}"/>
+                                </StackPanel>
+                                <CheckBox DockPanel.Dock="Right" IsChecked="{Binding IsLightTheme}"
+                                          Checked="OnLightThemeToggle" Unchecked="OnLightThemeToggle"
+                                          VerticalAlignment="Center" HorizontalAlignment="Right"/>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- 夜灯（夜间模式；不支持时不显示） -->
+                        <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8"
+                                Visibility="{Binding HasNightLight, Converter={StaticResource BoolVis}}">
+                            <DockPanel>
+                                <StackPanel DockPanel.Dock="Left">
+                                    <TextBlock Text="夜灯（夜间模式）" FontSize="12" Foreground="{DynamicResource Fg}"/>
+                                    <TextBlock Text="暖色温护眼，数秒内生效" FontSize="10"
+                                               Foreground="{DynamicResource FgDim}"/>
+                                </StackPanel>
+                                <CheckBox DockPanel.Dock="Right" IsChecked="{Binding NightLightOn}"
+                                          Checked="OnNightLightToggle" Unchecked="OnNightLightToggle"
+                                          VerticalAlignment="Center" HorizontalAlignment="Right"/>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- 鼠标穿透（只显示不拦截，游戏适用） -->
+                        <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
+                            <DockPanel>
+                                <StackPanel DockPanel.Dock="Left">
+                                    <TextBlock Text="鼠标穿透" FontSize="12" Foreground="{DynamicResource Fg}"/>
+                                    <TextBlock Text="岛体只显示不拦截点击；悬停不展开，适合游戏" FontSize="10"
+                                               Foreground="{DynamicResource FgDim}"/>
+                                </StackPanel>
+                                <CheckBox DockPanel.Dock="Right" IsChecked="{Binding ClickThrough}"
+                                          Checked="OnClickThroughToggle" Unchecked="OnClickThroughToggle"
+                                          VerticalAlignment="Center" HorizontalAlignment="Right"/>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- 内存清理（LiteMonitor 同款） -->
+                        <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
+                            <DockPanel>
+                                <StackPanel DockPanel.Dock="Left">
+                                    <TextBlock Text="内存清理" FontSize="12" Foreground="{DynamicResource Fg}"/>
+                                    <TextBlock x:Name="memCleanResult" Text="清空各进程工作集，释放可用内存" FontSize="10"
+                                               Foreground="{DynamicResource FgDim}"/>
+                                </StackPanel>
+                                <Button DockPanel.Dock="Right" Content="立即清理" Width="66" Height="26"
+                                        Style="{StaticResource FlatBtn}" Foreground="{DynamicResource Fg}" FontSize="11"
+                                        Click="OnCleanMemory" HorizontalAlignment="Right"/>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- 锁屏 / 睡眠 -->
+                        <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Left" Text="电源" FontSize="12"
+                                           Foreground="{DynamicResource Fg}" VerticalAlignment="Center" Width="60"/>
+                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                    <Button Content="锁屏" Width="56" Height="26" Style="{StaticResource FlatBtn}"
+                                            Foreground="{DynamicResource Fg}" FontSize="11"
+                                            Command="{Binding LockCommand}" Margin="0,0,6,0"/>
+                                    <Button Content="睡眠" Width="56" Height="26" Style="{StaticResource FlatBtn}"
+                                            Foreground="{DynamicResource Fg}" FontSize="11"
+                                            Command="{Binding SleepCommand}"/>
+                                </StackPanel>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- 系统设置快捷链接 -->
+                        <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Left" Text="系统设置" FontSize="12"
+                                           Foreground="{DynamicResource Fg}" VerticalAlignment="Center" Width="60"/>
+                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                    <Button Content="网络" Width="50" Height="26" Style="{StaticResource FlatBtn}"
+                                            Foreground="{DynamicResource Fg}" FontSize="11"
+                                            Command="{Binding OpenSettingsCommand}" CommandParameter="network" Margin="0,0,4,0"/>
+                                    <Button Content="声音" Width="50" Height="26" Style="{StaticResource FlatBtn}"
+                                            Foreground="{DynamicResource Fg}" FontSize="11"
+                                            Command="{Binding OpenSettingsCommand}" CommandParameter="sound" Margin="0,0,4,0"/>
+                                    <Button Content="显示" Width="50" Height="26" Style="{StaticResource FlatBtn}"
+                                            Foreground="{DynamicResource Fg}" FontSize="11"
+                                            Command="{Binding OpenSettingsCommand}" CommandParameter="display" Margin="0,0,4,0"/>
+                                    <Button Content="电源" Width="50" Height="26" Style="{StaticResource FlatBtn}"
+                                            Foreground="{DynamicResource Fg}" FontSize="11"
+                                            Command="{Binding OpenSettingsCommand}" CommandParameter="power"/>
+                                </StackPanel>
+                            </DockPanel>
+                        </Border>
+
+                        <TextBlock Text="滚轮悬停岛体也可调节音量（收起态浮条）" FontSize="10"
+                                   Foreground="{DynamicResource FgDim}" HorizontalAlignment="Center" Margin="0,4,0,0"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </Grid>
+        </Grid>
+    </Border>
+</UserControl>

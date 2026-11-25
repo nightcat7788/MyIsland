@@ -1,0 +1,91 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- CA1416（平台兼容性分析器）：本工程刻意保持单 TFM net8.0 跨平台，
+         而 SystemMonitor / GpuUsageReader 引用的 PDH、WMI 等 Windows 专用 API
+         位于「仅在 Windows 上实例化」的采样切片中（运行时由 OperatingSystem.IsWindows() 分流），
+         分析器看不到这条运行时分支 ⇒ 在此统一抑制。
+         抑制只作用于本工程；Windows 主工程 Island.App 仍保留该告警。 -->
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+    <!-- Mac 版：dotnet publish -c Release -r osx-arm64（self-contained） -->
+  </PropertyGroup>
+
+  <!-- 与 Island.App.csproj 同样的守卫：重定向 BaseIntermediateOutputPath 时，
+       SDK 的默认排除会失效，仓库里遗留的 obj\**\*.AssemblyInfo.cs 会被当成源码二次编译（CS0579 重复定义） -->
+  <PropertyGroup>
+    <DefaultItemExcludes>$(DefaultItemExcludes);obj/**;bin/**</DefaultItemExcludes>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="obj/**;bin/**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.2.2" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.2.2" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.2.2" />
+    <PackageReference Include="System.Diagnostics.PerformanceCounter" Version="8.0.0" />
+    <PackageReference Include="System.Management" Version="10.0.2" />
+    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.6" />
+  </ItemGroup>
+
+  <!-- 与 Windows 版共享：数据模型 / 配额（纯 .NET 跨平台）/ 弹簧 / Windows 采样器 -->
+  <ItemGroup>
+    <Compile Include="..\Island.Core\Monitoring\MonitorModels.cs" Link="Merged\MonitorModels.cs" />
+    <Compile Include="..\Island.Core\Monitoring\Reading.cs" Link="Merged\Reading.cs" />
+    <Compile Include="..\Island.Core\Monitoring\SamplerDemand.cs" Link="Merged\SamplerDemand.cs" />
+    <Compile Include="..\Island.Native\SystemMonitor.cs" Link="Merged\SystemMonitor.cs" />
+    <!-- 采样层通配符 PDH 查询器（SystemMonitor/GpuUsageReader 依赖它，必须一起链进来，
+         否则跨平台工程编译不过：CS0246 找不到 PdhWildcardQuery） -->
+    <Compile Include="..\Island.Native\PdhWildcardQuery.cs" Link="Merged\PdhWildcardQuery.cs" />
+    <Compile Include="..\Island.Native\NativeMethods.cs" Link="Merged\NativeMethods.cs" />
+    <Compile Include="..\Island.Native\GpuUsageReader.cs" Link="Merged\GpuUsageReader.cs" />
+    <Compile Include="..\Island.App\Animation\Spring.cs" Link="Merged\Spring.cs" />
+    <!-- 温度服务是纯 .NET + LHM（无 WPF 依赖）：Windows 上提供 CPU/GPU/SSD 温度；Mac 上自动无数据 -->
+    <Compile Include="..\Island.App\Services\ThermalService.cs" Link="Merged\ThermalService.cs" />
+    <Compile Include="..\Island.App\Services\InpOutSmnService.cs" Link="Merged\InpOutSmnService.cs" />
+    <!-- SMN 高风险通道的所有者（ThermalService 依赖它，必须一起链进来） -->
+    <Compile Include="..\Island.App\Services\SmnChannel.cs" Link="Merged\SmnChannel.cs" />
+    <!-- 天气/设置是纯 .NET（Open-Meteo + JSON），跨平台直接复用 -->
+    <Compile Include="..\Island.App\Services\WeatherService.cs" Link="Merged\WeatherService.cs" />
+    <Compile Include="..\Island.App\Services\Settings.cs" Link="Merged\Settings.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Link 固定资源名：不写 Link 时资源名会带上 ../../branding/ 前缀，
+         AssetLoader 按 island-logo-32.png 找不到 → 托盘初始化异常被吞，菜单栏图标从不显示（2026-11-24 修） -->
+    <AvaloniaResource Include="..\..\branding\menubar\menubar-44.png" Link="menubar-44.png" />
+    <AvaloniaResource Include="..\..\branding\island-logo-32.png" Link="island-logo-32.png" />
+  </ItemGroup>
+
+  <!-- macOS 温度探针（预编译 arm64 二进制，随 publish 一起输出并赋可执行位）。
+       源码见 tools/thermal-probe/thermal.m；无 root 走 IOHID 温度传感器。
+       仅在 macOS RID 发布时复制；Windows 构建自动跳过。 -->
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == 'osx-arm64' Or '$(RuntimeIdentifier)' == 'osx-x64'">
+    <None Include="..\..\tools\thermal-probe\island-thermal" Link="island-thermal" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <Target Name="ChmodThermalProbe" AfterTargets="Publish" Condition="'$(RuntimeIdentifier)' == 'osx-arm64' Or '$(RuntimeIdentifier)' == 'osx-x64'">
+    <Exec Command="chmod +x &quot;$(PublishDir)island-thermal&quot;" Condition="Exists('$(PublishDir)island-thermal')" />
+  </Target>
+
+  <!-- 显示器控制工具（内置月光功能，不再依赖 /Applications/LunarCN.app）：
+       ddc-helper（DDC 读写）/ screen-guardian（内建屏守护）/ island-screens（枚举）/ app-icon（应用图标）。
+       源码在 tools/display-tools/（LunarCN + m1ddc，MIT），发布时从源码编译进 publish 目录。
+       仅 osx-arm64；其它平台/未装 Xcode CLT 时跳过（屏幕页显示"未检测到通道"）。 -->
+  <Target Name="BuildDisplayTools" AfterTargets="Publish" Condition="'$(RuntimeIdentifier)' == 'osx-arm64'">
+    <Exec Command="bash &quot;$(MSBuildProjectDirectory)/../../tools/display-tools/build.sh&quot; &quot;$(PublishDir)&quot;"
+          IgnoreExitCode="true" ContinueOnError="warnAndContinue" />
+  </Target>
+
+  <!-- Mac 功能开关：月光 LunarCN 显示器控制。
+       运行期优先 /Applications/LunarCN.app（本机已装且签名可用），随包副本仅为 fallback。
+       若需随包附带，发布时传 -p:LunarAppSource=<LunarCN.app 绝对路径> 即可。 -->
+  <Target Name="CopyLunarApp" AfterTargets="Publish" Condition="'$(RuntimeIdentifier)' == 'osx-arm64' And '$(LunarAppSource)' != ''">
+    <Exec Command="ditto &quot;$(LunarAppSource)&quot; &quot;$(PublishDir)LunarCN.app&quot;"
+          Condition="Exists('$(LunarAppSource)')" />
+  </Target>
+</Project>
