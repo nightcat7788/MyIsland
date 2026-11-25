@@ -85,6 +85,9 @@ public sealed class IslandCanvas : FrameworkElement
     public HashSet<string>? ComboItems { get; set; }
     private bool WantCombo(string key) => ComboItems is null || ComboItems.Contains(key);
 
+    /// <summary>信息胶囊样式：true = 数字主角（时钟降为次级文字）。与设置中心的「数字主角」开关同源（mac 同名开关）。</summary>
+    public bool ComboNumericHero { get; set; }
+
     private readonly PetFace _pet = new();
     public PetFace Pet => _pet;
 
@@ -445,22 +448,26 @@ public sealed class IslandCanvas : FrameworkElement
     private static double Num(DrawingContext dc, string s, double x, double baseline, double size, Color color, bool strong, double ppd)
         => RenderKit.Num(dc, s, x, baseline, size, color, strong, ppd);
 
-    /// <summary>紧凑网速单行（↓3.40M ↑420K）占用的宽度：箭头 + 3 + 读数 + 10 + 箭头 + 3 + 读数。</summary>
-    private static double NetWidth(double size, MonitorSnapshot snap, double ppd)
-        => Text("↓", size, Colors.Black, true, ppd).Width + 3
-         + RenderKit.NumWidth(MonitorSnapshot.CompactSpeed(snap.DownloadSpeed), size, true, ppd) + 10
-         + Text("↑", size, Colors.Black, true, ppd).Width + 3
-         + RenderKit.NumWidth(MonitorSnapshot.CompactSpeed(snap.UploadSpeed), size, true, ppd);
+    /// <summary>
+    /// 紧凑网速单行（↓3.40M ↑420K）占用的宽度：箭头 + 箭头数值间距 + 读数 + 网速间距 + 箭头 + 箭头数值间距 + 读数。
+    /// 读数用定宽格式（<see cref="MonitorSnapshot.FormatSpeedFixed"/>，恒 6 字符）——胶囊里读数跳动不能带得整排抖。
+    /// 网速间距由调用方给（combo = CompactSpec.NetGap=7，dash = CompactSpec.DashNetGap=10），不写死。
+    /// </summary>
+    private static double NetWidth(double size, MonitorSnapshot snap, double ppd, double netGap)
+        => Text("↓", size, Colors.Black, true, ppd).Width + CompactSpec.ArrowValueGap
+         + RenderKit.NumWidth(MonitorSnapshot.FormatSpeedFixed(snap.DownloadSpeed), size, true, ppd) + netGap
+         + Text("↑", size, Colors.Black, true, ppd).Width + CompactSpec.ArrowValueGap
+         + RenderKit.NumWidth(MonitorSnapshot.FormatSpeedFixed(snap.UploadSpeed), size, true, ppd);
 
     /// <summary>紧凑网速单行：箭头是次要文字色，读数是等宽数字。返回右端 x。</summary>
-    private static double DrawNet(DrawingContext dc, Palette pal, double x, double bl, double size, MonitorSnapshot snap, double ppd)
+    private static double DrawNet(DrawingContext dc, Palette pal, double x, double bl, double size, MonitorSnapshot snap, double ppd, double netGap)
     {
         var di = Text("↓", size, pal.TextDim, true, ppd);
-        Baseline(dc, di, x, bl); x += di.Width + 3;
-        x = Num(dc, MonitorSnapshot.CompactSpeed(snap.DownloadSpeed), x, bl, size, pal.Text, true, ppd) + 10;
+        Baseline(dc, di, x, bl); x += di.Width + CompactSpec.ArrowValueGap;
+        x = Num(dc, MonitorSnapshot.FormatSpeedFixed(snap.DownloadSpeed), x, bl, size, pal.Text, true, ppd) + netGap;
         var ui = Text("↑", size, pal.TextDim, true, ppd);
-        Baseline(dc, ui, x, bl); x += ui.Width + 3;
-        return Num(dc, MonitorSnapshot.CompactSpeed(snap.UploadSpeed), x, bl, size, pal.Text, true, ppd);
+        Baseline(dc, ui, x, bl); x += ui.Width + CompactSpec.ArrowValueGap;
+        return Num(dc, MonitorSnapshot.FormatSpeedFixed(snap.UploadSpeed), x, bl, size, pal.Text, true, ppd);
     }
 
     /// <summary>温度的显示色：正常是文字色（不着色），71–85° 警示，&gt;85° 危险；读不到是第三级文字色。</summary>
@@ -563,12 +570,13 @@ public sealed class IslandCanvas : FrameworkElement
             groups[i].Draw(groupStart);
             double groupEnd = groupStart + groups[i].Width;
             bool hasNext = i < plan.Shown - 1;
-            // 每个可见组之后都照常推进一段组间距：最后一个可见组后面是「+N」，
-            // 也得留出这一段（旧行为；塌成紧贴会让「+N」贴住最后一根柱子）。
+            // 最后一个可见组后面没有下一组：不推进（推进值到这里就是死变量）；
+            // 「+N」的位置由 plan.MoreOffset 给 —— 排版口径唯一在 CompactSpec.PlanCompactGroups。
+            if (!hasNext) continue;
+            // 组间距：组自带 TrailingGap 优先，否则用渲染层默认组间距（CompactSpec.GroupAdvance）。
             x = groupEnd + CompactSpec.GroupAdvance(groups[i].TrailingGap, gap);
-            // 组间分隔线：mac 的 Gap() 在总带里画线（组尾 + 18px = 组尾 + 1.5 × 单侧组间距）；
-            // 最后一个可见组后面不画（其后是 +N 或空白）
-            if (drawDividers && groups[i].DividerAfter && hasNext)
+            // 组间分隔线：mac 的 Gap() 在总带里画线（组尾 + 18px = 组尾 + 1.5 × 单侧组间距）
+            if (drawDividers && groups[i].DividerAfter)
             {
                 double lineX = CompactSpec.DividerXAfter(groupEnd);
                 dc.DrawLine(RenderKit.PenOf(pal.Hairline, 1, 0.8),
@@ -685,15 +693,20 @@ public sealed class IslandCanvas : FrameworkElement
         Gauge(snap.DiskUsagePercent, neutral, "D");
         groups.Add(new CompactGroup
         {
-            Width = NetWidth(11, snap, ppd),
-            Draw = x => DrawNet(dc, pal, x, Math.Round(cy + 11 * 0.38), 11, snap, ppd),
+            Width = NetWidth(11, snap, ppd, CompactSpec.DashNetGap),
+            Draw = x => DrawNet(dc, pal, x, Math.Round(cy + 11 * 0.38), 11, snap, ppd, CompactSpec.DashNetGap),
         });
         return DrawCompactGroups(dc, pal, r, cy, groups);
     }
 
     /// <summary>
-    /// combo 信息胶囊（参考 BrimDeck 刘海轮播态）：时间 + 系统读数表盘 + 温度/硬盘读数 + 网速。
-    /// 小形象视图 10 秒后自动变形为此视图，30 秒后变回（IslandWindow 的 pet 轮换）。
+    /// 信息胶囊（combo）：时间 │ 占用环组(C/M/G) │ 温度磁盘环组(C/G/D) │ 网速。
+    /// 对应 mac 版 LayoutCombo + DrawCombo（src/Island.Avalonia/IslandCanvas.cs L612-L707）。
+    /// 分隔线只有**两处**（占用组│温度磁盘组、温度磁盘组│网速，mac 的 Gap() 只调用两次：:694/:696）；
+    /// 时间│占用组之间没有线，只有 ClockGap=12 的留白（mac :677 的 x += L.ClockW + L.ClockGap）。
+    /// 规格：环 20px 闭环（RenderKit.Ring），环心字母，数值 13px 等宽放环外，槽宽 21px，
+    /// 有分隔线的边界总带 24px（SeparatorBand），线在「组尾 + 18px」。
+    /// 配色沿用 Windows 的「暗色科技」口径（见 Global Constraints），不是 mac 的每资源一色。
     /// </summary>
     private double DrawCombo(DrawingContext dc, Palette pal, Rect r, double cy,
         MonitorSnapshot? snap, Services.ThermalSnapshot? thermal)
@@ -701,56 +714,127 @@ public sealed class IslandCanvas : FrameworkElement
         if (r.Width < 40 || r.Height < 20) return 0;
         double ppd = Ppd;
         DrawCapsuleBase(dc, pal);
-        var groups = new List<CompactGroup>();
         Color neutral = Neutral(pal);
-        void Gauge(double? value, string letter, string sample = "100%", string? text = null, Color? color = null, double? fill = null)
-            => groups.Add(new CompactGroup
-            {
-                Width = 25 + Math.Ceiling(RenderKit.NumWidth(sample, 12.5, true, ppd)),
-                Draw = x => DrawDialGauge(dc, pal, x, cy, ppd, value, letter == "C" && text is null ? pal.Accent : neutral,
-                    letter, 20, 12.5, fill, text, color, sample),
-            });
+        var groups = new List<CompactGroup>();
 
-        // ① 时间（按样本 "00:00" 预留宽度，分针跳变不推挤右侧读数；数字等宽）
-        if (WantCombo("clock"))
+        // 一个环项：环心字母 + 环外等宽数值。
+        // 环弧长 = share（占用率/100 或 温度/125），环色 = ArcColor，数值色 = TextColor。
+        // 数值宽度用 RenderKit.NumWidth 量（等宽排版有缓存，不额外分配）。
+        void AddGaugeGroup(List<(string Letter, double Share, string Text, Color ArcColor, Color TextColor)> items,
+                          bool dividerAfter)
         {
+            if (items.Count == 0) return;
+            double groupW = CompactSpec.GaugeGroupWidth(items.Count,
+                i => RenderKit.NumWidth(items[i].Text, CompactSpec.FigureFont, true, ppd));
             groups.Add(new CompactGroup
             {
-                Width = Math.Ceiling(RenderKit.NumWidth("00:00", 16, true, ppd)),
-                Draw = x => Num(dc, DateTime.Now.ToString("HH:mm"), x, Math.Round(cy + 15 * 0.36), 16, pal.Text, true, ppd),
+                Width = groupW,
+                Draw = x =>
+                {
+                    double gx = x;
+                    for (int i = 0; i < items.Count; i++)
+                    {
+                        var it = items[i];
+                        RenderKit.Ring(dc, new Point(gx + CompactSpec.Dial / 2, cy), CompactSpec.Dial,
+                            Math.Max(1.8, CompactSpec.Dial * 0.14), it.Share, pal.Track, it.ArcColor);
+                        // 环心字母（mac DrawGaugeCenter 的 DecorLetters 分支）
+                        var letter = Text(it.Letter, CompactSpec.Dial * 0.52, it.ArcColor, true, ppd);
+                        dc.DrawText(letter, new Point(gx + (CompactSpec.Dial - letter.Width) / 2, cy - letter.Height / 2));
+                        gx += CompactSpec.Dial + CompactSpec.DialGap;
+                        Num(dc, it.Text, gx, Math.Round(cy + CompactSpec.FigureFont * 0.36),
+                            CompactSpec.FigureFont, it.TextColor, true, ppd);
+                        gx += Math.Max(RenderKit.NumWidth(it.Text, CompactSpec.FigureFont, true, ppd),
+                            CompactSpec.ValueMinW) + CompactSpec.GaugeGap;
+                    }
+                },
+                DividerAfter = dividerAfter,
             });
         }
 
-        // ② 系统读数表盘（开口环 + 字母）：CPU 强调色，其余中性色
-        if (WantCombo("dials") && snap is not null)
+        // ---- 组 1：时间 ----
+        // mac 的 ComboStyle.ClockStrong = !_comboNumericHero：数字主角时时钟降为次级文字。
+        if (WantCombo("clock"))
         {
-            Gauge(snap.CpuUsage, "C");
-            Gauge(snap.MemoryUsagePercent, "M");
-            if (snap.GpuUsage > 0) Gauge(snap.GpuUsage, "G");
+            var clock = Text(DateTime.Now.ToString("HH:mm"), CompactSpec.FigureFont,
+                ComboNumericHero ? pal.TextDim : pal.Text, true, ppd);
+            groups.Add(new CompactGroup
+            {
+                Width = clock.WidthIncludingTrailingWhitespace,
+                Draw = x => Baseline(dc, clock, x, Math.Round(cy + CompactSpec.FigureFont * 0.36)),
+                // 时间后面**没有分隔线**（mac 只在占用组│系统组、系统组│网速两处画线），只有 12px 留白
+                DividerAfter = false,
+                TrailingGap = CompactSpec.ClockGap,
+            });
         }
 
-        // ③ 温度与硬盘：和上面的 C/M/G 表盘同一套环（环内字母=设备，数字带单位）
-        //    温度环的弧与数字按分级配色（正常 / 警示 / 危险），读不到就是空环 + "—"
+        // ---- 组 2：占用环组（C/M/G）----
+        var dials = new List<(string Letter, double Share, string Text, Color ArcColor, Color TextColor)>();
+        if (WantCombo("dials") && snap is not null)
+        {
+            if (snap.CpuUsage > 0)
+            {
+                var c = LevelColor(snap.CpuUsage, pal.Accent, pal);
+                dials.Add(("C", snap.CpuUsage / 100.0, $"{Math.Round(snap.CpuUsage)}%", c,
+                    LevelColor(snap.CpuUsage, pal.Text, pal)));
+            }
+            if (snap.MemoryUsagePercent > 0)
+            {
+                var m = LevelColor(snap.MemoryUsagePercent, neutral, pal);
+                dials.Add(("M", snap.MemoryUsagePercent / 100.0, $"{Math.Round(snap.MemoryUsagePercent)}%", m,
+                    LevelColor(snap.MemoryUsagePercent, pal.Text, pal)));
+            }
+            if (snap.GpuUsage > 0)
+            {
+                var g = LevelColor(snap.GpuUsage, neutral, pal);
+                dials.Add(("G", snap.GpuUsage / 100.0, $"{Math.Round(snap.GpuUsage)}%", g,
+                    LevelColor(snap.GpuUsage, pal.Text, pal)));
+            }
+        }
+        // 占用组之后有分隔线（mac :694）
+        AddGaugeGroup(dials, dividerAfter: true);
+
+        // ---- 组 3：温度 / 磁盘环组（C/G/D）----
+        var sys = new List<(string Letter, double Share, string Text, Color ArcColor, Color TextColor)>();
         if (snap is not null)
         {
             double? ct = thermal?.CpuTemp, gt = thermal?.GpuTemp;
             if (WantCombo("cputemp"))
-                Gauge(ct, "C", "125°", ct is { } t2 ? $"{Math.Round(t2)}°" : "—", TempColor(ct, pal),
-                    ct is { } t1 ? Math.Clamp(t1 / 125.0, 0, 1) : null);
+            {
+                var c = TempColor(ct, pal);
+                sys.Add(("C", ct is { } t ? Math.Clamp(t / 125.0, 0, 1) : 0,
+                    ct is { } tv ? $"{Math.Round(tv)}°" : "--", c, c));
+            }
             if (WantCombo("gputemp"))
-                Gauge(gt, "G", "125°", gt is { } t4 ? $"{Math.Round(t4)}°" : "—", TempColor(gt, pal),
-                    gt is { } t3 ? Math.Clamp(t3 / 125.0, 0, 1) : null);
-            if (WantCombo("disk")) Gauge(snap.DiskUsagePercent, "D");
+            {
+                var g = TempColor(gt, pal);
+                sys.Add(("G", gt is { } t2 ? Math.Clamp(t2 / 125.0, 0, 1) : 0,
+                    gt is { } tv2 ? $"{Math.Round(tv2)}°" : "--", g, g));
+            }
+            if (WantCombo("disk"))
+            {
+                var d = LevelColor(snap.DiskUsagePercent, neutral, pal);
+                sys.Add(("D", snap.DiskUsagePercent / 100.0,
+                    $"{Math.Round(snap.DiskUsagePercent)}%", d,
+                    LevelColor(snap.DiskUsagePercent, pal.Text, pal)));
+            }
         }
+        // 系统组之后有分隔线（mac :696）
+        AddGaugeGroup(sys, dividerAfter: true);
 
-        // ④ 右缘：紧凑网速单行（先量宽度，才能贴右缘放置）
+        // ---- 组 4：网速（↓值 ↑值，中性色）----
         if (WantCombo("net") && snap is not null)
+        {
             groups.Add(new CompactGroup
             {
-                Width = NetWidth(11, snap, ppd),
-                Draw = x => DrawNet(dc, pal, x, Math.Round(cy + 11 * 0.38), 11, snap, ppd),
+                Width = NetWidth(CompactSpec.FigureFont, snap, ppd, CompactSpec.NetGap),
+                Draw = x => DrawNet(dc, pal, x, Math.Round(cy + CompactSpec.FigureFont * 0.36),
+                    CompactSpec.FigureFont, snap, ppd, CompactSpec.NetGap),
             });
-        return DrawCompactGroups(dc, pal, r, cy, groups);
+        }
+
+        // 组间距：mac 的 combo 有分隔线的边界总带 24px（SeparatorBand），左右内边距 10px（ComboPadX）
+        return DrawCompactGroups(dc, pal, r, cy, groups,
+            gap: CompactSpec.SeparatorBand, padding: CompactSpec.PadX, drawDividers: true);
     }
 
     /// <summary>读数表盘 + 右侧数字：返回占用宽度（数字按最宽样本预留，数字等宽）。
@@ -1041,8 +1125,8 @@ public sealed class IslandCanvas : FrameworkElement
         if (snap is not null)
             groups.Add(new CompactGroup
             {
-                Width = NetWidth(10, snap, ppd),
-                Draw = x => DrawNet(dc, pal, x, Math.Round(cy + 10 * 0.38), 10, snap, ppd),
+                Width = NetWidth(10, snap, ppd, CompactSpec.DashNetGap),
+                Draw = x => DrawNet(dc, pal, x, Math.Round(cy + 10 * 0.38), 10, snap, ppd, CompactSpec.DashNetGap),
             });
         return DrawCompactGroups(dc, pal, r, cy, groups, 12, 16);
     }

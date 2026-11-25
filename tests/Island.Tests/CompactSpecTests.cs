@@ -120,5 +120,14 @@ internal static class CompactSpecTests
             hetero.Shown == 1 && hetero.MoreOffset == 42);
         check("截断：组间距用上一组自己的间距（组 0 自带 12 ⇒ 组 1 起点 42、终点 72）",
             Plan(new[] { 30.0, 30 }, new double?[] { 12, null }, 16, 72).Shown == 2);
+
+        // ---- combo 的组结构：时间│占用组│温度磁盘组│网速（对应 mac LayoutCombo）----
+        check("combo 占用组 = 3 环（C/M/G）总宽 185", CompactSpec.GaugeGroupWidth(3, _ => 30) == 185);
+        check("combo 系统组 = 3 环（C/G/D）总宽 185", CompactSpec.GaugeGroupWidth(3, _ => 30) == 185);
+        // mac 的 combo 只有 **两处** 分隔线（占用组│温度磁盘组、温度磁盘组│网速）；
+        // 时间│占用组之间没有线，只有 ClockGap=12 的留白。
+        double content = CompactSpec.ComboContentWidth(40, 185, 185, 60, 60);
+        check("combo 内容宽 = 时钟12 + 占用组 + (24+系统组) + 24 + 网速",
+            content == 40 + 12 + 185 + (24 + 185) + 24 + 60 + 7 + 60);
     }
 }

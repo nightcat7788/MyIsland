@@ -774,13 +774,13 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "refactor: 收起态排版器升级为
 
         // 一个环项：环心字母 + 环外等宽数值。
         // 环弧长 = share（占用率/100 或 温度/125），环色 = ArcColor，数值色 = TextColor。
+        // 数值宽度用 RenderKit.NumWidth 量（等宽排版有缓存，不额外分配）。
         void AddGaugeGroup(List<(string Letter, double Share, string Text, Color ArcColor, Color TextColor)> items,
                           bool dividerAfter)
         {
             if (items.Count == 0) return;
-            var figures = items
-                .Select(i => (double)RenderKit.NumWidth(i.Text, CompactSpec.FigureFont, true, ppd)).ToArray();
-            double groupW = CompactSpec.GaugeGroupWidth(items.Count, i => figures[i]);
+            double groupW = CompactSpec.GaugeGroupWidth(items.Count,
+                i => RenderKit.NumWidth(items[i].Text, CompactSpec.FigureFont, true, ppd));
             groups.Add(new CompactGroup
             {
                 Width = groupW,
@@ -798,7 +798,8 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "refactor: 收起态排版器升级为
                         gx += CompactSpec.Dial + CompactSpec.DialGap;
                         Num(dc, it.Text, gx, Math.Round(cy + CompactSpec.FigureFont * 0.36),
                             CompactSpec.FigureFont, it.TextColor, true, ppd);
-                        gx += Math.Max(figures[i], CompactSpec.ValueMinW) + CompactSpec.GaugeGap;
+                        gx += Math.Max(RenderKit.NumWidth(it.Text, CompactSpec.FigureFont, true, ppd),
+                            CompactSpec.ValueMinW) + CompactSpec.GaugeGap;
                     }
                 },
                 DividerAfter = dividerAfter,
@@ -882,7 +883,7 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "refactor: 收起态排版器升级为
             {
                 Width = NetWidth(CompactSpec.FigureFont, snap, ppd, CompactSpec.NetGap),
                 Draw = x => DrawNet(dc, pal, x, Math.Round(cy + CompactSpec.FigureFont * 0.36),
-                    CompactSpec.FigureFont, snap, ppd),
+                    CompactSpec.FigureFont, snap, ppd, CompactSpec.NetGap),
             });
         }
 
@@ -911,8 +912,12 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "refactor: 收起态排版器升级为
 
 4. **网速间距必须走 `CompactSpec`**（Windows 现在把 ↓↔↑ 硬编码成 10，与 mac 的 7 冲突）：
    - `NetWidth` / `DrawNet`（`IslandCanvas.cs` L449-L463）里的 `+ 3` 换成 `CompactSpec.ArrowValueGap`（3）；
-   - 两个方法各加一个 `netGap` 参数：**combo 调用点传 `CompactSpec.NetGap`（7）**，**dash 调用点传 `CompactSpec.DashNetGap`（10）**；
-   - 漏掉 dash 那一处，dash 的网速间距就与 mac 不一致（mac：DashLayout.NetGap = 10，IslandCanvas.cs L1866）。
+   - 两个方法各加一个 `netGap` 参数（**绘制位置与预留宽度必须是同一个口径**），三个调用点：
+     **combo 传 `CompactSpec.NetGap`（7）**；**clock / monitor 传 `CompactSpec.DashNetGap`（10）**（与原硬编码同值，外观不变）；
+   - 注意：Windows 的 dash 视图**不走** `NetWidth`/`DrawNet`（它把 ↓/↑ 画成两个独立 item），
+     mac 的 DashLayout.NetGap = 10（IslandCanvas.cs L1866）对应的是 Windows 这两个视图；
+   - 顺带清理：`DrawCompactGroups` 循环后的 `x` 是死变量（「+N」按 `plan.MoreOffset` 画），
+     改成「最后一个可见组不推进」，并在累加处注明排版口径唯一在 `CompactSpec.PlanCompactGroups`。
 
 - [ ] **Step 5: 构建并跑测试**
 
@@ -920,12 +925,12 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "refactor: 收起态排版器升级为
 & 'D:\YQDESK\.dotnet\dotnet.exe' build 'D:\YQDESK\MyIsland-src\Island.sln' -c Release --nologo
 & 'D:\YQDESK\.dotnet\dotnet.exe' run --project 'D:\YQDESK\MyIsland-src\tests\Island.Tests\Island.Tests.csproj' -c Release --nologo
 ```
-预期：0 警告 0 错误；`全部通过：312 条`，退出码 0。
+预期：0 警告 0 错误；`全部通过：328 条`（325 基线 + 本任务新增 3 条 combo 组结构断言），退出码 0。
 
 - [ ] **Step 6: 离屏渲染核对 combo**
 
-用真实控件离屏渲染出 combo 收起态（沿用 `ui-preview-2026-11-24/` 的做法），确认：时间在最左、三条分隔线、C/M/G 三个闭环字母环、C/G/D 三个闭环字母环、网速在最右。
-产物放 `D:\YQDESK\ui-preview-2026-11-25\`，**不要提交进仓库**。
+用真实控件离屏渲染出 combo 收起态（沿用 `ui-preview-2026-11-24/` 的做法），确认：时间在最左、**两处**分隔线（占用组│温度磁盘组、温度磁盘组│网速；时间│占用组之间只有 12px 留白、无线）、C/M/G 三个闭环字母环、C/G/D 三个闭环字母环、网速在最右。
+产物放 `D:\YQDESK\ui-preview-2026-11-25\`（`combo-hero.png` / `combo-classic.png` + 离屏渲染用的 `harness/`），**不要提交进仓库**。
 
 - [ ] **Step 7: 提交**
 
@@ -933,6 +938,28 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "refactor: 收起态排版器升级为
 git -C 'D:\YQDESK\MyIsland-src' add src/Island.App/Controls/IslandCanvas.cs src/Island.App/Controls/IslandWindow.xaml.cs tests/Island.Tests/CompactSpecTests.cs
 git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: combo 重排为 mac 的四组（时间│占用组│温度磁盘组│网速）+ 360° 闭环 + 13px 规格 + 组间分隔线"
 ```
+
+> **2026-11-25 实现说明（Task 4 落地后回填）**：
+> - **分隔线是两处，不是三处**：mac 的 `Gap()` 只调用两次（占用组│温度磁盘组、温度磁盘组│网速），
+>   时间│占用组之间只有 `ClockGap=12` 的留白、无线。原文 Step 6 写的「三条分隔线」是旧稿笔误，已改正。
+> - **边界总带**：`DrawCompactGroups` 按硬性要求传 `gap: CompactSpec.SeparatorBand`(24)、`padding: CompactSpec.PadX`(10)、`drawDividers: true`；
+>   带分隔线的组若显式设 `TrailingGap`，该值必须等于 `SeparatorBand`（本任务里只有时钟组带 `TrailingGap = ClockGap`）。
+> - **断言**：`全部通过：328 条`（325 基线 + 3 条）。这 3 条断言**加进去就是绿的** ——
+>   `CompactSpec` 的 mac 公式在 Task 1 就写好了，本任务断言的是「公式已存在且口径是 mac 的两处分隔线」，
+>   属于特征化断言（不是先红后绿）。为证明它不是空转，做过一次变异：把 `ComboContentWidth` 里网速前的总带
+>   从 `SeparatorBand`(24) 改成 `GroupGap`(12) → 该断言 FAIL（连同既有 3 条），改回即绿。
+> - **网速定宽**：`NetWidth`/`DrawNet` 改用 `MonitorSnapshot.FormatSpeedFixed`（恒 6 字符），
+>   箭头与数值的间距走 `CompactSpec.ArrowValueGap`(3)，↓值与↑之间走 `netGap` 参数：
+>   combo = `CompactSpec.NetGap`(7)，clock / monitor = `CompactSpec.DashNetGap`(10)（与原硬编码同值，外观不变）。
+> - **离屏核对**（`D:\YQDESK\ui-preview-2026-11-25\combo-hero.png` / `combo-classic.png`）：
+>   两条分隔线落在 DIP 231 与 414，正好是「组尾 + 18px」（组尾 213 / 396），下一组从「组尾 + 24」开始 ——
+>   即线落在 24px 总带里偏后 6px，与 mac 一致；时钟与第一个环之间无线。
+> - **三处已知小偏差（留给评审决定，本任务未擅自改）**：
+>   ① 用户把「温度/硬盘」三项全关掉时系统组为空 → 占用组仍带 `DividerAfter=true`，
+>   于是占用组与网速之间会多画一条线（mac 在系统组为空时不画这处线；宽度口径两边一致）。
+>   ② 温度读不到时本实现显示 `"--"`（brief 原文），mac 显示 `"—"`。
+>   ③ `src/Island.Core/Monitoring/MonitorModels.cs` 里 `CompactSpeed` 的注释仍写着「Windows 侧灵动岛用这一档」，
+>   胶囊改用 `FormatSpeedFixed` 后这句已不准确（本任务未改该文件：超出 Task 4 的文件清单）。
 
 ---
 

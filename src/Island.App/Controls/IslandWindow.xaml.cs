@@ -288,6 +288,7 @@ public partial class IslandWindow : Window
         islandCanvas.Pet.Style = _settings.PetStyle;
         ApplyItemFilters();                          // dash/combo/监控页 显示项注入
         islandCanvas.CompactView = _settings.CompactView;
+        islandCanvas.ComboNumericHero = _settings.ComboNumericHero;
         StartPetCycle();   // 必须在恢复视图之后：仅 pet/combo 视图才会启动轮换
         ApplyExpandMode();
         // 预热面板数据（后台构建）：第一次展开时面板不会是空的
