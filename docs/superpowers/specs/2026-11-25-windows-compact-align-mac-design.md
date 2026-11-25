@@ -172,7 +172,7 @@ Windows 的可定制项多于 mac，因此 dash 的项数与 mac 不同是预期
 |---|---|
 | `src/Island.App/Controls/RenderKit.cs` | **新增** `Ring(...)`（360° 闭环，签名与语义对齐 mac `RenderKit.Ring`）；`Dial` 不动 |
 | `src/Island.App/Controls/IslandCanvas.cs` | `DrawCompactGroups` 增加分隔线能力与「组」概念（一个 group 可含多个元素）；`DrawCombo` 重排为 4 组；`DrawDash` 改单行；新增规格常量块（照抄 mac 的常量表并注明来源行号） |
-| `src/Island.App/Controls/IslandWindow.xaml.cs` | 收起态尺寸表：`"dash" => (560, 69)` → `(560, 44)`；`CollapsedSize` 与画布实际测量宽度对齐；dash 上限 560 = 宿主恒定窗口宽 640（`ExpandW 560 + margin 40×2`）减两边边距 —— 胶囊不得超出窗口，否则超出部分被系统裁掉 |
+| `src/Island.App/Controls/IslandWindow.xaml.cs` | 收起态尺寸表：`"dash" => (560, 69)` → `(620, 44)`；`CollapsedSize` 与画布实际测量宽度对齐；宿主窗口宽**恒定 640 DIP**（`ExpandW 560 + margin 40×2`），胶囊不得超出窗口（超出部分被系统裁掉）⇒ dash 上限取 **620**（留 20px 安全余量；4 组实测 580.6 / 613.6 DIP） |
 | `tests/Island.Tests/` | 新增收起态排版断言测试（规格值锁定） |
 | `docs/superpowers/specs/2026-11-25-windows-compact-align-mac-design.md` | 本文件 |
 
@@ -243,7 +243,8 @@ dash 从两行变单行后，元素排布规则改变，宽度过渡期间可能
    环为 360° 闭环、环心字母、环外数值 13px、时间 13px、槽宽 21px。
 2. Windows dash 收起态：单行（核心柱群 │ 温度项组 │ 占用项组 │ 网速），组间分隔线，高度 44px，
    可定制项与密度分级语义不变；**电池读数移到「设备」视图**（dash 不重复）。
-   收起态胶囊宽必须 ≤ 宿主恒定窗口宽 640 DIP（`ExpandW 560 + margin 40×2`），超出 HWND 会被系统裁掉。
+   收起态胶囊宽必须 ≤ 宿主恒定窗口宽 640 DIP（`ExpandW 560 + margin 40×2`），超出 HWND 会被系统裁掉；
+   dash 的设计上限取 **620**（留 20px 安全余量；4 组实测 580.6 / 613.6 DIP ⇒ 4 组全显示、网速可见）。
 3. `dotnet build Island.sln -c Release`：0 警告 0 错误。
 4. `Island.Tests`：全过（含新增排版断言）。
 5. mac 侧代码零改动（`git diff` 中 mac 相关文件为空）。
