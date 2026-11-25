@@ -78,7 +78,7 @@
   - `internal static class HidBus`：`Enumerate()`（带缓存）/ `EnumerateFresh()` / `Invalidate()` / `GroupByDevice()` → `List<HidGroup>`
   - `internal sealed class HidChannel`：`WriteControl` / `WriteInterrupt` / `WriteFeature` / `GetFeature` / `Read(timeoutMs)` / `TryReadUsageValue`
 
-- [ ] **Step 1: 写失败的测试（把实机踩坑固化成断言）**
+- [x] **Step 1: 写失败的测试（把实机踩坑固化成断言）**
 
 新建 `tests/Island.Tests/PeripheralBatteryTests.cs`：
 
@@ -102,14 +102,14 @@ check("L1 承认 0x06:0x20 / 0x0D:0x3B / 0x85:0x0065",
     && StandardHidBattery.PercentUsages.Contains((0x85, 0x0065)));
 `@
 
-- [ ] **Step 2: 运行测试，确认失败**
+- [x] **Step 2: 运行测试，确认失败**
 
 `@
 & 'D:\YQDESK\.dotnet\dotnet.exe' build 'D:\YQDESK\MyIsland-src\tests\Island.Tests\Island.Tests.csproj' -c Release --nologo
 `@
 预期：编译失败（`HidNative` / `StandardHidBattery` 尚未链接进测试工程）。
 
-- [ ] **Step 3: 校对访问层实现与规格 §4 对齐**
+- [x] **Step 3: 校对访问层实现与规格 §4 对齐**
 
 逐条核对（**任何一条对不上就以规格为准改实现**）：
 
@@ -124,7 +124,7 @@ check("L1 承认 0x06:0x20 / 0x0D:0x3B / 0x85:0x0065",
 6. 帧长：补齐到集合声明长度；**超长拒绝，不截断**。
 7. 单个集合失败只跳过它自己；枚举有预算上限（1400ms）与接口数上限（512）。
 
-- [ ] **Step 4: 把源文件链接进测试工程并注册用例**
+- [x] **Step 4: 把源文件链接进测试工程并注册用例**
 
 在 `Island.Tests.csproj` 的 `<ItemGroup>` 里追加（注意：只链**纯规则**文件，
 访问层里依赖 WMI/WinRT 的不链）：
@@ -137,7 +137,7 @@ check("L1 承认 0x06:0x20 / 0x0D:0x3B / 0x85:0x0065",
 
 在 `Program.cs` 追加：`PeripheralHidTests.Run(Check);`
 
-- [ ] **Step 5: 运行测试，确认通过**
+- [x] **Step 5: 运行测试，确认通过**
 
 预期：新增断言全过（构建仍是 0 警告 0 错误）。
 
@@ -160,7 +160,7 @@ check("L1 承认 0x06:0x20 / 0x0D:0x3B / 0x85:0x0065",
     - `static PeripheralProtocolTable LoadFromDefaultLocation()`（`%LOCALAPPDATA%\MyIsland\peripheral-protocols.json`，不存在返回空表）
     - `static PeripheralProtocol? Match(HidInterface it)`（按 Vid/Pid + UsagePage/Usage 匹配）
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 `@
 // 字段齐全性：规格 §6.1 的 23 个字段一个都不能少
@@ -183,9 +183,9 @@ check("VID/PID + UsagePage/Usage 全匹配才选中", MatchReturns(proto, vid: 0
 check("Usage 不匹配时不选中", !MatchReturns(proto, vid: 0x17EF, pid: 0xF006, page: 0xFFCF, usage: 0x00A1));
 `@
 
-- [ ] **Step 2: 运行测试，确认失败**（编译失败）
+- [x] **Step 2: 运行测试，确认失败**（编译失败）
 
-- [ ] **Step 3: 实现模型与装载**
+- [x] **Step 3: 实现模型与装载**
 
 - 模型用 `record` + 位置参数，字段顺序与规格 §6.1 一致；`Transport` 用枚举
   （`Control` / `Interrupt` / `Feature` / `Auto`）。
@@ -196,7 +196,7 @@ check("Usage 不匹配时不选中", !MatchReturns(proto, vid: 0x17EF, pid: 0xF0
 - 表文件路径：`%LOCALAPPDATA%\MyIsland\peripheral-protocols.json`；
   **文件不存在 = 没有 L3 能力**，不是错误。
 
-- [ ] **Step 4: 运行测试，确认通过**
+- [x] **Step 4: 运行测试，确认通过**
 
 ---
 
@@ -218,7 +218,7 @@ check("Usage 不匹配时不选中", !MatchReturns(proto, vid: 0x17EF, pid: 0xF0
     - `static int? ReadMasked(byte[] report, int offset, int mask)`
     - `static int? ScaleToPercent(int raw, int valueMin, int valueMax)`
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 `@
 // ① 回显不匹配 → 未知（不返回 0！）
@@ -239,9 +239,9 @@ check("回包里没有电量字段时不能凭空得到 0",
     PeripheralProtocolReader.TryParse(proto, new byte[8]).Percent is null);
 `@
 
-- [ ] **Step 2: 运行测试，确认失败**
+- [x] **Step 2: 运行测试，确认失败**
 
-- [ ] **Step 3: 实现三层校验**
+- [x] **Step 3: 实现三层校验**
 
 `@
 Parse(p, report):
@@ -260,7 +260,7 @@ Parse(p, report):
 - `ScaleToPercent`：`ValueMax == ValueMin` 时直接判未知（除不尽会溢出）；否则线性换算，
   **结果不在 0..100 一律返回 null**。
 
-- [ ] **Step 4: 运行测试，确认通过**
+- [x] **Step 4: 运行测试，确认通过**
 
 ---
 
@@ -278,7 +278,7 @@ Parse(p, report):
     - `static IReadOnlyList<(ushort Page, ushort Usage)> PercentUsages`（**只有三组**，规格 §5）
     - `static int? ReadPercent(HidChannel channel, HidInterface it, byte[] report)`
 
-- [ ] **Step 1: 写失败的测试（usage 白名单 + 换算口径）**
+- [x] **Step 1: 写失败的测试（usage 白名单 + 换算口径）**
 
 `@
 check("L1 只承认三组百分比 usage", StandardHidBattery.PercentUsages.Count == 3);
@@ -291,16 +291,16 @@ check("L1 排除 0x85:0x0001 / 0x85:0x0066",
     && !StandardHidBattery.PercentUsages.Contains((0x85, 0x0066)));
 `@
 
-- [ ] **Step 2: 运行测试，确认失败**
+- [x] **Step 2: 运行测试，确认失败**
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 - 白名单常量：`(0x06,0x0020)`、`(0x0D,0x003B)`、`(0x85,0x0065)`。
 - 取值：`HidP_GetUsageValue` 按描述符解析（**不猜字节偏移**），
   再按 value caps 的 `LogicalMin` / `LogicalMax` 换算；不在 0..100 → 未知。
 - 只在 **feature / input** 报告上解析；**不把 input 报告的字节直接当百分比**。
 
-- [ ] **Step 4: 运行测试，确认通过**
+- [x] **Step 4: 运行测试，确认通过**
 
 ---
 
@@ -322,7 +322,7 @@ check("L1 排除 0x85:0x0001 / 0x85:0x0066",
     - `static List<DeviceInfo> Merge(IEnumerable<DeviceInfo> existing, IEnumerable<DeviceInfo> peripheral)`
       —— 同 VID:PID 只留一条；**L3 命中后 L4 同 VID:PID 的条目去掉**；与 BLE / MSBatteryClass 的同名设备去重
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 `@
 check("名称含 2.4G / Wireless / Receiver / Dongle / 无线 / 接收器 时识别为外设",
@@ -338,16 +338,16 @@ check("与 BLE 已报的同名设备不重复列", PeripheralDedupe.Merge(new[] 
 check("读不到的设备不进列表（不进列表 = 不伪装）", ...);
 `@
 
-- [ ] **Step 2: 运行测试，确认失败**
+- [x] **Step 2: 运行测试，确认失败**
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 - 关键词表（规格 §7）：`2.4G`、`Wireless`、`Receiver`、`Dongle`、`无线`、`接收器`。
 - L4 产出的 `DeviceInfo`：**`Percent = 0` + `LevelText = "未知"`**，
   与 XInput 档位同一套呈现（`DevicesPage.cs` 已有的「电量未知」分支直接可用，**不改版式**）。
 - 去重键：`VID:PID`（大写十六进制）；与 BLE / MSBatteryClass 的去重按**规范化名称 + 类型**比对。
 
-- [ ] **Step 4: 运行测试，确认通过**
+- [x] **Step 4: 运行测试，确认通过**
 
 ---
 
@@ -363,16 +363,16 @@ check("读不到的设备不进列表（不进列表 = 不伪装）", ...);
   - `static IReadOnlyList<DeviceInfo> Sample()` —— 一次采样返回本轮外设读数
   - 内部顺序：**L1 → L2（既有源，本类不碰）→ L3 → L4**
 
-- [ ] **Step 1: 写失败的测试**（可测部分：合并与降级）
+- [x] **Step 1: 写失败的测试**（可测部分：合并与降级）
 
 `@
 check("协议表文件缺失时返回空列表而不是抛异常", PeripheralBatteryService.Sample().Count >= 0);
 check("L4 条目的 Percent 为 0 且 LevelText 为未知", ...);
 `@
 
-- [ ] **Step 2: 运行测试，确认失败**
+- [x] **Step 2: 运行测试，确认失败**
 
-- [ ] **Step 3: 实现服务层**
+- [x] **Step 3: 实现服务层**
 
 - 采样流程：
   1. `HidBus.Enumerate()`（带缓存）→ 按 VID:PID 分组；
@@ -386,7 +386,7 @@ check("L4 条目的 Percent 为 0 且 LevelText 为未知", ...);
 - 失败处理：单设备失败不影响其它设备；写诊断日志用既有 `DeviceService.LogLineThrottled`
   （同一句话 5 分钟一条，别刷屏）；读不到的设备**不进列表**（不伪装）。
 
-- [ ] **Step 4: 接线到 `DeviceService`**
+- [x] **Step 4: 接线到 `DeviceService`**
 
 在 `DeviceService.Sample()` 里，**在既有三条数据源之后**追加一行：
 
@@ -400,7 +400,7 @@ try { list.AddRange(PeripheralBatteryService.Sample()); } catch { }
 
 **节拍不动**：仍是既有 30s / 300s（`RetuneTimer`），不新起定时器。
 
-- [ ] **Step 5: 构建 + 测试**
+- [x] **Step 5: 构建 + 测试**
 
 预期：0 警告 0 错误，测试全过。
 
@@ -416,7 +416,7 @@ try { list.AddRange(PeripheralBatteryService.Sample()); } catch { }
 - Consumes: Task 6 的 `DeviceInfo` 列表
 - Produces: 设备页上「未知电量」条目按既有档位语义渲染
 
-- [ ] **Step 1: 确认现有渲染分支已够用**
+- [x] **Step 1: 确认现有渲染分支已够用**
 
 `DevicesPage.cs` 已有：
 - `LevelText is { } levelText` → 20px 档位文字（`LevelText = "未知"` 走这里）；
@@ -425,12 +425,12 @@ try { list.AddRange(PeripheralBatteryService.Sample()); } catch { }
 
 ⇒ **L4 条目（`LevelText = "未知"`）不需要新增渲染分支**，只要 `LevelText` 有值即可。
 
-- [ ] **Step 2: 补 kind 标签（仅在需要时）**
+- [x] **Step 2: 补 kind 标签（仅在需要时）**
 
 若 `DeviceService.Glyph` 不认识新 kind（如 `dongle`），补一条映射；
 **沿用现有单字图标风格**（鼠/键/耳/柄/电），不引入新图标资源。
 
-- [ ] **Step 3: 构建 + 测试**
+- [x] **Step 3: 构建 + 测试**
 
 ---
 
@@ -444,7 +444,7 @@ try { list.AddRange(PeripheralBatteryService.Sample()); } catch { }
 - Consumes: Task 1–7 的可测部分
 - Produces: `Island.Tests` 里的外设电量用例组
 
-- [ ] **Step 1: 汇总要断言的纯规则（缺一不可）**
+- [x] **Step 1: 汇总要断言的纯规则（缺一不可）**
 
 | 规则 | 用例文件 |
 |---|---|
@@ -457,14 +457,14 @@ try { list.AddRange(PeripheralBatteryService.Sample()); } catch { }
 | L4 识别关键词 + 「未知」语义 | `PeripheralDedupeTests.cs` |
 | 去重（同 VID:PID 一条、L3 压 L4、与 BLE 不重复） | `PeripheralDedupeTests.cs` |
 
-- [ ] **Step 2: 注册用例并跑全量**
+- [x] **Step 2: 注册用例并跑全量**
 
 `@
 & 'D:\YQDESK\.dotnet\dotnet.exe' run --project 'D:\YQDESK\MyIsland-src\tests\Island.Tests\Island.Tests.csproj' -c Release --nologo
 `@
 预期：全过，退出码 0（末行「全部通过：N 条」）。
 
-- [ ] **Step 3: 确认门禁仍是零警告**
+- [x] **Step 3: 确认门禁仍是零警告**
 
 `@
 & 'D:\YQDESK\.dotnet\dotnet.exe' build 'D:\YQDESK\MyIsland-src\Island.sln' -c Release --nologo
@@ -479,7 +479,7 @@ try { list.AddRange(PeripheralBatteryService.Sample()); } catch { }
 - Modify: `docs/superpowers/specs/2026-11-25-cross-platform-consistency-design.md`（§3 能力矩阵、§5.1 W1 行）
 - Modify: `docs/superpowers/plans/2026-11-26-windows-peripheral-battery.md`（勾选状态）
 
-- [ ] **Step 1: 全量门禁**
+- [x] **Step 1: 全量门禁**
 
 `@
 & 'D:\YQDESK\.dotnet\dotnet.exe' build 'D:\YQDESK\MyIsland-src\Island.sln' -c Release --nologo
@@ -487,27 +487,27 @@ try { list.AddRange(PeripheralBatteryService.Sample()); } catch { }
 `@
 预期：0 警告 0 错误；测试全过，退出码 0。
 
-- [ ] **Step 2: 确认 mac 侧零改动**
+- [x] **Step 2: 确认 mac 侧零改动**
 
 `@
 git -C 'D:\YQDESK\MyIsland-src' diff --stat HEAD -- src/Island.Avalonia/
 `@
 预期：**空输出**。
 
-- [ ] **Step 3: 实机核对（无硬件时跳过并记录「未验证」）**
+- [x] **Step 3: 实机核对（无硬件时跳过并记录「未验证」）**
 
 在本机跑一轮采样，确认：
 - 联想 2.4G 接收器**出现一行**（不是 3 行）；
 - 读不到时电量显示**「未知」**（接收器没连上设备时该字段是 0xFF，超出 0..100 → 判无效）；
 - 读不到的设备**不进列表**。
 
-- [ ] **Step 4: 回填文档**
+- [x] **Step 4: 回填文档**
 
 - 规格 §11「待验证清单」逐项更新状态（已确认 / 仍未确认）；
 - 规格末尾追加验收结论（构建、测试条数、实机核对结果）；
 - 总纲 §3 能力矩阵补外设电量行，§5.1 的 W1 行状态从「待实施」改成「已实施（commit）」。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 `@
 git -C 'D:\YQDESK\MyIsland-src' add src/Island.App/Services/Peripheral/ tests/Island.Tests/ docs/superpowers/
@@ -530,3 +530,16 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: Windows 外设电量（HID 访�
 - 不写没有硬件的厂商协议；不做探索式的破坏性写入；
 - 不装驱动、不需要管理员权限；不伪造精确百分比；
 - 不改 mac 侧；不动既有四条系统数据源。
+
+---
+
+## 未完成项清单（2026-11-26 复核）
+
+**本计划（Windows 侧）Task 1–9 全部完成，没有未勾项。**
+以下事项**不在本计划范围内**，但仍是两端对齐的待办：
+
+- **mac 侧原生探针待实机验证**：`battery-hid`（2.4G 接收器电量）两端共用同一份协议表与三层校验，
+  但 mac 侧的原生探针**尚未在实机上验证**（见能力清单 `docs/capabilities.md` §3，
+  以及规格 `2026-11-26-macos-peripheral-battery-align-design.md`）。
+- **联想 L3 条目目前按「推断值」启用**（而非语义确认后启用）：证据链见规格 §8.5；
+  保留纠错通道 —— `%LOCALAPPDATA%\MyIsland\peripheral-protocols.json` 可覆盖内置条目，改偏移不用改代码。

@@ -482,6 +482,21 @@ public sealed class MonitorPage : FrameworkElement
                 title = "占用最高";
             CardTitle(dc, pal, ppd, title, GlyphKind.File, x2, y2, x2 + cardW, pal.Text, titleMax);
 
+            // 卡底信息位：进程 / 线程数与今日流量（mac 的进程榜卡底同款；2×2 栅格重排时一度被删掉，
+            // 这里补回 —— 这些读数在收起态没有对应项，删了就等于功能回退）。
+            if (s is not null)
+            {
+                double bl = y2 + botH - 8;
+                double fx = T($"{s.ProcessCount} 进程 · {s.ThreadCount} 线程",
+                    x2 + CardPadX, bl, ExpandedPanelSpec.StatusFont, pal.TextTertiary);
+                var tt = RenderKit.Text(
+                    $"今日 ↓{MonitorSnapshot.FormatBytes(s.TodayDownload)} ↑{MonitorSnapshot.FormatBytes(s.TodayUpload)}",
+                    ExpandedPanelSpec.StatusFont, pal.TextTertiary, false, ppd);
+                double tw = tt.WidthIncludingTrailingWhitespace;
+                if (fx + 12 + tw <= x2 + cardW - CardPadX)
+                    RenderKit.Baseline(dc, tt, x2 + cardW - CardPadX - tw, bl);
+            }
+
             // 榜体：图标 15×15 + 名称 11px 比例字体 + 右对齐数值 11px SemiBold（行距 21、最多 5 行）
             double ry = y2 + CardHeadH;
             double rx0 = x2 + CardPadX;

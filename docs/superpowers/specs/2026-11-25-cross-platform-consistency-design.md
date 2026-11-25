@@ -43,31 +43,21 @@
 
 ## 3. 能力矩阵（2026-11-25 实测）
 
-| 能力 | Windows | macOS | 判定 |
-|---|---|---|---|
-| 收起视图：clock / dash / pet / combo | ✓ | ✓ | 一致 |
-| 收起视图：**monitor / devices / clipboard**（Windows 独有的高密度读数带 / 设备电量行 / 剪贴板提示行） | ✓ | ✗ | **待对齐**（§4.1，2026-11-26 实测修正：原文写「两端一致」不成立，mac 收起态只有 4 个视图） |
-| 收起视图：**window**（活动窗口） | ✓ | ✗ | **待对齐**（§4.1） |
-| 展开页签：监控 / 剪贴板 / 设备 | ✓ | ✓ | 一致 |
-| 展开页签：**系统控制**（亮度/WLAN/蓝牙/麦克风/锁屏/睡眠/清理内存） | ✓ | ✗ | 平台专属（Windows） |
-| 展开页签：**屏幕**（DDC/色温/关内建屏） | ✗ | ✓ | 平台专属（macOS） |
-| 小形象 | ✓ `src/Island.App/Animation/PetFace.cs` | ✓ `src/Island.Avalonia/PetFaceAv.cs` | **两份独立实现**（mac 工程没有 link 它）；款式数不同（§4.2） |
-| 主题 token（12 个同名色） | 暗色科技配方（近黑底 + 单一强调色） | Apple 系统色配方 | **不同源**，同名 token 在每套主题下取值都不同（§4.3） |
-| 全局热键 | ✓ | ✓ `HotKeyClient` | 一致 |
-| 剪贴板历史保留策略（session/1d/7d/30d） | ✓ | ✓ | 一致 |
-| 剪贴板详情窗 | ✗ | ✓ `ClipDetailWindow` | 平台专属（macOS） |
-| 图片预览窗 | ✗ | ✓ `ImagePreviewWindow` | 平台专属（macOS） |
-| 自动跟随窗口 | ✗ | ✓ `AutoFollowEngine` | 平台专属（macOS） |
-| 触感反馈 | ✗ | ✓ `Haptics` | 平台专属（macOS 硬件能力） |
-| 内存回收（用完即还） | ✓ `MemoryReclaim` | ✗ | 平台专属（Windows） |
-| 手柄档位（XInput） | ✓ `XInputService` | ✗ | 平台专属（Windows） |
-| BLE GATT 电量直读 | ✓ `BleBatteryService` | ✗（mac 走原生电池 API） | 平台专属（各自实现） |
-| 外设电量：2.4G 接收器（厂商私有 HID 协议） | ✓ `Peripheral/`（L3 协议表） | 实施中（规格 `2026-11-26-macos-peripheral-battery-align-design.md`：探针只搬运 + 共享层判定） | 对齐中 |
-| 外设电量：标准 HID 电量 usage（`0x06:0x20` / `0x0D:0x3B` / `0x85:0x0065`） | ✓（L1） | 实施中（共享层新增最小 HID 报告描述符解析器） | 对齐中 |
-| 外设电量：只识别不读数（2.4G dongle 兜底，显示「未知」） | ✓（L4） | 实施中（`DeviceBattery.Device.LevelText`） | 对齐中 |
-| 温度链路 / 天气 / 设置项 | ✓ | ✓（共享源） | 一致 |
-| CPU 温度**取值口径**（选一个 + 排除 Distance 类干扰项） | ✓ `CpuTemperatureRule`（W2） | 实施中（`thermal.m` 由「求平均」改为「按优先级选一个」，同层取最大值） | 对齐中 |
-| 签名安装包 / 开机自启 / 文件托盘 | ✓ | ✗ | 平台专属（Windows） |
+**§3 的矩阵由能力清单驱动，见 [`docs/capabilities.md`](../../capabilities.md)。**
+
+- 收起视图 / 展开页签 / 数据源 / 小形象款式：**逐条内容**（键、显示名、两端可用性、差异说明）以
+  `src/Island.Core/Capabilities/CapabilityManifest.cs`（**唯一真相源**）为准；人读版本 + 两端已知差异的公开说明见
+  [`docs/capabilities.md`](../../capabilities.md)。
+- 本节原先手写的矩阵**已移除**：凡是能被代码或实测回答的能力，一律进能力清单，
+  由代码 + 门禁（`CapabilityManifestTests`）守住，文档只做转述。
+
+> ⚠️ **易被推翻的记录不要再手写**：2026-11-26 这轮实测推翻了本节原有的三条记录
+> （「收起视图两端一致」「12 个同名主题 token 同源」「小形象是同一份实现」）。
+> 这类「看着像事实」的记录一旦写进文档就会一直误导下去 —— 能力差异只能由能力清单承载。
+
+清单未覆盖的平台专属能力（全局热键、剪贴板详情窗、图片预览窗、自动跟随窗口、触感反馈、内存回收、
+手柄档位 XInput、签名安装包 / 开机自启 / 文件托盘等）不在本矩阵内，
+以代码与各阶段规格 / 计划的实测记录为准。
 
 ---
 

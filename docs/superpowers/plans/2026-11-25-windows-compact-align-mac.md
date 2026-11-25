@@ -44,7 +44,7 @@
   - `static double RingRadius(double diameter, double thickness)`
   - `static double RingSweep(double share)`
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 新建 `tests/Island.Tests/CompactSpecTests.cs`：
 
@@ -123,14 +123,14 @@ internal static class CompactSpecTests
 }
 ```
 
-- [ ] **Step 2: 运行测试，确认失败**
+- [x] **Step 2: 运行测试，确认失败**
 
 ```powershell
 & 'D:\YQDESK\.dotnet\dotnet.exe' build 'D:\YQDESK\MyIsland-src\tests\Island.Tests\Island.Tests.csproj' -c Release --nologo
 ```
 预期：编译失败，报 `CS0103: 当前上下文中不存在名称"CompactSpec"`（类型未实现；草稿预测的是 CS0246，实际编译器给 CS0103，两者等价）。
 
-- [ ] **Step 3: 实现 CompactSpec**
+- [x] **Step 3: 实现 CompactSpec**
 
 新建 `src/Island.App/Controls/CompactSpec.cs`：
 
@@ -271,14 +271,14 @@ public static class CompactSpec
     CompactSpecTests.Run(Check);   // 2026-11-25 收起态对齐：规格常量与宽度公式锁死
 ```
 
-- [ ] **Step 4: 运行测试，确认通过**
+- [x] **Step 4: 运行测试，确认通过**
 
 ```powershell
 & 'D:\YQDESK\.dotnet\dotnet.exe' run --project 'D:\YQDESK\MyIsland-src\tests\Island.Tests\Island.Tests.csproj' -c Release --nologo
 ```
 预期：末尾输出 `全部通过：307 条`（276 基线 + 本任务新增 31 条），退出码 0。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```powershell
 git -C 'D:\YQDESK\MyIsland-src' add src/Island.App/Controls/CompactSpec.cs tests/Island.Tests/CompactSpecTests.cs tests/Island.Tests/Island.Tests.csproj tests/Island.Tests/Program.cs
@@ -302,7 +302,7 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: 抽出收起态排版规格 Com
 - Consumes: `CompactSpec.RingRadius(double, double)`、`CompactSpec.RingSweep(double)`、`CompactSpec.RingDeadZone`（Task 1）
 - Produces: `public static void RenderKit.Ring(DrawingContext dc, Point center, double diameter, double thickness, double share, Color track, Color arc)`
 
-- [ ] **Step 1: 写实现**
+- [x] **Step 1: 写实现**
 
 在 `src/Island.App/Controls/RenderKit.cs` 的 `Dial` 方法之后插入：
 
@@ -359,14 +359,14 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: 抽出收起态排版规格 Com
 > 几何语义与 mac 一致（不补闭合弦 ⇒ 不画弦；两段弧的拆分点一致）。
 > 上面这段代码块已与交付实现 `src/Island.App/Controls/RenderKit.cs` 逐字一致（2026-11-25 复审时改）。
 
-- [ ] **Step 2: 构建，确认 0 警告 0 错误**
+- [x] **Step 2: 构建，确认 0 警告 0 错误**
 
 ```powershell
 & 'D:\YQDESK\.dotnet\dotnet.exe' build 'D:\YQDESK\MyIsland-src\Island.sln' -c Release --nologo
 ```
 预期：`已成功生成。0 个警告 0 个错误`。
 
-- [ ] **Step 3: 提交**
+- [x] **Step 3: 提交**
 
 ```powershell
 git -C 'D:\YQDESK\MyIsland-src' add src/Island.App/Controls/RenderKit.cs
@@ -392,7 +392,7 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: 新增 360° 闭环 RenderKit.R
   - `public static (int Shown, double ContentWidth, double MoreOffset) CompactSpec.PlanCompactGroups(int count, Func<int, double> widthOf, Func<int, double?> trailingGapOf, double defaultGap, double available, Func<int, double> moreWidth)` —— 排版决策的**纯计算**（可见组数 / 内容总宽 / 「+N」偏移）；渲染层只照着画 ⇒「外观不变」由测试守住
   - **本任务是纯重构**：默认值保持旧的 `gap=16 / padding=14`，保证 monitor/devices/clipboard 等视图外观不变；combo 的新规格由 Task 4 显式传参实现。
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 在 `tests/Island.Tests/CompactSpecTests.cs` 的 `Run` 方法末尾追加（**分隔线位置的断言已在 Task 1 落盘，不要重复添加**；本任务新增的是「组间距」规则）：
 
@@ -403,14 +403,14 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: 新增 360° 闭环 RenderKit.R
             CompactSpec.GroupAdvance(12, 24) == 12);
 ```
 
-- [ ] **Step 2: 运行测试，确认失败**
+- [x] **Step 2: 运行测试，确认失败**
 
 ```powershell
 & 'D:\YQDESK\.dotnet\dotnet.exe' run --project 'D:\YQDESK\MyIsland-src\tests\Island.Tests\Island.Tests.csproj' -c Release --nologo
 ```
 预期：编译失败（`CompactSpec.GroupAdvance` 还不存在）。
 
-- [ ] **Step 3: 加嵌套类型与新的 DrawCompactGroups**
+- [x] **Step 3: 加嵌套类型与新的 DrawCompactGroups**
 
 先给 `src/Island.App/Controls/CompactSpec.cs` 补一个纯函数（Task 1 已落盘，本任务追加）：
 
@@ -536,7 +536,7 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: 新增 360° 闭环 RenderKit.R
     }
 ```
 
-- [ ] **Step 4: 改造 4 个调用点（只换类型，行为不变）**
+- [x] **Step 4: 改造 4 个调用点（只换类型，行为不变）**
 
 `DrawMonitor`（原 L612 附近）：
 
@@ -703,7 +703,7 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: 新增 360° 闭环 RenderKit.R
 
 （它内部两条 `groups.Add` 同样按上面的写法换成 `new CompactGroup { Width = …, Draw = … }`。）
 
-- [ ] **Step 5: 构建并跑测试，确认全绿**
+- [x] **Step 5: 构建并跑测试，确认全绿**
 
 ```powershell
 & 'D:\YQDESK\.dotnet\dotnet.exe' build 'D:\YQDESK\MyIsland-src\Island.sln' -c Release --nologo
@@ -711,7 +711,7 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: 新增 360° 闭环 RenderKit.R
 ```
 预期：构建 0 警告 0 错误；测试 `全部通过：325 条`（307 基线 + 本任务新增 2 条组间距断言 + 15 条截断决策断言 + 1 条 Ring 坏值用例），退出码 0。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```powershell
 git -C 'D:\YQDESK\MyIsland-src' add src/Island.App/Controls/CompactSpec.cs src/Island.App/Controls/IslandCanvas.cs src/Island.App/Controls/RenderKit.cs tests/Island.Tests/CompactSpecTests.cs tests/Island.Tests/DesignSystemTests.cs
@@ -736,7 +736,7 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "refactor: 收起态排版器升级为
 - Consumes: `CompactSpec`（Task 1，含 `NetGap` / `ArrowValueGap`）、`RenderKit.Ring`（Task 2）、`CompactGroup` / `DrawCompactGroups`（Task 3）
 - Produces: `private double DrawCombo(DrawingContext dc, Palette pal, Rect r, double cy, MonitorSnapshot? snap, Services.ThermalSnapshot? thermal)`（签名不变，行为改为四组）；`public bool ComboNumericHero { get; set; }`（IslandCanvas 新属性）
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 在 `tests/Island.Tests/CompactSpecTests.cs` 的 `Run` 方法末尾追加：
 
@@ -751,14 +751,14 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "refactor: 收起态排版器升级为
             content == 40 + 12 + 185 + (24 + 185) + 24 + 60 + 7 + 60);
 ```
 
-- [ ] **Step 2: 运行测试，确认失败**
+- [x] **Step 2: 运行测试，确认失败**
 
 ```powershell
 & 'D:\YQDESK\.dotnet\dotnet.exe' run --project 'D:\YQDESK\MyIsland-src\tests\Island.Tests\Island.Tests.csproj' -c Release --nologo
 ```
 预期：断言 `FAIL`（`ComboContentWidth` 已存在但本条断言的期望值按 mac 的两分隔线口径写；确认它在改动前后能区分）。
 
-- [ ] **Step 3: 重写 DrawCombo**
+- [x] **Step 3: 重写 DrawCombo**
 
 把 `src/Island.App/Controls/IslandCanvas.cs` 的 `DrawCombo` 整体替换为：
 
@@ -902,7 +902,7 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "refactor: 收起态排版器升级为
     }
 ```
 
-- [ ] **Step 4: 配套改三处**
+- [x] **Step 4: 配套改三处**
 
 1. `IslandCanvas` 新增属性（放在 `ComboItems` 声明附近）：
 
@@ -940,7 +940,7 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "refactor: 收起态排版器升级为
    时 560 会把网速整段挤进「+N」，640 才有余量。⚠️ Task 5 的 Step 5 也改同一张尺寸表（dash 的高度 69→44），
    两处改动要一起看，别互相覆盖。
 
-- [ ] **Step 5: 构建并跑测试**
+- [x] **Step 5: 构建并跑测试**
 
 ```powershell
 & 'D:\YQDESK\.dotnet\dotnet.exe' build 'D:\YQDESK\MyIsland-src\Island.sln' -c Release --nologo
@@ -948,13 +948,13 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "refactor: 收起态排版器升级为
 ```
 预期：0 警告 0 错误；`全部通过：330 条`（325 基线 + 本任务新增 5 条 combo 组结构断言），退出码 0。
 
-- [ ] **Step 6: 离屏渲染核对 combo**
+- [x] **Step 6: 离屏渲染核对 combo**
 
 用真实控件离屏渲染出 combo 收起态（沿用 `ui-preview-2026-11-24/` 的做法），确认：时间在最左、**两处**分隔线（占用组│温度磁盘组、温度磁盘组│网速；时间│占用组之间只有 12px 留白、无线）、C/M/G 三个闭环字母环、C/G/D 三个闭环字母环、网速在最右。
 产物放 `D:\YQDESK\ui-preview-2026-11-25\`（`combo-hero.png` / `combo-classic.png` / `combo-zero.png` /
 `combo-worst-640.png` / `combo-worst-560.png` / `combo-temp0.png` + 离屏渲染用的 `harness/`），**不要提交进仓库**。
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```powershell
 git -C 'D:\YQDESK\MyIsland-src' add src/Island.App/Controls/IslandCanvas.cs src/Island.App/Controls/IslandWindow.xaml.cs tests/Island.Tests/CompactSpecTests.cs
@@ -1016,7 +1016,7 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: combo 重排为 mac 的四组�
 - Consumes: `CompactSpec`（Task 1，含 `DashPadX` / `ArrowValueGap` / `DashNetGap`）、`RenderKit.Ring`（Task 2）、`CompactGroup` / `DrawCompactGroups`（Task 3）
 - Produces: `DrawDash` 单行版；尺寸表 `"dash" => (620, 44)`
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 在 `tests/Island.Tests/CompactSpecTests.cs` 的 `Run` 方法末尾追加：
 
@@ -1026,19 +1026,19 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: combo 重排为 mac 的四组�
         check("dash 单行项宽窄值按最小槽 21 兜底", CompactSpec.InlineItemWidth(28, 10) == 52);
 ```
 
-- [ ] **Step 2: 运行测试，确认失败**
+- [x] **Step 2: 运行测试，确认失败**
 
 ```powershell
 & 'D:\YQDESK\.dotnet\dotnet.exe' run --project 'D:\YQDESK\MyIsland-src\tests\Island.Tests\Island.Tests.csproj' -c Release --nologo
 ```
 预期：编译失败（`CompactSpec.InlineItemWidth` 不存在）。
 
-- [ ] **Step 3: 确认 CompactSpec 已有 InlineItemWidth（Task 1 已提供，本步不要重复插入）**
+- [x] **Step 3: 确认 CompactSpec 已有 InlineItemWidth（Task 1 已提供，本步不要重复插入）**
 
 `CompactSpec.InlineItemWidth` 由 Task 1 提供（标签 + `CompactSpec.ArrowValueGap` + 数值槽，窄值按 `ValueMinW` 兜底），
 本步**不要**再往 `CompactSpec.cs` 里加方法，只需在 Step 4 里调用它。
 
-- [ ] **Step 4: 把 DrawDash 改成单行**
+- [x] **Step 4: 把 DrawDash 改成单行**
 
 把 `src/Island.App/Controls/IslandCanvas.cs` 的 `DrawDash` 整体替换为：
 
@@ -1171,7 +1171,7 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: combo 重排为 mac 的四组�
     }
 ```
 
-- [ ] **Step 5: 同步宿主尺寸表**
+- [x] **Step 5: 同步宿主尺寸表**
 
 在宿主尺寸表里把（该表 2026-11-25 验收时抽到 `src/Island.App/Controls/CompactLayout.cs` —— 纯数据，
 仓库内的 Island.Tests 才能直接断言「胶囊不得超出宿主窗口宽 640」；原位置是 `IslandWindow.xaml.cs`）：
@@ -1205,7 +1205,7 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: combo 重排为 mac 的四组�
 > 上面的数字是 3 位读数（最坏情况）那一档；2 位读数时更窄：570.8（8 核）/ 537.8（3 核）。最坏情况不变 ⇒ 620 仍成立。）
 > 同期去掉电池组（修复轮 2）：电池读数在「设备」收起视图里已经有一份，dash 不重复。
 
-- [ ] **Step 6: 构建并跑测试**
+- [x] **Step 6: 构建并跑测试**
 
 ```powershell
 & 'D:\YQDESK\.dotnet\dotnet.exe' build 'D:\YQDESK\MyIsland-src\Island.sln' -c Release --nologo
@@ -1213,12 +1213,12 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: combo 重排为 mac 的四组�
 ```
 预期：0 警告 0 错误；`全部通过：331 条`，退出码 0。
 
-- [ ] **Step 7: 变形帧检查（dash 单行化后必做）**
+- [x] **Step 7: 变形帧检查（dash 单行化后必做）**
 
 渲染 dash 收起态在多个中间宽度（110 / 140 / 170 / 200 / 230 / 260 / 300 / 345 / 420 px）下的变形帧，确认：内容始终水平居中、元素不叠字、不溢出胶囊、胶囊高度稳定在 44px。
 产物放 `D:\YQDESK\ui-preview-2026-11-25\`，**不提交进仓库**。
 
-- [ ] **Step 8: 提交**
+- [x] **Step 8: 提交**
 
 ```powershell
 git -C 'D:\YQDESK\MyIsland-src' add src/Island.App/Controls/IslandCanvas.cs src/Island.App/Controls/IslandWindow.xaml.cs src/Island.App/Controls/CompactSpec.cs tests/Island.Tests/CompactSpecTests.cs
@@ -1278,7 +1278,7 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: dash 改单行（组间分隔�
 - Consumes: Task 1-5 的全部产出
 - Produces: 验收记录
 
-- [ ] **Step 1: 全量门禁**
+- [x] **Step 1: 全量门禁**
 
 ```powershell
 & 'D:\YQDESK\.dotnet\dotnet.exe' build 'D:\YQDESK\MyIsland-src\Island.sln' -c Release --nologo
@@ -1286,7 +1286,7 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: dash 改单行（组间分隔�
 ```
 预期：0 警告 0 错误；测试全过，退出码 0。
 
-- [ ] **Step 2: 确认 mac 侧零改动**
+- [x] **Step 2: 确认 mac 侧零改动**
 
 ```powershell
 git -C 'D:\YQDESK\MyIsland-src' diff --stat HEAD -- src/Island.Avalonia/
@@ -1304,11 +1304,11 @@ git clone --quiet --branch mainline/github-layout 'D:\YQDESK\MyIsland-src' $v
 ```
 预期：0 警告 0 错误，测试全过。
 
-- [ ] **Step 4: 回填文档状态**
+- [x] **Step 4: 回填文档状态**
 
 总纲 §5 路线表里阶段 1 的状态从「**规格已提交**」改成「**已实施（<commit>）**」；阶段 1 规格末尾追加验收结论（构建/测试条数/离屏渲染核对结果/CompactDensity 语义变更说明）。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```powershell
 git -C 'D:\YQDESK\MyIsland-src' add docs/superpowers/specs/
@@ -1324,3 +1324,29 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "docs: 阶段 1 验收结论回填（�
 3. `dotnet build Island.sln -c Release`：0 警告 0 错误。
 4. `Island.Tests`：全过（含新增排版断言）。
 5. mac 侧代码零改动。
+
+---
+
+## 未完成项清单（2026-11-26 复核）
+
+**只剩 1 项没做**：
+
+- **Task 6 · Step 3：纯净克隆复验** —— 需要把仓库克隆到干净目录再跑一遍构建与测试。
+  本机 `D:\YQDESK\.workbuddy\verify-phase1` **不存在**，没有任何复验记录，故保持未勾。
+  Task 6 的其余四步（全量门禁 / mac 侧零改动 / 文档回填 / 提交）均已完成。
+
+**已做部分的证据**（提交 + 产物）：
+
+| 任务 | 提交 / 证据 |
+|---|---|
+| Task 1 抽出 `CompactSpec` | `0d04338`；修复轮 `589b3d2`（分隔线几何对齐 mac 实际语义 + 补齐 mac 规格常量） |
+| Task 2 `RenderKit.Ring` | `76d6015` |
+| Task 3 排版器升级为「视觉组 + 可选分隔线」 | `af14311`；修复 `ecbaa1d`（`+N` 截断路径抽成可测纯函数 `PlanCompactGroups`） |
+| Task 4 `DrawCombo` 四组重排 | `8ac6810`；修复 `c6d3c1a`（0% 仍画环 / 网速格式不外溢 / 宽度上限 640 / 温度与时钟口径） |
+| Task 5 dash 单行 + 高度 69→44 | `6156ad1`；后续 `ac6a0cb` `89ada8e` `9b4f64b` `b30087f`（宽度口径 700→560→620、按实画宽预留、`ComboNumericHero` 开关） |
+| Task 6 验收与回填 | `ec50f03`（收起态尺寸表守门断言进仓）、`d8ba3d0`（阶段 1 验收结论回填）、`adba8fa` / `6f0b7eb`（文档同步） |
+
+- 离屏核对产物（**不在仓库内**，在仓库外）：`D:\YQDESK\ui-preview-2026-11-25\` ——
+  `combo-hero.png` / `combo-classic.png` / `combo-zero.png` / `combo-temp0.png` / `combo-worst-640.png` / `combo-worst-560.png`，
+  以及 dash 单行化后的变形帧 `dash-*.png`（Task 4 Step 6、Task 5 Step 7 的依据）。
+- mac 侧零改动：本计划全部提交**未触及** `src/Island.Avalonia/**`（mac 侧的改动属于别的计划，见 `dfaf20f` / `effebda`）。

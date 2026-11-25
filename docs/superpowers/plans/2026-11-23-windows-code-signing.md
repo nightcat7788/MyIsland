@@ -39,7 +39,7 @@
 - Consumes: 环境变量 `MYISLAND_SIGN_PWD`（PFX 密码）、参数 `-CertPfx/-CertThumbprint/-TsaUrl`
 - Produces: `Get-SignToolPath()`、`Resolve-SigningCert()`、`Invoke-SignFile()`、`Test-SignatureValid()`（供 Task 2 调用）
 
-- [ ] **Step 1: 重写 sign.ps1**
+- [x] **Step 1: 重写 sign.ps1**
 
 ```powershell
 param(
@@ -103,7 +103,7 @@ function Test-SignatureValid {
 }
 ```
 
-- [ ] **Step 2: 自检** —— 运行 `powershell -File sign.ps1 -Target <publish 目录>`，确认输出 `[OK] Island.App.exe` 且 `Get-AuthenticodeSignature` 为 Valid
+- [x] **Step 2: 自检** —— 运行 `powershell -File sign.ps1 -Target <publish 目录>`，确认输出 `[OK] Island.App.exe` 且 `Get-AuthenticodeSignature` 为 Valid
 
 ---
 
@@ -116,7 +116,7 @@ function Test-SignatureValid {
 - Consumes: Task 1 的 `sign.ps1`（以 `& "$PSScriptRoot\sign.ps1" -Target <file> ...` 调用）
 - Produces: `$root\dist\MyIsland-Setup-<ver>.exe`、`$root\dist\MyIsland-<ver>-portable.zip`、`$root\dist\SHA256SUMS.txt`
 
-- [ ] **Step 1: 写 release.ps1**
+- [x] **Step 1: 写 release.ps1**
 
 六步（每步失败即 `throw`）：
 
@@ -139,7 +139,7 @@ param(
 5. 打便携 zip（`[System.IO.Compression.ZipFile]::CreateFromDirectory`）
 6. 生成 `SHA256SUMS.txt`（文件 | SHA256 | 签名状态 | 签名者 | 时间戳）+ 门禁校验
 
-- [ ] **Step 2: 端到端跑一次**，确认三样产物都在 `dist\` 且签名状态 Valid
+- [x] **Step 2: 端到端跑一次**，确认三样产物都在 `dist\` 且签名状态 Valid
 
 ---
 
@@ -148,8 +148,8 @@ param(
 **Files:**
 - Modify: `MyIsland-src/installer/MyIsland.iss`
 
-- [ ] **Step 1: AppPublisher 改为 MyIsland**
-- [ ] **Step 2: 版本与签名参数改成可注入**
+- [x] **Step 1: AppPublisher 改为 MyIsland**
+- [x] **Step 2: 版本与签名参数改成可注入**
 
 ```ini
 #ifndef AppVersion
@@ -170,7 +170,7 @@ SignTool="{#SignToolPath}" sign /sha1 {#SignThumbprint} /fd sha256 /tr {#TsaUrl}
 #endif
 ```
 
-- [ ] **Step 3: [Files] 排除项补 `*.pfx,*.p12`**
+- [x] **Step 3: [Files] 排除项补 `*.pfx,*.p12`**
 - [ ] **Step 4: 不传 /DSignThumbprint 编译一次，确认仍能编译（普通开发构建不依赖 signtool）**
 
 ---
@@ -181,22 +181,51 @@ SignTool="{#SignToolPath}" sign /sha1 {#SignThumbprint} /fd sha256 /tr {#TsaUrl}
 - Modify: `MyIsland-src/.gitignore`
 - Modify/Create: `MyIsland-src/MyIsland/README.md`（或 `DISTRIBUTION.md`）
 
-- [ ] **Step 1: .gitignore 追加** `*.pfx`、`*.p12`、`signing/`
-- [ ] **Step 2: 写发布说明**：如何设置 `MYISLAND_SIGN_PWD`、如何换公有 CA 证书（改 `-CertPfx`/`-CertThumbprint`）、ZIP 本身无签名的说明、SmartScreen 信誉说明
+- [x] **Step 1: .gitignore 追加** `*.pfx`、`*.p12`、`signing/`
+- [x] **Step 2: 写发布说明**：如何设置 `MYISLAND_SIGN_PWD`、如何换公有 CA 证书（改 `-CertPfx`/`-CertThumbprint`）、ZIP 本身无签名的说明、SmartScreen 信誉说明
 
 ---
 
 ### Task 5: 验收
 
-- [ ] **Step 1**: `Get-AuthenticodeSignature dist\MyIsland-Setup-<ver>.exe` → Status=Valid
-- [ ] **Step 2**: `Get-AuthenticodeSignature publish\win-x64\Island.App.exe` → Status=Valid
-- [ ] **Step 3**: 解压便携 zip → 里面 Island.App.exe 签名 Valid
-- [ ] **Step 4**: `signtool verify /pa /v` 对安装包输出含时间戳行
-- [ ] **Step 5**: 故意破坏（删掉签名）→ 门禁返回非 0
-- [ ] **Step 6**: `SHA256SUMS.txt` 的哈希与重新计算一致
+- [x] **Step 1**: `Get-AuthenticodeSignature dist\MyIsland-Setup-<ver>.exe` → Status=Valid
+- [x] **Step 2**: `Get-AuthenticodeSignature publish\win-x64\Island.App.exe` → Status=Valid
+- [x] **Step 3**: 解压便携 zip → 里面 Island.App.exe 签名 Valid
+- [x] **Step 4**: `signtool verify /pa /v` 对安装包输出含时间戳行
+- [x] **Step 5**: 故意破坏（删掉签名）→ 门禁返回非 0
+- [x] **Step 6**: `SHA256SUMS.txt` 的哈希与重新计算一致
 
 ## Self-Review
 
 - 规格覆盖：证书可插拔(Task1/2)、只签主 exe+安装包(Task2/3)、安装包+便携 zip(Task2)、时间戳(Task1)、密钥不入库(Task4)、门禁(Task2/5) —— 全覆盖
 - 占位符扫描：无 TBD/TODO
 - 命名一致性：`Get-SignToolPath / Resolve-SigningCert / Invoke-SignFile / Test-SignatureValid` 在 Task 1 定义、Task 2 通过 sign.ps1 入口调用，不直接依赖函数名
+
+---
+
+## 未完成项清单（2026-11-26 复核）
+
+**只剩 1 项没做**：
+
+- **Task 3 · Step 4：不传签名参数编译一次，确认仍能编译** —— 本机**没装 Inno Setup 7**（`ISCC.exe` 不存在），
+  没法真跑一次不带签名的编译。`installer/MyIsland.iss` 里 `SignTool` 是条件式的
+  （只有 `#ifdef MyIslandSignTool` 才写 `SignTool=`），设计上普通开发构建不依赖 signtool，
+  但**缺一次实际编译验证**，故保持未勾。
+
+**已做部分的证据**（2026-11-26 复核，逐条实测）：
+
+| 项 | 证据 |
+|---|---|
+| Task 1 · Step 1 重写 `sign.ps1` | 仓根 `sign.ps1`：`Get-SignToolPath` / `Resolve-SigningCert` / `Invoke-SignFile` / `Test-SignatureValid` 四个函数齐备，参数 `-CertPfx` / `-CertThumbprint` / `-TsaUrl` / `-PasswordEnv` 齐备 |
+| Task 1 · Step 2 自检 | 1.0.6 发布跑通：`dist/SHA256SUMS.txt` 记录 `Island.App.exe 签名=Valid 签名者=CN=MyIsland 时间戳=yes` |
+| Task 2 · Step 1 写 `release.ps1` | 仓根 `release.ps1`：publish → 签主 exe → ISCC 编译并签名 → 便携 zip → `SHA256SUMS.txt` → 门禁自检（共 8 步） |
+| Task 2 · Step 2 端到端跑一次 | `dist/` 有 `MyIsland-Setup-1.0.6.exe`、`MyIsland-1.0.6-portable.zip`、`SHA256SUMS.txt`；四个安装包（1.0.1 / 1.0.2 / 1.0.3 / 1.0.6）`Get-AuthenticodeSignature` 全部 **Valid** |
+| Task 3 · Steps 1–3 `.iss` 改造 | `installer/MyIsland.iss`：`AppPublisher=MyIsland`；`AppVersion` / `MyIslandSignTool` / `TsaUrl` 条件式可注入；`[Files]` 的 `Excludes` 含 `*.pfx,*.p12` |
+| Task 4 · Step 1 `.gitignore` | 已有 `*.pfx` / `*.p12` / `signing/` |
+| Task 4 · Step 2 发布说明 | `DISTRIBUTION.md`：`MYISLAND_SIGN_PWD`、换公有 CA 证书、ZIP 本身不可签名、SmartScreen 信誉 |
+| Task 5 · Steps 1–4 验收 | 安装包 `Status=Valid`；便携 zip 内的 `Island.App.exe` `Status=Valid`；`signtool verify /pa /v` 输出 `The signature is timestamped: Wed Nov 25 03:13:19 2026` |
+| Task 5 · Step 5 门禁返回非 0 | 用 `release.ps1` 里的**真实门禁代码**跑一份去掉签名的 exe（`Status=NotSigned`）⇒ **退出码 1** |
+| Task 5 · Step 6 哈希一致 | 重算 `MyIsland-Setup-1.0.6.exe` / `MyIsland-1.0.6-portable.zip` 的 SHA256，与 `dist/SHA256SUMS.txt` **逐位一致** |
+
+⚠️ 遗留事实（不是未勾项）：计划里写的 `publish\win-x64\Island.App.exe` 是**本地开发 publish 目录**（当前那份 **未签名**）；
+流水线签的是发布暂存目录里的主程序，`dist/SHA256SUMS.txt` 记录的就是它（`签名=Valid`）。
