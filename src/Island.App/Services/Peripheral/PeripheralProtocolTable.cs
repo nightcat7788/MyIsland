@@ -414,6 +414,31 @@ public static class PeripheralProtocolTable
                 index++;
             }
 
+            // key 唯一性（同一张表内）：这条检查原先只在 ValidateTable 里有，
+            // 用户 JSON 写重复 key 时连一条提示都没有 —— 而产品装载时同 key 只保留最后一条。
+            var seenKeys = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            int keyIndex = 0;
+            foreach (JsonElement element in root.EnumerateArray())
+            {
+                if (element.ValueKind == JsonValueKind.Object
+                    && TryGetProperty(element, "key", out JsonElement keyElement)
+                    && keyElement.ValueKind == JsonValueKind.String)
+                {
+                    string key = keyElement.GetString() ?? "";
+                    if (key.Length > 0)
+                    {
+                        if (seenKeys.TryGetValue(key, out int first))
+                            issues.Add(new PeripheralProtocolIssue("$[" + keyIndex + "].key", key,
+                                "key 重复（第 " + (first + 1) + " 条与第 " + (keyIndex + 1)
+                                    + " 条）—— 同一张表里 key 必须唯一：产品装载时同 key **只保留最后一条**"
+                                    + "（哪一条生效取决于书写顺序，很容易看错）"));
+                        else
+                            seenKeys[key] = keyIndex;
+                    }
+                }
+                keyIndex++;
+            }
+
             // 逐条反序列化：某一条写坏了（类型不对之类），不能连带把它的跨字段问题
             // 一起藏起来 —— 用户改 JSON 要一次看全，不是挤牙膏。
             int slot = 0;
@@ -598,15 +623,42 @@ public static class PeripheralProtocolTable
         IReadOnlyList<PeripheralProtocol> user)
     {
         var result = new List<PeripheralProtocol>();
-        foreach (var u in user)
-        {
-            if (u is null) continue;
+        foreach (var u in EffectiveUserEntries(user))
             result.Add(u);
-        }
         foreach (var b in builtin)
         {
             if (b is null) continue;
             result.Add(b);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// 用户表按 key 去重后的条目：**同 key 只保留最后一条**，顺序按最后一条的位置。
+    ///
+    /// 这与产品 <see cref="PeripheralProtocols.AddUserProtocols"/> 的实际行为一致
+    /// （它对每个条目先 RemoveAll 同 key、再 Add ⇒ 同 key 只剩最后一条）。
+    /// 早先这里把全部用户条目都列进生效表，用户写重复 key 时与产品的 <c>All</c> 不一致。
+    /// </summary>
+    public static IReadOnlyList<PeripheralProtocol> EffectiveUserEntries(
+        IReadOnlyList<PeripheralProtocol> user)
+    {
+        var result = new List<PeripheralProtocol>();
+        if (user is null) return result;
+
+        var lastIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < user.Count; i++)
+        {
+            string key = user[i]?.Key ?? "";
+            lastIndex[key] = i;
+        }
+        for (int i = 0; i < user.Count; i++)
+        {
+            PeripheralProtocol? u = user[i];
+            if (u is null) continue;
+            string key = u.Key ?? "";
+            if (!lastIndex.TryGetValue(key, out int last) || last != i) continue;
+            result.Add(u);
         }
         return result;
     }
@@ -765,12 +817,27 @@ public static class PeripheralProtocolTable
             }
             if (builtinOnly.Count > 0)
             {
-                issues.Add(new PeripheralProtocolIssue("key", u.Key,
-                    "覆盖**不生效**：设备 " + builtinOnly[0].Describe()
-                    + " 能匹配内置条目，却匹配不上这条用户条目 ⇒ 产品实际仍会用内置条目"
-                    + "（用户以为改了、产品其实没改）。"
-                    + "请把 vid/pid/usagePage/usage/minReportLength 与内置条目对齐"
-                    + "（用户表是整条替换、不是字段级合并）"));
+                if (userOnly.Count == 0 && shadowed.Count == 0)
+                {
+                    // 这条用户条目**一条设备都匹配不上**：覆盖彻底落空 —— 这才是"用户以为改了、
+                    // 产品其实没改"，必须拦门禁。
+                    issues.Add(new PeripheralProtocolIssue("key", u.Key,
+                        "覆盖**不生效**：设备 " + builtinOnly[0].Describe()
+                        + " 能匹配内置条目，却匹配不上这条用户条目 ⇒ 该设备仍会用内置条目"
+                        + "（用户以为改了、产品其实没改）。"
+                        + "请把 vid/pid/usagePage/usage/minReportLength 与内置条目对齐"
+                        + "（用户表是整条替换、不是字段级合并）"));
+                }
+                else
+                {
+                    // 这条用户条目对**某些**设备是生效的（只是没覆盖内置条目能匹配的全部设备）
+                    // ⇒ 只生效一部分，不是失败。用中性措辞，别断言"用户以为改了"。
+                    issues.Add(new PeripheralProtocolIssue("key", u.Key,
+                        "覆盖**只生效一部分**：设备 " + builtinOnly[0].Describe()
+                        + " 能匹配内置条目，但这条用户条目匹配不上它 ⇒ 该设备仍会用内置条目；"
+                        + "这条用户条目对其它它能匹配的设备是生效的",
+                        PeripheralProtocolSeverity.Warning));
+                }
             }
             if (shadowed.Count == 0 && userOnly.Count == 0 && builtinOnly.Count == 0)
             {
@@ -807,8 +874,9 @@ public static class PeripheralProtocolTable
                 break;
             default:
                 issues.Add(new PeripheralProtocolIssue("key", user.Key,
-                    "覆盖内置条目 '" + user.Key + "' **不会生效**：" + mismatch
-                    + " ⇒ 这条用户条目匹配不上内置条目能匹配的设备，实际仍会用内置条目"
+                    "覆盖内置条目 '" + user.Key + "' **顶不掉**：" + mismatch
+                    + " ⇒ 内置条目能匹配的设备仍会用内置条目"
+                    + "（这条用户条目若匹配的是**别的**设备，那是新增匹配、不是顶替 —— 真机上会另行判定）"
                     + "（用户表是整条替换、不是字段级合并，要改内置条目请把匹配条件一起写上）",
                     PeripheralProtocolSeverity.Warning));
                 break;
@@ -830,6 +898,19 @@ public static class PeripheralProtocolTable
     }
 
     // ==================== 六、JSON 字段级检查 ====================
+
+    /// <summary>按名字取一个 JSON 属性（大小写不敏感，与装载选项一致）。</summary>
+    private static bool TryGetProperty(JsonElement element, string name, out JsonElement value)
+    {
+        foreach (JsonProperty prop in element.EnumerateObject())
+        {
+            if (!string.Equals(prop.Name, name, StringComparison.OrdinalIgnoreCase)) continue;
+            value = prop.Value;
+            return true;
+        }
+        value = default;
+        return false;
+    }
 
     /// <summary>逐字段检查一个 JSON 表项（精确到"哪个字段、哪个取值"）。</summary>
     private static IReadOnlyList<PeripheralProtocolIssue> CheckJsonEntry(JsonElement entry, string path)
