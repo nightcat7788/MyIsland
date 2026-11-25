@@ -1042,7 +1042,7 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: combo 重排为 mac 的四组�
     /// 现在是单行（高 44px），标签与数值同行。内容项与「用户定制显示项」语义不变。
     ///
     /// CompactDensity 的含义随之调整：旧版它只控制组间距（16/26），而组间距已被规格统一为
-    /// 12 + 分隔线，所以改为**决定显示哪些组**（阈值 <390 / <560 不变）：
+    /// 12 + 分隔线，所以改为**决定显示哪些组**（阈值 &lt;390 / &lt;560 不变）：
     ///   Minimal  → 核心柱 + 温度组 + 网速
     ///   Balanced → 上述 + 占用组
     ///   Full     → 上述 + 电池组
@@ -1127,11 +1127,15 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: combo 重排为 mac 的四组�
         AddItemGroup(temps, dividerAfter: density != CompactDensity.Minimal);
 
         // ---- 组 3：占用项组（内存/GPU%/磁盘）----
-        var usage = new List<(string Label, string Value, string Sample, Color? Color)>();
-        if (Want("mem")) usage.Add(("MEM", $"{snap.MemoryUsagePercent:F0}%", "100%", LevelColor(snap.MemoryUsagePercent, pal.Text, pal)));
-        if (Want("gpu")) usage.Add(("GPU%", $"{snap.GpuUsage:F0}%", "100%", LevelColor(snap.GpuUsage, pal.Text, pal)));
-        if (Want("disk")) usage.Add(("DISK", $"{snap.DiskUsagePercent:F0}%", "100%", LevelColor(snap.DiskUsagePercent, pal.Text, pal)));
-        AddItemGroup(usage, dividerAfter: density != CompactDensity.Minimal);
+        // Minimal 档不显示占用组（规格 §3.2 的密度表：Minimal = 核心柱 + 温度组 + 网速）。
+        if (density != CompactDensity.Minimal)
+        {
+            var usage = new List<(string Label, string Value, string Sample, Color? Color)>();
+            if (Want("mem")) usage.Add(("MEM", $"{snap.MemoryUsagePercent:F0}%", "100%", LevelColor(snap.MemoryUsagePercent, pal.Text, pal)));
+            if (Want("gpu")) usage.Add(("GPU%", $"{snap.GpuUsage:F0}%", "100%", LevelColor(snap.GpuUsage, pal.Text, pal)));
+            if (Want("disk")) usage.Add(("DISK", $"{snap.DiskUsagePercent:F0}%", "100%", LevelColor(snap.DiskUsagePercent, pal.Text, pal)));
+            AddItemGroup(usage, dividerAfter: true);
+        }
 
         // ---- 组 4：电池组 ----
         var bat = DeviceService.Snapshot.FirstOrDefault(d => d.Kind == "battery");
@@ -1141,9 +1145,10 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: combo 重排为 mac 的四组�
                 : bat.Percent <= 20 ? pal.Up
                 : bat.Percent <= 40 ? pal.Warning
                 : pal.Text;
+            // 标签统一「电」：充电中 / 低电量靠颜色区分（充电绿 / ≤20% 红 / ≤40% 橙）。
             AddItemGroup(new List<(string, string, string, Color?)>
             {
-                (bat.Charging ? "电" : "电", $"{bat.Percent}%", "100%", bc),
+                ("电", $"{bat.Percent}%", "100%", bc),
             }, dividerAfter: true);
         }
 
@@ -1198,6 +1203,34 @@ git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: combo 重排为 mac 的四组�
 git -C 'D:\YQDESK\MyIsland-src' add src/Island.App/Controls/IslandCanvas.cs src/Island.App/Controls/IslandWindow.xaml.cs src/Island.App/Controls/CompactSpec.cs tests/Island.Tests/CompactSpecTests.cs
 git -C 'D:\YQDESK\MyIsland-src' commit -m "feat: dash 改单行（组间分隔线，高度 69→44px），对齐 mac 的 dash 形态"
 ```
+
+> **2026-11-25 实现说明（Task 5 落地后回填）**：
+> - **规格与代码的一处不一致，按规格实现**：原文 Step 4 的代码把「占用项组」无条件加入组表
+>   （只把它的 `dividerAfter` 写成 `density != Minimal`），这与 Step 4 自己的文档注释、以及规格 §3.2 的密度表
+>   （Minimal = 核心柱 + 温度组 + 网速）矛盾。落地时按**规格**实现：占用组整组在 Minimal 档不加入组表。
+>   分隔线数随之变成：Full 4 条 / Balanced 3 条 / Minimal 1 条（核心柱之后）。
+> - **组间距**：按硬性要求传 `gap: CompactSpec.SeparatorBand`(24)、`padding: CompactSpec.DashPadX`(14)、`drawDividers: true`；
+>   分隔线固定画在「组尾 + 18px」，落在 24px 总带里偏后 6px（下一组从「组尾 + 24」开始），与 mac 的 `Gap()` 同构。
+> - **XML 注释里的 `<` 写成 `&lt;`**：`阈值 &lt;390 / &lt;560` 这类写法将来开启文档生成时不会触发 CS1570；
+>   计划里的代码块与实现逐字一致，可直接复制。
+> - **断言**：`全部通过：331 条`（330 基线 + 1 条）。新增那条是**特征化断言**（锁住「dash 组间距 = 24 ⇒
+>   分隔线落在组间总带内」这个 Task 5 的决策），加进去就是绿的 —— `CompactSpec.InlineItemWidth` 与两条 dash 单行项宽断言
+>   在 Task 1（0d04338）就随 `InlineItemWidth` 一起落地了，Step 1/Step 2 的「先红后绿」在本任务里已不可复现；
+>   本任务真正的 RED→GREEN 落在离屏渲染断言上（见下）。
+> - **离屏核对**（`D:\YQDESK\ui-preview-2026-11-25\dash-groups-760.png` 等，harness 在同目录 `harness\`）：
+>   离屏 harness 里写了 45 条像素断言（胶囊高 44 / 内容不溢出 / 左右留白 ≥10px / 内容只有一个水平墨迹带 /
+>   洋红发丝线渲染数分隔线条数）。**改动前 10 条红**（单行 2-3 条墨迹带、分隔线 0 条），
+>   **改动后 45 条全绿**；5 组全显示时实测 **4 条分隔线**，位置分别是 DIP 84.5 / 276 / 482.5 / 547.5（= 各组尾 + 18）。
+> - **变形帧**（110 / 140 / 170 / 200 / 230 / 260 / 300 / 345 / 420 px）：全部单行、不叠字、不溢出、高度恒为 44px；
+>   宽度不够时按 Task 3 的 `+N` 机制汇总（不是溢出）。
+> - **一个待决事实（未擅自改）**：宿主给 dash 的宽度上限仍是 **560**（Step 5 明确要求 `(560, 44)`），
+>   而单行 5 组全显示需要 **≈680px**（8 核实测 678.7）。于是默认显示项（全部）下、560 上限时
+>   **网速组会被折进 `+1`**（实测 4 组 + `+1`、3 条分隔线）。旧版两行网格在 560 下同样要折进 `+1`
+>   （旧版折掉的是「↑」，新版折掉的是整个网速组），所以不是新引入的截断，但默认配置下用户会看不到网速。
+>   要让 5 组全显示，需把上限提到 ~700（同 Task 4 把 combo 上限提到 640 的做法）—— **等决策，未改**。
+> - **顺带处理**：`src/Island.Core/Monitoring/MonitorModels.cs` 里 `CompactSpeed` 的注释已按事实改正
+>   （现只剩 clock / monitor 视图与展开后的监控页在用；combo / dash 都改用 `FormatSpeedFixed`），
+>   只改注释文字，实现没动。
 
 ---
 
