@@ -174,8 +174,8 @@ public sealed record MonitorSnapshot
 
     /// <summary>
     /// 紧凑网速（BrimDeck 刘海同款）：3.40M / 420K / 123B。
-    /// Windows 侧灵动岛用这一档（胶囊里显示「值 + /s」，宽度靠占位样本兜住）；
-    /// macOS 侧胶囊要求宽度恒定，用 <see cref="FormatSpeedFixed"/>（恒 6 字符）。
+    /// Windows 侧的 clock / monitor 视图与展开后的监控页用这一档（宽度靠占位样本兜住）；
+    /// combo / dash 两个胶囊已改用 <see cref="FormatSpeedFixed"/>（恒 6 字符，与 mac 的胶囊口径一致）。
     /// 两者是刻意分开的两种格式，不要互相替换。
     /// </summary>
     public static string CompactSpeed(double bytesPerSec)

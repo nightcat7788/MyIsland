@@ -1230,7 +1230,7 @@ public partial class IslandWindow : Window
         "combo" => (640, 44),
         // 2026-11-24：读数带的等宽数字 + 四个表盘 + 网速实测约 470 宽，原来上限 460 会把末尾的 "K" 裁掉
         "monitor" => (500, 44), // 单排高密度读数带
-        "dash" => (560, 69),    // LiteMonitor 同款全读数行（含硬盘/SSD 温度/电池）
+        "dash" => (560, 44),    // 全读数单行（核心柱│温度组│占用组│电池│网速，组间分隔线；对齐 mac）
         "window" => (360, 44),  // 活动窗口（YASB ActiveWindow 同款：进程名 + 标题）
         "devices" => (300, 64),
         "clipboard" => (240, 44),

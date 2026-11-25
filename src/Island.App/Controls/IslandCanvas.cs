@@ -710,7 +710,7 @@ public sealed class IslandCanvas : FrameworkElement
         Gauge(snap.DiskUsagePercent, neutral, "D");
         groups.Add(new CompactGroup
         {
-            // clock / monitor 视图保持改动前外观（旧紧凑格式 + 10 间距）；dash 的网速留给 Task 5 按 mac 对齐
+            // clock / monitor 视图保持改动前外观（旧紧凑格式 + 10 间距）；dash 的网速已在 Task 5 按 mac 对齐（见 DrawDash）
             Width = NetWidth(11, snap, ppd, CompactSpec.DashNetGap, NetSpeedFormat.Compact),
             Draw = x => DrawNet(dc, pal, x, Math.Round(cy + 11 * 0.38), 11, snap, ppd, CompactSpec.DashNetGap, NetSpeedFormat.Compact),
         });
@@ -882,21 +882,38 @@ public sealed class IslandCanvas : FrameworkElement
 
 
     /// <summary>
-    /// dash 视图（用户定稿结构）：等距的「标签 + 读数」，核心柱带打头。
-    /// 每组宽度按最宽样本预留（跳数不挤压邻组）；读数等宽；用量读数按 70/90 分级配色。
-    /// 标签一律第三级文字色（2026-11-24 视觉重做：以前每个标签一种颜色，一行里五六个色相）。
+    /// dash 的信息密度档：决定**显示哪些组**（2026-11-25 单行化后的新语义）。
+    ///
+    /// 旧语义是「只管组间距」（Minimal 16 / 其余 26）；组间距已被规格统一为 24px 总带 + 分隔线，
+    /// 密度再不管间距就没有意义了，改成按可用宽度决定显示什么（规格 §3.2 的密度表）：
+    ///   Minimal（宽 &lt; 390） → 核心柱 + 温度组 + 网速
+    ///   Balanced（宽 &lt; 560）→ 上述 + 占用组
+    ///   Full                 → 上述 + 电池组
     /// </summary>
     private enum CompactDensity { Minimal, Balanced, Full }
 
     /// <summary>
     /// 收起态信息密度分级：空间越窄，越优先保留用户能立即采取行动的读数。
-    /// 密度按独立预算选择组距，不跟随动画宽度跳变。
+    /// 密度按独立预算选档，不跟随动画宽度跳变。
     /// 所有配置项按完整组测量；预算不足时用 +N 汇总，避免文字和环互相覆盖。
     /// </summary>
     private CompactDensity DensityFor() => CompactWidthBudget < 390
         ? CompactDensity.Minimal
         : CompactWidthBudget < 560 ? CompactDensity.Balanced : CompactDensity.Full;
 
+    /// <summary>
+    /// dash 视图（全读数单行）：核心柱群 │ 温度项组 │ 占用项组 │ 电池组 │ 网速，组间画 Hairline 分隔线。
+    /// 对应 mac 版 dash 的单行形态（mac: 频谱│剪贴板计数│温度组│占用组│电池│设备环│网速）。
+    ///
+    /// 与旧版的差别：旧版是「标签在上、数值在下」的两行网格（高 69px）；
+    /// 现在是单行（高 44px），标签与数值同行。内容项与「用户定制显示项」语义不变。
+    ///
+    /// CompactDensity 的含义随之调整：旧版它只控制组间距（16/26），而组间距已被规格统一为
+    /// 12 + 分隔线，所以改为**决定显示哪些组**（阈值 &lt;390 / &lt;560 不变）：
+    ///   Minimal  → 核心柱 + 温度组 + 网速
+    ///   Balanced → 上述 + 占用组
+    ///   Full     → 上述 + 电池组
+    /// </summary>
     private double DrawDash(DrawingContext dc, Palette pal, Rect r, double cy,
         MonitorSnapshot? snap, Services.ThermalSnapshot? thermal)
     {
@@ -907,24 +924,42 @@ public sealed class IslandCanvas : FrameworkElement
         var density = DensityFor();
         var groups = new List<CompactGroup>();
 
-        // 每组：标签上、数值下；宽度 = max(标签, 数值, 样本)，样本保证跳数时组距不动
-        void Item(string label, string value, string sample, Color? valueColor = null)
+        // 单行项：标签（9.5px 三级文字）+ 间距 3 + 数值（13px 等宽）
+        void InlineItem(string label, string value, string sample, Color? valueColor, ref double x)
         {
             var icon = Text(label, 9.5, pal.TextTertiary, ppd: ppd);
-            double width = Math.Max(Math.Max(RenderKit.NumWidth(sample, 13, true, ppd),
-                RenderKit.NumWidth(value, 13, true, ppd)), icon.Width);
+            Baseline(dc, icon, x, Math.Round(cy + 13 * 0.36));
+            x += icon.Width + CompactSpec.ArrowValueGap;
+            x = Num(dc, value, x, Math.Round(cy + 13 * 0.36), 13, valueColor ?? pal.Text, true, ppd);
+            x += CompactSpec.GaugeGap;
+        }
+
+        // 一个组：若干单行项，组内用 GaugeGap 隔开
+        void AddItemGroup(List<(string Label, string Value, string Sample, Color? Color)> items, bool dividerAfter)
+        {
+            if (items.Count == 0) return;
+            var labels = items.Select(i => (double)Text(i.Label, 9.5, pal.TextTertiary, ppd: ppd).Width).ToArray();
+            var values = items.Select(i => (double)RenderKit.NumWidth(i.Sample, 13, true, ppd)).ToArray();
+            double groupW = 0;
+            for (int i = 0; i < items.Count; i++)
+                groupW += CompactSpec.InlineItemWidth(labels[i], values[i]) + CompactSpec.GaugeGap;
+            groupW -= CompactSpec.GaugeGap;
             groups.Add(new CompactGroup
             {
-                Width = width,
+                Width = groupW,
                 Draw = x =>
                 {
-                    dc.DrawText(icon, new Point(x, cy - 14));
-                    Num(dc, value, x, cy + 15, 13, valueColor ?? pal.Text, true, ppd);
+                    double ix = x;
+                    for (int i = 0; i < items.Count; i++)
+                    {
+                        InlineItem(items[i].Label, items[i].Value, items[i].Sample, items[i].Color, ref ix);
+                    }
                 },
+                DividerAfter = dividerAfter,
             });
         }
 
-        // ① 核心柱（等距各组之首，强调色；轨道+填充）
+        // ---- 组 1：核心柱群（保持现状，只改成分组形式）----
         var cores = snap.CoreUsages;
         if (Want("cores") && cores is not null && cores.Length > 0)
         {
@@ -946,43 +981,59 @@ public sealed class IslandCanvas : FrameworkElement
                             RenderKit.SafeRect(x + i * (bw + gap), baseY - h, bw, h), 1.6, 1.6);
                     }
                 },
+                DividerAfter = true,
             });
         }
 
-        // ② CPU 温度 ③ GPU 温度 ④ 内存 ⑤ GPU% ⑥ 硬盘 ⑦ SSD 温度 ⑧ 电池 ⑨ 网速
-        // 配置项全部参与测量，空间不足时统一汇总为 +N。
-        double? ct = thermal?.CpuTemp, gt = thermal?.GpuTemp;
-        if (Want("cputemp")) Item("CPU", ct is { } c1 ? $"{Math.Round(c1)}°" : "--", "125°", TempColor(ct, pal));
-        if (Want("gputemp")) Item("GPU", gt is { } g1 ? $"{Math.Round(g1)}°" : "--", "125°", TempColor(gt, pal));
-        if (Want("mem"))
-            Item("MEM", $"{snap.MemoryUsagePercent:F0}%", "100%", LevelColor(snap.MemoryUsagePercent, pal.Text, pal));
-        // GPU% 常显（核显空闲=0 也占位，避免岛体宽度随负载跳动）；窄屏在内存后隐藏。
-        if (Want("gpu"))
-            Item("GPU%", $"{snap.GpuUsage:F0}%", "100%", LevelColor(snap.GpuUsage, pal.Text, pal));
-        if (Want("disk"))
-            Item("盘", $"{snap.DiskUsagePercent:F0}%", "100%", LevelColor(snap.DiskUsagePercent, pal.Text, pal));
-        // SSD 温度（读不到显示 "--"）
-        if (Want("ssd"))
+        // ---- 组 2：温度项组（CPU/GPU/SSD）----
+        double? ct = thermal?.CpuTemp, gt = thermal?.GpuTemp, st = thermal?.SsdTemp;
+        var temps = new List<(string Label, string Value, string Sample, Color? Color)>();
+        if (Want("cputemp")) temps.Add(("CPU", ct is { } c1 ? $"{Math.Round(c1)}°" : "--", "125°", TempColor(ct, pal)));
+        if (Want("gputemp")) temps.Add(("GPU", gt is { } g1 ? $"{Math.Round(g1)}°" : "--", "125°", TempColor(gt, pal)));
+        if (Want("ssd")) temps.Add(("SSD", st is { } s1 ? $"{Math.Round(s1)}°" : "--", "125°", TempColor(st, pal)));
+        AddItemGroup(temps, dividerAfter: density != CompactDensity.Minimal);
+
+        // ---- 组 3：占用项组（内存/GPU%/磁盘）----
+        // Minimal 档不显示占用组（规格 §3.2 的密度表：Minimal = 核心柱 + 温度组 + 网速）。
+        if (density != CompactDensity.Minimal)
         {
-            double? st = thermal?.SsdTemp;
-            Item("SSD", st is { } s1 ? $"{Math.Round(s1)}°" : "--", "125°", TempColor(st, pal));
+            var usage = new List<(string Label, string Value, string Sample, Color? Color)>();
+            if (Want("mem")) usage.Add(("MEM", $"{snap.MemoryUsagePercent:F0}%", "100%", LevelColor(snap.MemoryUsagePercent, pal.Text, pal)));
+            if (Want("gpu")) usage.Add(("GPU%", $"{snap.GpuUsage:F0}%", "100%", LevelColor(snap.GpuUsage, pal.Text, pal)));
+            if (Want("disk")) usage.Add(("DISK", $"{snap.DiskUsagePercent:F0}%", "100%", LevelColor(snap.DiskUsagePercent, pal.Text, pal)));
+            AddItemGroup(usage, dividerAfter: true);
         }
-        // 本机电池（DeviceService 已在采；有电池才显示）
+
+        // ---- 组 4：电池组 ----
         var bat = DeviceService.Snapshot.FirstOrDefault(d => d.Kind == "battery");
-        if (Want("battery") && bat is not null)
+        if (density == CompactDensity.Full && Want("battery") && bat is not null)
         {
             Color bc = bat.Charging ? pal.Down
-                   : bat.Percent <= 20 ? pal.Up
-                   : bat.Percent <= 40 ? pal.Warning
-                   : pal.Text;
-            Item(bat.Charging ? "电+" : "电", $"{bat.Percent}%", "100%", bc);
+                : bat.Percent <= 20 ? pal.Up
+                : bat.Percent <= 40 ? pal.Warning
+                : pal.Text;
+            // 标签统一「电」：充电中 / 低电量靠颜色区分（充电绿 / ≤20% 红 / ≤40% 橙）。
+            AddItemGroup(new List<(string, string, string, Color?)>
+            {
+                ("电", $"{bat.Percent}%", "100%", bc),
+            }, dividerAfter: true);
         }
+
+        // ---- 组 5：网速（↓ ↔ ↑ 间距用 CompactSpec.DashNetGap = 10，mac DashLayout.NetGap）----
         if (Want("net"))
         {
-            Item("↓", MonitorSnapshot.CompactSpeed(snap.DownloadSpeed), "9.99M");
-            Item("↑", MonitorSnapshot.CompactSpeed(snap.UploadSpeed), "9.99M");
+            AddItemGroup(new List<(string, string, string, Color?)>
+            {
+                ("↓", MonitorSnapshot.FormatSpeedFixed(snap.DownloadSpeed), "  0.0B", null),
+                ("↑", MonitorSnapshot.FormatSpeedFixed(snap.UploadSpeed), "  0.0B", null),
+            }, dividerAfter: false);
         }
-        return DrawCompactGroups(dc, pal, r, cy, groups, density == CompactDensity.Minimal ? 16 : 26);
+
+        // dash 的胶囊左右内边距用 CompactSpec.DashPadX = 14（mac DashPadX），不是 combo 的 PadX = 10；
+        // 组间距必须用 SeparatorBand(24)：分隔线固定画在「组尾 + 18」，若组间距是默认 16，
+        // 线会落到下一组起点右侧 2px（压字）。mac 的 dash 各组之间也是 Gap()（带 24px 总带 + 线）。
+        return DrawCompactGroups(dc, pal, r, cy, groups,
+            gap: CompactSpec.SeparatorBand, padding: CompactSpec.DashPadX, drawDividers: true);
     }
 
     /// <summary>设备电量行（BrimDeck compact-devices 同款：文件数 + 设备图标 + 大号分级配色百分比）。</summary>
@@ -1143,7 +1194,7 @@ public sealed class IslandCanvas : FrameworkElement
         if (snap is not null)
             groups.Add(new CompactGroup
             {
-                // clock / monitor 视图保持改动前外观（旧紧凑格式 + 10 间距）；dash 的网速留给 Task 5 按 mac 对齐
+                // clock / monitor 视图保持改动前外观（旧紧凑格式 + 10 间距）；dash 的网速已在 Task 5 按 mac 对齐（见 DrawDash）
                 Width = NetWidth(10, snap, ppd, CompactSpec.DashNetGap, NetSpeedFormat.Compact),
                 Draw = x => DrawNet(dc, pal, x, Math.Round(cy + 10 * 0.38), 10, snap, ppd, CompactSpec.DashNetGap, NetSpeedFormat.Compact),
             });

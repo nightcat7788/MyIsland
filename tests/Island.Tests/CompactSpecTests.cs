@@ -61,6 +61,13 @@ internal static class CompactSpecTests
         // ---- dash 单行项宽（Windows 侧组合，mac dash 没有对应公式）----
         check("dash 单行项宽 = 标签 + 箭头数值间距 3 + 数值槽", CompactSpec.InlineItemWidth(28, 30) == 61);
         check("dash 单行项宽窄值按最小槽 21 兜底", CompactSpec.InlineItemWidth(28, 10) == 52);
+        // dash 单行化（Task 5）后组间距统一用 SeparatorBand(24) + 分隔线：
+        // 分隔线固定画在「组尾 + 18」，必须落在 24px 总带内（下一组从组尾 + 24 开始），
+        // 否则线会画进下一组、压住它的第一个字。
+        check("dash 组间距 = SeparatorBand(24)：分隔线（组尾+18）落在组间总带内",
+            CompactSpec.SeparatorBand == 24
+            && CompactSpec.DividerXAfter(100) == 118
+            && CompactSpec.DividerXAfter(100) < 100 + CompactSpec.SeparatorBand);
 
         // ---- 360° 闭环几何 ----
         check("环半径 = 直径/2 - 线宽/2", CompactSpec.RingRadius(20, 2.8) == 8.6);
