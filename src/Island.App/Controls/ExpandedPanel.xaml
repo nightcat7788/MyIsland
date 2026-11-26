@@ -496,7 +496,8 @@
                     <Border Style="{StaticResource GroupCard}">
                         <StackPanel>
                             <TextBlock Text="显示" Style="{StaticResource GroupLabel}"/>
-                            <Grid Style="{StaticResource Row}">
+                            <!-- 亮度（该机不支持时整行不出现 —— 与夜灯同一口径） -->
+                            <Grid Style="{StaticResource Row}" Visibility="{Binding HasBrightness, Converter={StaticResource BoolVis}}">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="56"/>
                                     <ColumnDefinition Width="*"/>

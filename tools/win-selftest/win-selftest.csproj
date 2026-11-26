@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- 与 Island.App 同 TFM：控制页的蓝牙开关走 WinRT（Windows.Devices.Radios），需要 windows SDK 投影 -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>win-selftest</AssemblyName>
+    <RootNamespace>Island.Tools.WinSelfTest</RootNamespace>
+    <!-- Windows 端功能自检（开发期专用，不属于 Island.sln：与 tools/hid-probe 同例）。
+         调的是**产品自己的服务**（同一份源文件链接进来），不是另写一套 —— 测的必须是产品真会跑的那条路。 -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Management" Version="10.0.2" />
+    <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 被测的服务（产品源码） -->
+    <Compile Include="..\..\src\Island.App\Services\ControlService.cs" Link="Merged\ControlService.cs" />
+    <Compile Include="..\..\src\Island.App\Services\StartupService.cs" Link="Merged\StartupService.cs" />
+    <Compile Include="..\..\src\Island.App\Services\ClipboardService.cs" Link="Merged\ClipboardService.cs" />
+    <Compile Include="..\..\src\Island.App\Services\MemoryReclaim.cs" Link="Merged\MemoryReclaim.cs" />
+    <Compile Include="..\..\src\Island.App\Services\Settings.cs" Link="Merged\Settings.cs" />
+  </ItemGroup>
+
+</Project>

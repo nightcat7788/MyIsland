@@ -138,9 +138,18 @@ public sealed class PanelData : INotifyPropertyChanged
         LockCommand = lockCmd; SleepCommand = sleepCmd; OpenSettingsCommand = openSettings;
     }
 
+    /// <summary>
+    /// 该机是否支持调亮度（不支持时**整行不出现** —— 与夜灯同一口径）。
+    /// 为什么要有这个：Dxva2 的亮度接口只对外接显示器/部分驱动有效，**笔记本内置屏读不到**；
+    /// 以前那一行照旧显示「不支持」+ 一对看起来能点的 −/+ 按钮，点了却静默失败。
+    /// </summary>
+    private bool _hasBrightness;
+    public bool HasBrightness { get => _hasBrightness; set => Set(ref _hasBrightness, value); }
+
     public void UpdateControls()
     {
         var b = Services.ControlService.GetBrightness();
+        HasBrightness = b is not null;
         Brightness = b is null ? "不支持" : $"{b}%";
         if (b is { } v) BrightnessValue = v / 100.0;
         UpdateWlan();

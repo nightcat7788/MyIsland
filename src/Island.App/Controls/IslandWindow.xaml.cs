@@ -1121,12 +1121,17 @@ public partial class IslandWindow : Window
         pd.BindControls(
             new RelayCommand(_ =>
             {
-                Services.ControlService.SetBrightness(Math.Min(100, (Services.ControlService.GetBrightness() ?? 50) + 10));
+                // 读不到就不猜：亮度接口（Dxva2）只对外接显示器有效，笔记本内置屏读不到。
+                // 以前用 `?? 50` 编一个基准值去写，**静默失败**（SetBrightness 返回 false 被忽略），
+                // 而界面上那对 −/+ 按钮看起来还能点 ⇒ 现在读不到就直接不动（与 WLAN 同一口径）。
+                if (Services.ControlService.GetBrightness() is not { } cur) return;
+                Services.ControlService.SetBrightness(Math.Min(100, cur + 10));
                 pd.UpdateControls();
             }),
             new RelayCommand(_ =>
             {
-                Services.ControlService.SetBrightness(Math.Max(0, (Services.ControlService.GetBrightness() ?? 50) - 10));
+                if (Services.ControlService.GetBrightness() is not { } cur) return;
+                Services.ControlService.SetBrightness(Math.Max(0, cur - 10));
                 pd.UpdateControls();
             }),
             new RelayCommand(_ =>
