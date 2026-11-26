@@ -227,6 +227,8 @@ public sealed class ThermalService : IDisposable, IHardwareSensorSource
                         double? cpuTemp = null, gpuTemp = null, mbTemp = null, cpuPower = null,
                     gpuFan = null, cpuFan = null, gpuPower = null, ssdTemp = null,
                     gpuMemUsed = null, gpuMemTotal = null, gpuClock = null;
+            // 显存口径（"vendor" / "dedicated" / "shared" / ""=未知）：与显存数值同源，取自同一个传感器选取
+            string gpuMemUsedKind = "", gpuMemTotalKind = "";
             // CPU 温度是从哪个传感器、按什么口径选出来的（诊断日志用）
             string? cpuTempSource = null;
 
@@ -298,8 +300,20 @@ public sealed class ThermalService : IDisposable, IHardwareSensorSource
                         gpuFan ??= f;
                         // 显存（LiteMonitor 同款：NVIDIA 专用显存 / Intel·AMD 走 D3D 共享显存）
                         // 语义判定交给规则类：厂商显存（GPU Memory Used）→ D3D 专用显存 → D3D 共享显存。
-                        gpuMemUsed ??= HardwareSensorRules.Pick(HardwareSensorKind.GpuMemoryUsed, Collect(hw, SensorType.SmallData))?.Value;
-                        gpuMemTotal ??= HardwareSensorRules.Pick(HardwareSensorKind.GpuMemoryTotal, Collect(hw, SensorType.SmallData))?.Value;
+                        // 口径与数值**同源**：规则类一次给出"值 + 命中层对应的口径"（厂商/专用/共享），
+                        // 共享口径下那个"总量"是共享内存池大小（≈ 系统内存），不是显存容量 —— 显示层靠它决定要不要显示总量。
+                        var memUsed = HardwareSensorRules.PickGpuMemory(HardwareSensorKind.GpuMemoryUsed, Collect(hw, SensorType.SmallData));
+                        var memTotal = HardwareSensorRules.PickGpuMemory(HardwareSensorKind.GpuMemoryTotal, Collect(hw, SensorType.SmallData));
+                        if (gpuMemUsed is null && memUsed is not null)
+                        {
+                            gpuMemUsed = memUsed.Value;
+                            gpuMemUsedKind = memUsed.Kind;
+                        }
+                        if (gpuMemTotal is null && memTotal is not null)
+                        {
+                            gpuMemTotal = memTotal.Value;
+                            gpuMemTotalKind = memTotal.Kind;
+                        }
                         // GPU 核心频率
                         gpuClock ??= HardwareSensorRules.Pick(HardwareSensorKind.GpuClock, Collect(hw, SensorType.Clock))?.Value;
                     }
@@ -377,6 +391,8 @@ public sealed class ThermalService : IDisposable, IHardwareSensorSource
                 // LHM 显存/时钟单位是 MB/MHz，统一转 GB/GHz
                 GpuMemoryUsedGB = gpuMemUsed / 1024.0,
                 GpuMemoryTotalGB = gpuMemTotal / 1024.0,
+                // 已用与总量的口径一致才认；不一致（跨 GPU 混采）⇒ 未知，不猜
+                GpuMemoryKind = GpuMemoryDisplay.CombineKind(gpuMemUsedKind, gpuMemTotalKind),
                 GpuCoreClockMHz = gpuClock,
             };
             Updated?.Invoke(_last);

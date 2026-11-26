@@ -22,6 +22,8 @@ internal static class ThermalDisplay
         string vram = t.GpuMemoryUsedGB is { } used ? $"{used:F1}/{t.GpuMemoryTotalGB:F0}" : "-";
         string power = t.CpuPower is { } p && p > 0.01 ? $"C{Math.Round(p)}"
                      : t.GpuPower is { } gp && gp > 0.01 ? $"G{Math.Round(gp)}" : "";
-        return $"{Deg(t.CpuTemp)}|{Deg(t.GpuTemp)}|{vram}|{power}|{Deg(t.MotherboardTemp)}|{Deg(t.SsdTemp)}";
+        // ⚠️ 显存那一格带上**口径**：画面上的显存文本由口径决定（共享口径不显示"总量"，2026-11-26 task15），
+        //    口径变了画面就变了 ⇒ 签名必须跟着变，否则会漏一次重绘。
+        return $"{Deg(t.CpuTemp)}|{Deg(t.GpuTemp)}|{vram}|{power}|{Deg(t.MotherboardTemp)}|{Deg(t.SsdTemp)}|{t.GpuMemoryKind}";
     }
 }

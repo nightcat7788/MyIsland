@@ -18,6 +18,11 @@ public sealed record ThermalSnapshot
     /// <summary>显存（GPU 专用/共享，GB，LHM SmallData 传感器）。</summary>
     public double? GpuMemoryUsedGB { get; init; }
     public double? GpuMemoryTotalGB { get; init; }
+    /// <summary>
+    /// 显存读数的**口径**（"vendor" / "dedicated" / "shared" / ""=未知）。
+    /// 与数值同源：同一个 LHM 传感器选出来的，取值见 Island.App.Services.GpuMemoryKinds。
+    /// </summary>
+    public string GpuMemoryKind { get; init; } = "";
     /// <summary>GPU 核心频率 MHz。</summary>
     public double? GpuCoreClockMHz { get; init; }
     public DateTime UpdatedAt { get; init; } = DateTime.Now;

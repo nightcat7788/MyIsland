@@ -49,6 +49,7 @@ public sealed class WinSampler : ISampler
                 MotherboardTemp = th?.MotherboardTemp,
                 GpuMemoryUsedGB = th?.GpuMemoryUsedGB,
                 GpuMemoryTotalGB = th?.GpuMemoryTotalGB,
+                GpuMemoryKind = th?.GpuMemoryKind ?? "",   // 口径与数值同源（Windows 走同一份 LHM 规则）
                 GpuCoreClockMHz = th?.GpuCoreClockMHz,
             });
         };
