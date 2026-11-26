@@ -778,6 +778,7 @@ public partial class IslandWindow : Window
             _neckStrength.To(0);
             // 每次展开都重新拉一遍面板数据（后台构建）：读数不会停在上一轮的旧值
             RequestPanelData();
+            ApplyClickThroughStyle();   // 展开期间必须可交互（开着穿透也要能点）
         }
         else
         {
@@ -787,6 +788,7 @@ public partial class IslandWindow : Window
             // 收起动画结束后再缩窗口（动画期间保持大窗口，避免分层窗逐帧 resize 闪帧）
             _pendingWindowShrink = true;
             StartPetCycle();   // 收起后恢复小形象轮换计时
+            ApplyClickThroughStyle();   // 收起后恢复穿透（开着穿透时收起态才该拦鼠标）
         }
     }
 
@@ -1775,16 +1777,34 @@ public partial class IslandWindow : Window
     {
         _settings.ClickThrough = on;
         _settings.Save();
-        IntPtr hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
-        if (hwnd != IntPtr.Zero)
-        {
-            IntPtr ex = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
-            long style = ex.ToInt64();
-            style = on ? style | WS_EX_TRANSPARENT : style & ~WS_EX_TRANSPARENT;
-            SetWindowLongPtr(hwnd, GWL_EXSTYLE, new IntPtr(style));
-        }
+        ApplyClickThroughStyle();
         if (on && !_clickThroughFromPanel) SetExpanded(false);
         UpdatePointerTracking();   // 悬停展开 / 收起只在没穿透时才有意义：跟踪随之启停
+        try
+        {
+            System.Diagnostics.Debug.WriteLine($"[click-through] {on}");
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// 按「当前是否该穿透」刷新窗口的 WS_EX_TRANSPARENT。
+    ///
+    /// ⚠️ **穿透只对收起态生效**（2026-11-27 用户实测后修）：
+    /// 以前开着穿透时，展开的面板也整体对鼠标透明 ⇒ **看得见却点不动**，
+    /// 连面板里那个「鼠标穿透」开关都点不回来（鸡生蛋），只能绕到设置中心才能退出。
+    /// 现在展开期间解除穿透：用户显式展开面板就是要看/要点。
+    /// 判定规则见 Island.Core/Capabilities/ClickThroughRule.cs（可被测试直接断言）。
+    /// </summary>
+    private void ApplyClickThroughStyle()
+    {
+        IntPtr hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero) return;
+        IntPtr ex = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+        long style = ex.ToInt64();
+        bool transparent = Core.Capabilities.ClickThroughRule.ShouldBeTransparent(_settings.ClickThrough, _expanded);
+        style = transparent ? style | WS_EX_TRANSPARENT : style & ~WS_EX_TRANSPARENT;
+        SetWindowLongPtr(hwnd, GWL_EXSTYLE, new IntPtr(style));
     }
 
     // ---------- 专注模式（L4 三击同款）：三击岛体 → 半透明 + 穿透；再三击恢复 ----------

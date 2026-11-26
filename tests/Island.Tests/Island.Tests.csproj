@@ -136,6 +136,10 @@
          "秒 + 日期" 必须在两端都画，且格式取自同一份 ClockTextSpec。 -->
     <Compile Remove="ClockViewTests.cs" />
     <Compile Include="ClockViewTests.cs" />
+    <!-- 鼠标穿透门禁（2026-11-27）：穿透只对收起态生效（展开面板必须可交互）+
+         托盘必须留一键退出的逃生口。 -->
+    <Compile Remove="ClickThroughTests.cs" />
+    <Compile Include="ClickThroughTests.cs" />
     <!-- 「按资源配色」门禁（2026-11-27）：色值锁定在 ResourceColorSpec + 两端画布必须取同一份规格
          + 旧色值不得复活 + 展开面板本轮不接规格。默认 glob 已包含它，这里显式登记（先移除默认项，避免重复编译项报错）。 -->
     <Compile Remove="ResourceColorTests.cs" />

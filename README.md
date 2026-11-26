@@ -2,7 +2,7 @@
 
 MyIsland 是一款 Windows 与 macOS 菜单栏系统监控工具，以轻量胶囊展示实时指标，并提供可切换的小形象与主题。
 
-**当前版本：1.1.4**（源码与已发布安装包同版本）· Windows WPF · macOS Avalonia · Apple Silicon 原生发布
+**当前版本：1.1.5**（源码与已发布安装包同版本）· Windows WPF · macOS Avalonia · Apple Silicon 原生发布
 
 Windows 与 macOS 各自一套原生实现（Windows WPF 自绘 + macOS Avalonia 自绘），共享
 `src/Island.Core` 的数据模型与读数语义；两边共用的约定写在 [SOURCE-README.txt](SOURCE-README.txt)。
@@ -25,6 +25,8 @@ Windows 与 macOS 各自一套原生实现（Windows WPF 自绘 + macOS Avalonia
 
 - CPU、内存、GPU、磁盘和网络读数；可用功能随操作系统不同。
 - **Windows**：灵动岛窗口、展开监控面板、快捷控制、剪贴板历史、小形象互动。
+- **鼠标穿透（游戏时不拦截点击）**：只在**收起态**拦鼠标；**展开的面板始终可交互**（用户显式展开就是要看/要点）。
+  托盘右键菜单里可一键开关，状态与面板里的开关同步。
 - **展开监控面板**：2×2 卡片栅格 + 栅格下方的**底部状态行**（运行时长 / 今日流量 / 功耗 / 温度，
   按平台支持情况出现；支持但读不到显示「未知」，平台不支持则不出现）。
 - **Windows 外设电量**：WMI 电池 + MSBatteryClass + BLE GATT 直读（0x180F/0x2A19）+ XInput 手柄档位；

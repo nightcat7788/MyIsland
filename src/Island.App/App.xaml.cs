@@ -291,6 +291,23 @@ public partial class App : Application
     // 设备电量子菜单（BuildContextMenu 里挂好，打开时刷新内容）
     private System.Windows.Controls.MenuItem? _devicesMenu;
 
+    /// <summary>
+    /// 托盘菜单里的「鼠标穿透」勾选项（2026-11-27 加）。
+    /// 为什么必须有它：穿透一开，岛体整体对鼠标透明 ⇒ **面板看得见却点不动**，
+    /// 连面板里那个开关都点不回来（鸡生蛋）。托盘图标在岛体窗口之外、不受穿透影响，
+    /// 是唯一能一键退出的地方 —— 之前只有「设置中心…」这一条远路。
+    /// </summary>
+    private System.Windows.Controls.MenuItem? _clickThroughItem;
+
+    /// <summary>把「鼠标穿透」的当前状态刷进托盘菜单（面板里改过也要同步）。</summary>
+    private void RefreshClickThroughItem()
+    {
+        if (_clickThroughItem is null) return;
+        bool on = _settings.ClickThrough;
+        if (_clickThroughItem.IsChecked == on) return;
+        _clickThroughItem.IsChecked = on;   // 会触发 Checked/Unchecked ⇒ SetClickThrough（幂等）
+    }
+
     /// <summary>把当前设备电量读数刷进"设备电量"子菜单（纯展示行，不可点）。</summary>
     private void RefreshDeviceMenu()
     {
@@ -353,6 +370,18 @@ public partial class App : Application
         var menu = new System.Windows.Controls.ContextMenu();
 
         menu.Items.Add(MenuItem("展开 / 收起", (_, _) => _island?.ToggleExpand()));
+        // 鼠标穿透：可勾选，一键进出（穿透状态下这是唯一能退出的入口）
+        _clickThroughItem = new System.Windows.Controls.MenuItem
+        {
+            Header = "鼠标穿透（游戏时不拦截点击）",
+            IsCheckable = true,
+        };
+        _clickThroughItem.Checked += (_, _) => _island?.SetClickThrough(true);
+        _clickThroughItem.Unchecked += (_, _) => _island?.SetClickThrough(false);
+        menu.Items.Add(_clickThroughItem);
+        // 菜单打开时同步状态（穿透可能是在面板里改的）：菜单只有一条 Opening 钩子，
+        // 托盘右键与岛体右键共用这一份菜单 ⇒ 两条入口都覆盖到。
+        menu.Opened += (_, _) => RefreshClickThroughItem();
         menu.Items.Add(MenuItem("设置中心…", (_, _) => ShowSettingsWindow()));
         // 设备电量（2026-11-25）：菜单是启动时建好的单例，内容在打开时刷新（RefreshDeviceMenu）
         _devicesMenu = new System.Windows.Controls.MenuItem { Header = "设备电量" };
