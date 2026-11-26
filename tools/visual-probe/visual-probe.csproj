@@ -31,6 +31,8 @@
     <Compile Include="..\..\src\Island.Core\Capabilities\*.cs" Link="Merged\Core\Capabilities\%(Filename)%(Extension)" />
     <!-- 监控快照模型（纯数据，无 WPF 依赖） -->
     <Compile Include="..\..\src\Island.Core\Monitoring\*.cs" Link="Merged\Core\Monitoring\%(Filename)%(Extension)" />
+    <!-- 硬件传感器取值规则（含 GPU 显存口径的显示形状：纯逻辑） -->
+    <Compile Include="..\..\src\Island.App\Services\HardwareSensorRules.cs" Link="Merged\Services\HardwareSensorRules.cs" />
     <!-- 温度快照 / 设备读数（纯数据） -->
     <Compile Include="..\..\src\Island.App\Services\ThermalSnapshot.cs" Link="Merged\Services\ThermalSnapshot.cs" />
     <Compile Include="..\..\src\Island.App\Controls\ThermalDisplay.cs" Link="Merged\Controls\ThermalDisplay.cs" />
