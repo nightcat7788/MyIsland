@@ -1,4 +1,5 @@
 using System;
+using Island.Core.Monitoring;
 
 namespace Island.App.Controls;
 
@@ -172,6 +173,44 @@ public static class ExpandedPanelSpec
 
     /// <summary>排序分段控件圆角（mac：6）。</summary>
     public const double SegmentedCorner = 6;
+
+    // ================= 监控页底部状态行（2026-11-26） =================
+
+    /// <summary>
+    /// 状态行里"读不到"时的文字。
+    /// 硬红线：读不到就是未知 —— 绝不用 0 / 默认值 / 换算百分比充数。
+    /// </summary>
+    public const string StatusUnknown = "未知";
+
+    /// <summary>功耗读数（瓦，1 位小数）。读不到（null / 非正数）⇒ 未知。</summary>
+    public static string StatusPowerText(double? watts)
+        => watts is { } w && double.IsFinite(w) && w > 0.01 ? $"{w:F1} W" : StatusUnknown;
+
+    /// <summary>主板温度（摄氏度，取整 —— 与温度行的口径一致）。读不到 ⇒ 未知。</summary>
+    public static string StatusTempText(double? celsius)
+        => celsius is { } c && double.IsFinite(c) && c > 0.01 ? $"{Math.Round(c)}°C" : StatusUnknown;
+
+    /// <summary>
+    /// 运行时长：不足 1 天按小时（1 位小数）；够 1 天按"天 + 小时"（例：1 天 3 小时）。
+    /// 读不到 ⇒ 未知。
+    /// </summary>
+    public static string StatusUptimeText(double? hours)
+    {
+        if (hours is not { } h || !double.IsFinite(h) || h < 0) return StatusUnknown;
+        if (h < 24) return $"{h:F1} 小时";
+        int days = (int)(h / 24);
+        int rest = (int)Math.Floor(h - days * 24);
+        return $"{days} 天 {rest} 小时";
+    }
+
+    /// <summary>
+    /// 今日流量：↓ 下载 / ↑ 上传（字节口径沿用 <see cref="MonitorSnapshot.FormatBytes"/>）。
+    /// 读不到 ⇒ 未知；0 字节是**真实读数**（今天还没走流量），照常显示。
+    /// </summary>
+    public static string StatusTrafficText(long? download, long? upload)
+        => download is { } d && upload is { } u && d >= 0 && u >= 0
+            ? $"↓{MonitorSnapshot.FormatBytes(d)} ↑{MonitorSnapshot.FormatBytes(u)}"
+            : StatusUnknown;
 
     // ================= 设备页 =================
 

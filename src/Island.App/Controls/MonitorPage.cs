@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Media;
 using Island.App.Services;
 using Island.App.Themes;
+using Island.Core.Capabilities;
 using Island.Core.Monitoring;
 
 namespace Island.App.Controls;
@@ -17,6 +18,8 @@ namespace Island.App.Controls;
 ///             + 右对齐 14px SemiBold 数值 + 4px 圆角 2 的进度条 + 1.4px 走势曲线（框高 14）。
 ///   · 四张卡：① CPU（占用 / 频率 / 温度）② 内存（内存 / GPU / 磁盘）
 ///             ③ 上下速度（下行 / 上行 + 卡底网络与电池）④ 进程榜（占用最高 · CPU / 内存 + 排序分段控件）。
+///   · 底部状态行：栅格**下方**一行 9px 中性色读数（功耗 / 主板温度 / 运行时长 / 今日流量），
+///     字段位清单取自两端共享规格 MonitorStatusLineSpec（平台不支持的不出现，读不到显示"未知"）。
 ///
 /// 配色身份不变（暗色科技）：一屏一主角 —— CPU 是唯一用强调色的读数，其余读数中性色，
 /// 只有 ≥70% / ≥90% 才换成状态色。mac 的「按资源配色」不引入。
@@ -85,6 +88,11 @@ public sealed class MonitorPage : FrameworkElement
     /// <summary>让位档的卡高（上排 160 = 42 + 44 + 30 + 30 + 2×7；下排 132 = 42 + 2×34 + 22）。</summary>
     private const double TightTopH = CardHeadH + RowH + 2 * TightRowH + 2 * RowGap;
     private const double TightBotH = CardHeadH + 2 * TightSpeedRowH + 22;
+    /// <summary>
+    /// 紧凑档下排卡的**最低**高度（真机不够高时按剩余高度收一收）。
+    /// 106 = 卡头 42 + 两行速度各 34 + 第二行的流量条底（27 + 3）—— 再矮流量条就跑到卡外了。
+    /// </summary>
+    private const double MinBotCardH = 106;
     /// <summary>进度条 / 流量条填充的最小可见长度。</summary>
     private const double MinFill = 4;
     /// <summary>流量条圆角（mac：1.5）。</summary>
@@ -178,18 +186,24 @@ public sealed class MonitorPage : FrameworkElement
         //   A 完整档 349 = 181 + 12 + 156（mac 口径）
         //   B 让位档 304 = 160 + 12 + 132（只有 CPU 占用行保留走势曲线）
         //   C 紧凑档 290 = 146 + 12 + 132（全部读数行不带曲线）
+        // ⚠️ 2026-11-26：栅格**下方**多了一条底部状态行（TopMargin + LineHeight = 20）。
+        //    选档之前**先把状态行的高度从可用高度里扣掉**，三档的分界线因此整体下移 20：
+        //    349 → 369 / 304 → 324。栅格规格本身一点没变（完整档仍是 181 + 12 + 156），
+        //    变的只是"什么时候降档"——状态行必须永远放得下，不压栅格、不越出面板。
+        double statusLineH = MonitorStatusLineSpec.TopMargin + MonitorStatusLineSpec.LineHeight;
+        double availH = H - statusLineH;
         double rowH, firstRowH, topH, speedRowH, botH;
         double procGap = ExpandedPanelSpec.ProcessRowGap;
         int procRows;
         bool speedCurve;      // 速度两行的走势曲线（只有完整档放得下）
-        if (H >= TopCardH + GridGap + BotCardH)
+        if (availH >= TopCardH + GridGap + BotCardH)
         {
             rowH = RowH; firstRowH = RowH;
             topH = TopCardH; speedRowH = SpeedRowH; botH = BotCardH;
             procRows = ExpandedPanelSpec.ProcessMaxRows;
             speedCurve = true;
         }
-        else if (H >= TightTopH + GridGap + TightBotH)
+        else if (availH >= TightTopH + GridGap + TightBotH)
         {
             rowH = TightRowH; firstRowH = RowH;
             topH = TightTopH; speedRowH = TightSpeedRowH; botH = TightBotH;
@@ -202,6 +216,11 @@ public sealed class MonitorPage : FrameworkElement
             topH = CardHeadH + 3 * rowH + 2 * RowGap; speedRowH = TightSpeedRowH; botH = TightBotH;
             procRows = 4;
             speedCurve = false;
+            // 连紧凑档都装不下时（真机：展开面板 540×380 ⇒ 监控页只有 308 高，
+            // 146 + 12 + 132 + 20 = 310 > 308），把下排卡按"扣掉状态行后的剩余高度"再收一收 ——
+            // 状态行必须永远放得下（硬要求），宁可卡片矮 2px，也不让状态行越出面板。
+            double botBudget = availH - topH - GridGap;
+            if (botBudget < botH) botH = Math.Max(MinBotCardH, botBudget);
         }
 
         // 进程榜：行数与行距都从**卡内可用高度**倒推（先给卡底信息行留出位置）——
@@ -491,19 +510,15 @@ public sealed class MonitorPage : FrameworkElement
                 title = "占用最高";
             CardTitle(dc, pal, ppd, title, GlyphKind.File, x2, y2, x2 + cardW, pal.Text, titleMax);
 
-            // 卡底信息位：进程 / 线程数与今日流量（mac 的进程榜卡底同款；2×2 栅格重排时一度被删掉，
-            // 这里补回 —— 这些读数在收起态没有对应项，删了就等于功能回退）。
+            // 卡底信息位：进程 / 线程数（2×2 栅格重排时一度被删掉，这里补回 —— 这些读数在收起态
+            // 没有对应项，删了就等于功能回退）。
+            // 今日流量**移到了栅格下方的底部状态行**：同屏不重复，读数没丢，只是换了个更宽、
+            // 更好读的位置（卡底这行窄，塞不下两段）。
             if (s is not null)
             {
                 double bl = y2 + botH - ExpandedPanelSpec.ProcessFooterBaselineInset;
-                double fx = T($"{s.ProcessCount} 进程 · {s.ThreadCount} 线程",
+                T($"{s.ProcessCount} 进程 · {s.ThreadCount} 线程",
                     x2 + CardPadX, bl, ExpandedPanelSpec.StatusFont, pal.TextTertiary);
-                var tt = RenderKit.Text(
-                    $"今日 ↓{MonitorSnapshot.FormatBytes(s.TodayDownload)} ↑{MonitorSnapshot.FormatBytes(s.TodayUpload)}",
-                    ExpandedPanelSpec.StatusFont, pal.TextTertiary, false, ppd);
-                double tw = tt.WidthIncludingTrailingWhitespace;
-                if (fx + 12 + tw <= x2 + cardW - CardPadX)
-                    RenderKit.Baseline(dc, tt, x2 + cardW - CardPadX - tw, bl);
             }
 
             // 榜体：图标 15×15 + 名称 11px 比例字体 + 右对齐数值 11px SemiBold（行距 21、最多 5 行）
@@ -553,6 +568,47 @@ public sealed class MonitorPage : FrameworkElement
                     }
                     ry += procGap;
                 }
+            }
+        }
+
+        // ================= 底部状态行（2×2 栅格下方，2026-11-26） =================
+        // 字段位清单来自**两端共享的唯一规格**（Island.Core.Capabilities.MonitorStatusLineSpec）：
+        //   · 平台不支持的字段位**直接不出现**（不置灰、不留空位）—— 由 SlotsFor 决定，本页不自己判断；
+        //   · 支持但读不到 ⇒ 显示"未知"，绝不用 0 / 默认值 / 换算百分比充数（项目硬红线）。
+        // 颜色：中性色（TextTertiary）—— 一屏一主角，强调色只给 CPU（暗色科技的身份）。
+        {
+            double gridBottom = y2 + botH;
+            double slTop = gridBottom + MonitorStatusLineSpec.TopMargin;
+            double slBaseline = slTop + MonitorStatusLineSpec.LineHeight - 3;   // 9px 文字坐在 14px 带的下方
+            double sx = x1;              // 与栅格左缘对齐
+            double right = x2 + cardW;   // 不越出栅格右缘
+
+            foreach (var slot in MonitorStatusLineSpec.SlotsFor(macOS: false))
+            {
+                string? value = slot.Key switch
+                {
+                    "cpu-power" => ExpandedPanelSpec.StatusPowerText(th?.CpuPower),
+                    "board-temp" => ExpandedPanelSpec.StatusTempText(th?.MotherboardTemp),
+                    "runtime" => ExpandedPanelSpec.StatusUptimeText(s?.UptimeHours),
+                    "today-traffic" => ExpandedPanelSpec.StatusTrafficText(s?.TodayDownload, s?.TodayUpload),
+                    _ => null,
+                };
+                if (value is null) continue;   // 本平台不支持 ⇒ 这一项不出现
+
+                // 读数走等宽体（数字等宽，跳动不抖）；含非 ASCII（° / ↓ / 中文）时走界面字体
+                // —— Consolas 里没有这些字形，硬画会变成豆腐块。
+                bool asciiOnly = value.All(ch => ch < 128);
+                var label = RenderKit.Text(slot.Label + " ", MonitorStatusLineSpec.FontSize,
+                    pal.TextTertiary, false, ppd);
+                var val = asciiOnly
+                    ? RenderKit.Mono(value, MonitorStatusLineSpec.FontSize, pal.TextTertiary, false, ppd)
+                    : RenderKit.Text(value, MonitorStatusLineSpec.FontSize, pal.TextTertiary, false, ppd);
+                double slotW = label.WidthIncludingTrailingWhitespace + val.WidthIncludingTrailingWhitespace;
+                if (sx + slotW > right) break;   // 一行放不下就到此为止（不换行、不叠字）
+
+                RenderKit.Baseline(dc, label, sx, slBaseline);
+                RenderKit.Baseline(dc, val, sx + label.WidthIncludingTrailingWhitespace, slBaseline);
+                sx += slotW + MonitorStatusLineSpec.SlotGap;
             }
         }
 

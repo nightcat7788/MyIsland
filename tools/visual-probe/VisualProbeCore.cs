@@ -8,6 +8,7 @@ using System.Windows.Media.Imaging;
 using Island.App.Controls;
 using Island.App.Services;
 using Island.App.Themes;
+using Island.Core.Capabilities;
 using Island.Core.Monitoring;
 
 namespace Island.Tools.VisualProbe;
@@ -83,6 +84,13 @@ public static class VisualProbeCore
     private const double MinInkRatio = 0.0005;
 
     /// <summary>
+    /// 真机展开面板给监控页的尺寸（宽 504 = 540 - 18×2；高 308 = 380 - 14 - 18 - 24 - 16）。
+    /// 紧凑档就是为这个高度准备的 —— 状态行也必须在这里放得下。
+    /// </summary>
+    private const int CompactPanelWidth = 504;
+    private const int CompactPanelHeight = 308;
+
+    /// <summary>
     /// 跑一遍探针：渲染两个页面 + 判定全部不变量。
     /// 全程在一条 STA 工作线程上完成。
     /// </summary>
@@ -124,6 +132,24 @@ public static class VisualProbeCore
         var monitorBitmap = Render(monitor, options.Width, options.Height, palette);
         report.Images.Add(("monitor-page", monitorBitmap));
         CheckMonitorPage(report, monitorBitmap, options);
+
+        // ---------- 监控页（真机尺寸：紧凑档） ----------
+        // 完整档（420 高）放得下 ≠ 真机放得下。真机的展开面板是 540×380 ⇒ 监控页只有
+        // 540 - 18×2 = 504 宽、380 - 14 - 18 - 24（顶栏）- 16（顶栏下留白）= 308 高。
+        // 这一档（紧凑档）必须**连状态行一起**放得下 —— 单独渲染一次来盯住它。
+        var compact = new MonitorPage
+        {
+            Palette = palette,
+            Snapshot = SyntheticSnapshot(),
+            Thermal = SyntheticThermal(),
+            CpuHistory = SyntheticHistory(36),
+            NetHistory = SyntheticHistory(36, 0.5),
+            DownHistory = SyntheticHistory(36, 0.3),
+            UpHistory = SyntheticHistory(36, 0.8),
+        };
+        var compactBitmap = Render(compact, CompactPanelWidth, CompactPanelHeight, palette);
+        report.Images.Add(("monitor-page-compact", compactBitmap));
+        CheckMonitorPageCompact(report, compactBitmap);
 
         // ---------- 设备页（卡片网格） ----------
         var devices = new DevicesPage { Palette = palette };
@@ -376,6 +402,42 @@ public static class VisualProbeCore
             $"卡内 y∈[{py0},{py1}] 有 {bands.Count} 条高亮带（期望 {expectedRows + 1} = {expectedRows} 行榜体 + 1 条卡底行），" +
             $"带间最小空行 {minGap}（下限 2）"));
 
+        // ---- 3c. 底部状态行（2026-11-26）：栅格下方有内容，且不与栅格重叠 ----
+        // 2×2 栅格**下方**多了一条 9px 状态行（功耗 / 主板温度 / 运行时长 / 今日流量）。
+        // 判据三条：
+        //   ① 栅格底边之下「TopMargin + LineHeight」这条带里必须有内容（状态行文字）；
+        //   ② 栅格底边与状态行顶边之间的留白必须干净（状态行不许压到栅格）；
+        //   ③ 状态行不许越出页面底部。
+        double gridBottom = y2 + botH;
+        double slTop = gridBottom + MonitorStatusLineSpec.TopMargin;
+        double slBottom = slTop + MonitorStatusLineSpec.LineHeight - 1;
+        int gapTop = (int)gridBottom + 1, gapBottom = (int)slTop - 1;
+        double gapInk = gapBottom >= gapTop ? pixels.MaxDelta(0, gapTop, w - 1, gapBottom) : 0;
+        double slInk = slBottom >= (int)slTop
+            ? pixels.MaxDelta((int)x1, (int)slTop, (int)(x2 + cardW), (int)slBottom)
+            : 0;
+        bool slInPage = slBottom < h;
+        // 渲染出来的状态行文字（用同一套取值规则从合成读数算出来，方便报告与回归对照）
+        var snap = SyntheticSnapshot();
+        var th = SyntheticThermal();
+        string statusText = string.Join("   ", MonitorStatusLineSpec.SlotsFor(macOS: false)
+            .Select(slot => slot.Label + " " + (slot.Key switch
+            {
+                "cpu-power" => ExpandedPanelSpec.StatusPowerText(th.CpuPower),
+                "board-temp" => ExpandedPanelSpec.StatusTempText(th.MotherboardTemp),
+                "runtime" => ExpandedPanelSpec.StatusUptimeText(snap.UptimeHours),
+                "today-traffic" => ExpandedPanelSpec.StatusTrafficText(snap.TodayDownload, snap.TodayUpload),
+                _ => "—",
+            })));
+        report.Checks.Add(new ProbeCheck(
+            "监控页：栅格下方有底部状态行，且状态行不与栅格重叠",
+            slInk >= 20 && gapInk < PaintedDelta && slInPage,
+            $"栅格底边 y={gridBottom:F0}；状态行带 y∈[{slTop:F0},{slBottom:F0}]" +
+            $"（TopMargin {MonitorStatusLineSpec.TopMargin} + LineHeight {MonitorStatusLineSpec.LineHeight}）；" +
+            $"带内最大通道差 {slInk}（下限 20）；栅格与状态行之间的留白 y∈[{gapTop},{gapBottom}] 最大通道差 {gapInk}" +
+            $"（阈值 < {PaintedDelta}）；页面高 {h}，状态行底边 {slBottom:F0}（须 < {h}）；" +
+            $"合成读数下的状态行文字：「{statusText}」"));
+
         // ---- 4. 像素探针：卡片边界真的落在规格位置上 ----
         // 左边距必须干净（面板左侧留白 18）。
         // 注意：卡片的 1px 描边**骑在**矩形边上（覆盖 e-1 与 e 两个像素），所以"干净区"从 e+1 算起。
@@ -394,11 +456,13 @@ public static class VisualProbeCore
 
         // 两列之间的竖向间隙：左卡右缘 e1=274、右卡左缘 e2=286，
         // 描边各渗到 e-1（273 / 285），真正干净的中间区是 [e1+1, e2-2]。
-        double colGap = pixels.MaxDelta((int)(x1 + cardW) + 1, 0, (int)x2 - 2, h - 1);
+        // ⚠️ 纵向只扫**栅格范围内**（0 → 栅格底边）：栅格**下方**是底部状态行（整行文字，
+        //    必然横穿两列之间的那条缝），那不是"列间隙"—— 状态行自己有独立的不变量盯着。
+        double colGap = pixels.MaxDelta((int)(x1 + cardW) + 1, 0, (int)x2 - 2, (int)(y2 + botH));
         report.Checks.Add(new ProbeCheck(
             "监控页：列间距 12 且间隙内无任何绘制",
             colGap < PaintedDelta,
-            $"x∈[{cardW + pad + 1},{pad + cardW + gap - 1}] 最大通道差 = {colGap}（阈值 < {PaintedDelta}）"));
+            $"x∈[{cardW + pad + 1},{pad + cardW + gap - 1}]、y∈[0,{(int)(y2 + botH)}] 最大通道差 = {colGap}（阈值 < {PaintedDelta}）"));
 
         // 两排之间的横向间隙：上排底缘 e1=181、下排顶缘 e2=193，干净区是 [e1+1, e2-2]。
         double rowGap = pixels.MaxDelta(0, (int)topH + 1, w - 1, (int)y2 - 2);
@@ -446,6 +510,59 @@ public static class VisualProbeCore
             "监控页：CPU 卡内部有实际绘制",
             cpuCard > 0.5,
             $"CPU 卡内部非背景像素占比 = {cpuCard:P1}"));
+    }
+
+    // ================= 监控页不变量（真机尺寸：紧凑档） =================
+
+    /// <summary>
+    /// 真机尺寸（504×308 ⇒ 紧凑档）下的不变量：**状态行也必须放得下**。
+    ///
+    /// 为什么单独盯一档：完整档（420 高）放得下，不代表真机放得下 —— 真机监控页只有 308 高，
+    /// 扣掉状态行（TopMargin + LineHeight = 20）只剩 288 给栅格。这里按产品源码里的常量
+    /// 把"紧凑档应该长什么样"算一遍，再在像素上验证：
+    ///   ① 状态行带里确实有文字；
+    ///   ② 状态行顶边不低于「栅格底边 + TopMargin」（不压栅格）；
+    ///   ③ 状态行底边在页面内（不越出面板）。
+    /// </summary>
+    private static void CheckMonitorPageCompact(ProbeReport report, BitmapSource bitmap)
+    {
+        var pixels = new BitmapPixels(bitmap, Palette.Dark.Surface);
+        int w = bitmap.PixelWidth, h = bitmap.PixelHeight;
+
+        // 期望几何（全部取自 MonitorPage 的私有常量 ⇒ 断言的是产品源码，不是抄一份副本）
+        double head = ConstOf(typeof(MonitorPage), "CardHeadH");
+        double gap = ConstOf(typeof(MonitorPage), "GridGap");
+        double rowGap = ConstOf(typeof(MonitorPage), "RowGap");
+        double tightRowH = ConstOf(typeof(MonitorPage), "TightRowH");
+        double tightBotH = ConstOf(typeof(MonitorPage), "TightBotH");
+        double minBotH = ConstOf(typeof(MonitorPage), "MinBotCardH");
+        double statusH = MonitorStatusLineSpec.TopMargin + MonitorStatusLineSpec.LineHeight;
+
+        double availH = h - statusH;
+        double tightTierH = ConstOf(typeof(MonitorPage), "TightTopH") + gap + tightBotH;
+        double topH = head + 3 * tightRowH + 2 * rowGap;          // 紧凑档上排卡 146
+        double botBudget = availH - topH - gap;
+        double botH = Math.Min(tightBotH, Math.Max(minBotH, botBudget));
+        double gridBottom = topH + gap + botH;
+        double slTop = gridBottom + MonitorStatusLineSpec.TopMargin;
+        double slBottom = slTop + MonitorStatusLineSpec.LineHeight - 1;
+
+        int gapTop = (int)gridBottom + 1, gapBottom = (int)slTop - 1;
+        double gapInk = gapBottom >= gapTop ? pixels.MaxDelta(0, gapTop, w - 1, gapBottom) : 0;
+        double slInk = slBottom >= (int)slTop
+            ? pixels.MaxDelta(0, (int)slTop, w - 1, (int)slBottom)
+            : 0;
+
+        report.Checks.Add(new ProbeCheck(
+            "监控页（真机 504×308）：紧凑档也放得下底部状态行",
+            availH < tightTierH                       // 这一档确实是紧凑档（不是完整档）
+                && slInk >= 20                        // 状态行带里有文字
+                && gapInk < PaintedDelta              // 栅格与状态行之间不重叠
+                && slBottom < h,                      // 不越出面板
+            $"页面 {w}×{h}：扣掉状态行 {statusH:F0} ⇒ 可用 {availH:F0}（紧凑档门槛 {tightTierH:F0}）；" +
+            $"栅格 {topH:F0} + {gap:F0} + 下排卡 {botH:F0} ⇒ 底边 y={gridBottom:F0}；" +
+            $"状态行带 y∈[{slTop:F0},{slBottom:F0}]，带内最大通道差 {slInk}（下限 20）；" +
+            $"留白 y∈[{gapTop},{gapBottom}] 最大通道差 {gapInk}（阈值 < {PaintedDelta}）"));
     }
 
     // ================= 设备页不变量 =================
