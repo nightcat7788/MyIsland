@@ -561,6 +561,27 @@ public static class AvaloniaVisualCore
     }
 
     /// <summary>
+    /// 收起态 clock 的像素不变量（2026-11-26 起两端默认收起视图 = clock ⇒ 用户天天看的是这一面）。
+    /// 断言：① 内容确有绘制 ② 内容并排（≥2 段分离内容）。
+    /// </summary>
+    public static void CheckClock(ProbeReport report, ProbeImage img, ProbePalette pal)
+    {
+        var full = new LayoutRect(0, 0, img.Width, img.Height);
+
+        double content = ContentRatio(img, full, pal.Surface);
+        report.Checks.Add(new ProbeCheck(
+            "收起态 clock：内容确有绘制（内容像素占比 > 0.5%）",
+            content > MinContentRatio,
+            $"内容像素占比 {content:P3}（下限 {MinContentRatio:P1}）"));
+
+        var clusters = ContentClusters(img, full, pal.Surface, StatusSlotMinGap);
+        report.Checks.Add(new ProbeCheck(
+            "收起态 clock：内容并排（至少 2 段分离的内容）",
+            clusters.Count >= 2,
+            $"内容簇 {clusters.Count} 段：{string.Join(" / ", clusters)}"));
+    }
+
+    /// <summary>
     /// 收起态 dash 的像素不变量（读数元素确有绘制 / 图标盒确有绘制 / 读数并排）。
     /// </summary>
     public static void CheckDash(ProbeReport report, ProbeImage img, ProbePalette pal)

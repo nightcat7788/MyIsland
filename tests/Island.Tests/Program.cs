@@ -57,6 +57,7 @@ try
     MonitorPageLayoutMacTests.Run(Check); // 2026-11-26 task16：macOS 端监控页分组（规格过滤 + 源码绘制顺序）
     ThemeTokenTests.Run(Check); // 2026-11-26 task9：主题 token 语义清单漂移检查（两端同名 token 必须指同一语义角色）
     ThemeTokenUsageTests.Run(Check); // 2026-11-26 task14：跨端语义 token 用法漂移检查（同一个界面元素在两端必须用同一个语义 token）
+    ThemeContrastTests.Run(Check); // 2026-11-26：主题可读性门禁（macOS 端此前一条对比度断言都没有）+ 两端主题名集合一致
     VisualRenderTests.Run(Check); // 2026-11-26 视觉回归探针：离屏渲染 + 像素不变量（防全黑 / 栅格几何 / 文本越界）
     AvaloniaVisualTests.Run(Check); // 2026-11-26 macOS 端离屏渲染视觉回归：跨端几何一致 + 判定逻辑有牙齿
 }

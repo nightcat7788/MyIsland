@@ -139,6 +139,28 @@ internal static class CapabilityManifestTests
         check("Windows：ExpandedPanel.xaml.cs 不再写死页签按钮数组",
             expandedPanel?.Contains("new[] { btnMonitor") != true);
 
+        // 收起态装饰（刘海融合造型）：清单里登记为 mac 专属 ⇒ Windows 端**不应有实现**。
+        // 真在 Windows 端画出来了，说明清单该改（而不是让差异偷偷溜进来）。
+        // 注意：RepoRoot 是属性，编译器不会对它做 null 收窄 ⇒ 先取到局部变量再用。
+        string root = RepoRoot ?? "";
+        bool windowsHasNotchImpl = false;
+        foreach (var file in Directory.EnumerateFiles(
+                     Path.Combine(root, "src", "Island.App"), "*.cs", SearchOption.AllDirectories))
+        {
+            try
+            {
+                if (File.ReadAllText(file).Contains("DrawNotchBody")) { windowsHasNotchImpl = true; break; }
+            }
+            catch { /* 读不到就当没有 */ }
+        }
+        check("Windows：src/Island.App 没有刘海融合造型的实现（该装饰在清单里登记为 mac 专属）",
+            !windowsHasNotchImpl);
+        check("清单：刘海融合造型登记为 mac 专属",
+            CapabilityManifest.Decorations.Any(e =>
+                e.Key == "notch-fusion"
+                && e.Availability == CapabilityAvailability.PlatformSpecific
+                && e.Owner == CapabilityOwner.MacOnly));
+
         // 页签键覆盖：清单里的 Windows 页签，展开面板必须都有对应控件（少一个 ⇒ 点了没反应）。
         var manifestKeys = CapabilityManifest.ExpandedTabsFor(macOS: false).ToHashSet();
         var mappedKeys = ParseSwitchKeys(expandedPanel, "\"([a-z0-9-]+)\"\\s*=>");

@@ -20,7 +20,13 @@ public sealed class Settings
     public string Edge { get; set; } = "top";          // top/bottom/left/right
     public double PosAlongEdge { get; set; } = 0.5;    // 0..1
     public string ExpandMode { get; set; } = "hover";  // hover / always / never
-    public string CompactView { get; set; } = "dash";  // dash / clock / pet / combo / monitor / devices / clipboard
+    /// <summary>
+    /// 收起视图。**两端默认都是 clock（时间胶囊）** —— 2026-11-26 用户拍板：
+    /// 两端共用同一个 Settings 类，改这一处即两端生效 ⇒ 两台机器首次打开观感一致。
+    /// 可选：dash / clock / pet / combo / monitor / devices / clipboard
+    /// （后四个是 Windows 专属，mac 端认不得 ⇒ 清单里公开为 PlatformSpecific）。
+    /// </summary>
+    public string CompactView { get; set; } = "clock";
     public bool AlwaysOnTop { get; set; } = true;
     public bool HideFullscreen { get; set; } = true;
     public string PetStyle { get; set; } = "classic";   // 小形象款式：classic / mono / cat / robot / pixel
@@ -101,7 +107,10 @@ public sealed class Settings
 
     // ---------- 收起态装饰（参考 Vibe Island 刘海岛造型，用户可逐项开关）----------
     /// <summary>刘海融合造型：收起态画成两端上扬、中间带凹槽的胶囊，露出后方刘海。
-    /// 仅刘海屏机型效果明显；非刘海屏也能正常显示（凹槽露出桌面）。</summary>
+    /// 仅刘海屏机型效果明显；非刘海屏也能正常显示（凹槽露出桌面）。
+    /// ⚠️ **仅 macOS 端生效**（能力清单里登记为 MacOnly 平台专属）：
+    /// Windows 无刘海硬件，且用的是液桥+水滴造型，没有对应实现 ⇒ Windows 端读了不生效。
+    /// 两端共用这一个设置类，所以这个字段在 Windows 上只是"读进来、不用"。</summary>
     public bool DecorNotch { get; set; } = true;
     /// <summary>字母标识环：资源环内画 C/M/G/D 字母代替图标（参考图同款）。</summary>
     public bool DecorLetters { get; set; } = true;

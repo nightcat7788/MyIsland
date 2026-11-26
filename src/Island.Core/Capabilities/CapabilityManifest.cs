@@ -131,6 +131,21 @@ public static class CapabilityManifest
             CapabilityOwner.MacOnly, "Windows 不可用：LHM 的 NVMe SMART IOCTL 在本机触发 0x1EA 蓝屏两次；mac 走 IOHID NAND 传感器"),
     };
 
+    // ================= 收起态装饰 =================
+
+    /// <summary>
+    /// 收起态的**装饰开关**（不是视图，是"胶囊长什么样"的选项）。
+    /// 两端的装饰项**不互相搬运**：mac 有刘海融合造型，Windows 用液桥+水滴造型（§7.5）。
+    /// 登记在这里 = 差异公开，而不是"某端偷偷多一个开关"。
+    /// </summary>
+    public static readonly IReadOnlyList<CapabilityEntry> Decorations = new CapabilityEntry[]
+    {
+        new CapabilityEntry("notch-fusion", "刘海融合造型", "decor", CapabilityAvailability.PlatformSpecific,
+            CapabilityOwner.MacOnly,
+            "仅 macOS：收起态画成两端上扬、顶部中间凹口的胶囊，与真刘海融合（mac 托盘菜单可开关）。" +
+            "Windows 无刘海硬件，用液桥+水滴造型，**没有对应实现** —— Settings.DecorNotch 在 Windows 端读了不生效。"),
+    };
+
     // ================= 小形象款式 =================
 
     /// <summary>小形象款式（两端一致，2026-11-26 已补齐 Windows 侧缺失的 3 款）。</summary>
@@ -168,5 +183,5 @@ public static class CapabilityManifest
 
     /// <summary>清单里全部条目（供文档与测试遍历）。</summary>
     public static IEnumerable<CapabilityEntry> All =>
-        CollapsedViews.Concat(ExpandedTabs).Concat(DataSources);
+        CollapsedViews.Concat(ExpandedTabs).Concat(DataSources).Concat(Decorations);
 }

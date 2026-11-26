@@ -59,7 +59,7 @@ internal static class SettingsTests
     {
         var s = new Settings();
         check("默认设置的主题/边缘/视图是出厂值",
-            s.Theme == "Dark" && s.Edge == "top" && s.CompactView == "dash"
+            s.Theme == "Dark" && s.Edge == "top" && s.CompactView == "clock"
             && s.ExpandMode == "hover" && s.PetStyle == "classic");
         // combo 默认组合：时间 + 读数表盘 + CPU/GPU 温度 + 硬盘占用 + 网速
         // （环组已经画了 C/M/G 占用率，所以 cpu/gpu/mem 三个数字项默认不勾）
@@ -167,7 +167,7 @@ internal static class SettingsTests
         File.WriteAllText(Settings.FilePath, "{ \"Theme\": \"Pixel\" }");
         var loaded = Settings.Load();
         check("缺少的字段回落到默认值",
-            loaded.Theme == "Pixel" && loaded.Edge == "top" && loaded.CompactView == "dash"
+            loaded.Theme == "Pixel" && loaded.Edge == "top" && loaded.CompactView == "clock"
             && loaded.MonitorIntervalMs == 1000 && loaded.TempAlertThreshold == 88
             && loaded.PetAutoCycle && !loaded.ClickThrough);
         // 旧版本留下的、本版本不认识的键同样要留住

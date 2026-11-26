@@ -156,6 +156,23 @@ internal static class Program
         SavePng(dash.PngBytes, Path.Combine(options.OutputDirectory, "dash.png"));
         AvaloniaVisualCore.CheckDash(report, dash.Image, probePalette);
 
+        // ---------- ④ 收起态 · clock ----------
+        //
+        // 2026-11-26 起两端默认收起视图 = clock（时间胶囊）⇒ 这一面才是用户天天看的那一面，
+        // 此前只有 dash 有门禁。
+        var clockCanvas = new IslandCanvas
+        {
+            Palette = palette,
+            IsExpanded = false,
+            View = "clock",
+            Snapshot = SyntheticSnapshot(),
+        };
+        double clockWidth = clockCanvas.MeasureClockWidth();
+        clockCanvas.BodyRect = new Rect(0, 0, clockWidth, 46);
+        var clock = AvaloniaProbeRenderer.Render(clockCanvas, clockWidth, 46, palette.Surface);
+        SavePng(clock.PngBytes, Path.Combine(options.OutputDirectory, "clock.png"));
+        AvaloniaVisualCore.CheckClock(report, clock.Image, probePalette);
+
         return report;
     }
 

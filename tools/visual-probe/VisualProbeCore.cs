@@ -152,6 +152,22 @@ public static class VisualProbeCore
         report.Images.Add(("dash", dashBitmap));
         CheckDash(report, dashBitmap, options);
 
+        // ---------- 收起态 clock（2026-11-26 起两端默认收起视图 = clock ⇒ 这一面才是"天天看的那一面"） ----------
+        // 此前两端探针都只覆盖 dash —— 默认视图反而没有门禁。
+        var clockSize = CompactLayout.Size("clock");
+        var clockCanvas = new IslandCanvas
+        {
+            CompactView = "clock",
+            Palette = palette,
+            Snapshot = SyntheticSnapshot(),
+            Thermal = SyntheticThermal(),
+            BodyRect = new Rect(0, 0, clockSize.Width, clockSize.Height),
+            IsExpanded = false,
+        };
+        var clockBitmap = Render(clockCanvas, (int)clockSize.Width, (int)clockSize.Height, palette);
+        report.Images.Add(("clock", clockBitmap));
+        CheckClock(report, clockBitmap, options);
+
         // ---------- 监控页（真机尺寸：紧凑档） ----------
         // 完整档（420 高）放得下 ≠ 真机放得下。真机的展开面板是 540×380 ⇒ 监控页只有
         // 540 - 18×2 = 504 宽、380 - 14 - 18 - 24（顶栏）- 16（顶栏下留白）= 308 高。
@@ -744,6 +760,55 @@ public static class VisualProbeCore
             $"最右内容 x={lastContentX}（宿主宽 {w}）"));
     }
 
+    /// <summary>
+    /// **收起态 clock 的像素不变量**（2026-11-26 起两端默认收起视图 = clock ⇒ 用户天天看的是这一面，
+    /// 而此前两端探针都只覆盖 dash，等于默认视图没有门禁）。
+    /// 断言：① 非全黑 ② 内容并排（≥2 段分离内容）③ 内容没有越出宿主宽度。
+    /// </summary>
+    private static void CheckClock(ProbeReport report, BitmapSource bitmap, ProbeOptions options)
+    {
+        var palette = options.Palette ?? Palette.Dark;
+        var pixels = new BitmapPixels(bitmap, palette.Surface);
+        int w = bitmap.PixelWidth, h = bitmap.PixelHeight;
+
+        double painted = pixels.PaintedRatio();
+        report.Checks.Add(new ProbeCheck(
+            "收起态 clock：渲染结果非全黑（非背景像素占比 > 2%）",
+            painted > MinPaintedRatio,
+            $"非背景像素占比 {painted:P2}（下限 {MinPaintedRatio:P0}）"));
+
+        // ⚠️ 时钟胶囊的底是**渐变**（液态玻璃），"区域众数色"判不干净 ⇒ 不能用"按列聚簇"那一套
+        // （渐变会被算成内容，于是永远只有 1 段）。改用**高亮墨迹**：时间数字与网速都是高对比文字，
+        // 按墨迹的水平分布判"左边是时间、右边是上下行网速"。
+        double ink = pixels.InkRatio();
+        report.Checks.Add(new ProbeCheck(
+            "收起态 clock：时间与网速确有绘制（高亮像素占比 > 0.05%）",
+            ink > MinInkRatio,
+            $"高亮像素占比 {ink:P3}（下限 {MinInkRatio:P3}）"));
+
+        var (inkX0, inkX1) = pixels.InkBounds();
+        report.Checks.Add(new ProbeCheck(
+            "收起态 clock：左半有墨迹（时间画在左侧）",
+            inkX0 >= 0 && inkX0 < w * 0.45,
+            $"墨迹左边界 x={inkX0}（宿主宽 {w}，要求 < {w * 0.45:F0}）"));
+
+        // 时间与上下行网速必须**分开**画成两段 —— 用墨迹聚簇判（不用相对阈值：
+        // 宿主被压窄时相对阈值会跟着缩，内容被裁也照样绿 ⇒ 门禁形同虚设）。
+        // 阈值取产品常量「时间 → 第一组间距」（CompactSpec.ClockGap = 12）再减 1 ——
+        // 数字内部的间隙（冒号两侧 ~5px）必须**不**算断开，组间间距才算。
+        int clockGroupGap = Math.Max(4, (int)Math.Round(CompactSpec.ClockGap) - 1);
+        var inkClusters = pixels.InkClusters(minGap: clockGroupGap);
+        report.Checks.Add(new ProbeCheck(
+            "收起态 clock：时间与上下行网速画成两段分离的内容",
+            inkClusters.Count >= 2,
+            $"墨迹簇 {inkClusters.Count} 段：{string.Join(" / ", inkClusters.Select(c => $"[{c.X0}..{c.X1}]"))}（下限 2，簇间阈值 {clockGroupGap}px）"));
+
+        report.Checks.Add(new ProbeCheck(
+            "收起态 clock：内容没有越出宿主宽度",
+            inkX1 >= 0 && inkX1 < w,
+            $"最右墨迹 x={inkX1}（宿主宽 {w}）"));
+    }
+
     // ================= 设备页不变量 =================
 
     private static void CheckDevicesPage(ProbeReport report, BitmapSource bitmap, ProbeOptions options)
@@ -1242,6 +1307,61 @@ public static class VisualProbeCore
         {
             var (b, g, r) = At(x, y);
             return Math.Max(r, Math.Max(g, b)) >= InkChannel;
+        }
+
+        /// <summary>
+        /// 把**高亮墨迹**按横向切成若干簇（相邻簇之间至少隔 minGap 像素）。
+        /// 与 ContentClusters 的区别：底色判定用的是"墨迹"而不是"与区域众数色有差别" ——
+        /// 液态玻璃那类**渐变底**会把众数色判脏（整张图算成 1 段），而墨迹只认亮色文字/图标，不受影响。
+        /// </summary>
+        public List<(int X0, int X1)> InkClusters(int minGap, int x0 = 0, int y0 = 0, int x1 = int.MaxValue, int y1 = int.MaxValue)
+        {
+            x0 = Math.Max(0, x0); y0 = Math.Max(0, y0);
+            x1 = Math.Min(_width - 1, x1); y1 = Math.Min(_height - 1, y1);
+            if (x1 < x0 || y1 < y0) return new();
+
+            var cols = new List<int>();
+            for (int x = x0; x <= x1; x++)
+            {
+                bool any = false;
+                for (int y = y0; y <= y1; y++)
+                {
+                    if (IsInk(x, y)) { any = true; break; }
+                }
+                if (any) cols.Add(x);
+            }
+
+            var clusters = new List<(int X0, int X1)>();
+            if (cols.Count == 0) return clusters;
+            int start = cols[0], prev = cols[0];
+            for (int i = 1; i < cols.Count; i++)
+            {
+                if (cols[i] - prev > minGap)
+                {
+                    clusters.Add((start, prev));
+                    start = cols[i];
+                }
+                prev = cols[i];
+            }
+            clusters.Add((start, prev));
+            return clusters;
+        }
+
+        /// <summary>
+        /// 高亮墨迹的水平范围（左边界、右边界）；整张图没有墨迹时返回 (-1, -1)。
+        /// 用于"内容确实分布在这一侧"的判定（例如时钟胶囊：左边时间、右边上下行网速）。
+        /// </summary>
+        public (int X0, int X1) InkBounds()
+        {
+            int x0 = int.MaxValue, x1 = -1;
+            for (int y = 0; y < _height; y++)
+                for (int x = 0; x < _width; x++)
+                    if (IsInk(x, y))
+                    {
+                        if (x < x0) x0 = x;
+                        if (x > x1) x1 = x;
+                    }
+            return x0 == int.MaxValue ? (-1, -1) : (x0, x1);
         }
 
         public int PaintedCount()

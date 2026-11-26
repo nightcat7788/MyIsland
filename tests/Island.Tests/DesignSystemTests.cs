@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Media;
 using Island.App.Controls;
 using Island.App.Themes;
+using Island.Core.Capabilities;
 
 namespace Island.Tests;
 
@@ -40,17 +41,35 @@ internal static class DesignSystemTests
             && RenderKit.NumWidth("12", 0, false, double.NaN) > 0);
 
         // ---------- 对比度（WCAG） ----------
+        // 门槛值取自 ThemeContrastGate（唯一真相源），这里只负责用**运行时**的 Palette 值算；
+        // macOS 端的那一份由 ThemeContrastTests 静态解析源码来算 —— 两边门槛同源、算法同源。
         foreach (var name in Builtins)
         {
             var p = Palette.ByName(name)!;
-            check($"{name}：正文对底色 ≥ 7:1", Ratio(p.Text, p.Surface) >= 7);
-            check($"{name}：次要文字 ≥ 6:1", Ratio(p.TextDim, p.Surface) >= 6);
-            check($"{name}：第三级文字（10px 的说明）≥ 4.5:1", Ratio(p.TextTertiary, p.Surface) >= 4.5);
-            check($"{name}：强调色当文字用（选中的电源计划）≥ 4.5:1", Ratio(p.Accent, p.Surface) >= 4.5);
-            check($"{name}：轨道 / 发丝线叠在底色上比底色亮 ≥ 12%", Ratio(Over(p.Track, p.Surface), p.Surface) >= 1.12
-                && Ratio(Over(p.Hairline, p.Surface), p.Surface) >= 1.12);
-            check($"{name}：状态色（警示 / 危险 / 跌）≥ 3:1", Ratio(p.Warning, p.Surface) >= 3
-                && Ratio(p.Up, p.Surface) >= 3 && Ratio(p.Down, p.Surface) >= 3);
+            foreach (var rule in ThemeContrastGate.Rules)
+            {
+                var token = ThemeTokenManifest.Find(rule.TokenKey);
+                Color? color = token?.WindowsProperty switch
+                {
+                    "Text" => p.Text,
+                    "TextDim" => p.TextDim,
+                    "TextTertiary" => p.TextTertiary,
+                    "Accent" => p.Accent,
+                    "Warning" => p.Warning,
+                    "Up" => p.Up,
+                    "Down" => p.Down,
+                    "Track" => Over(p.Track, p.Surface),
+                    "Hairline" => Over(p.Hairline, p.Surface),
+                    _ => null,
+                };
+                if (color is null)
+                {
+                    check($"{name}：{rule.Role} 有对应色值可测", false);
+                    continue;
+                }
+                double min = ThemeContrastGate.MinFor(rule, macOS: false);
+                check($"{name}：{rule.Role} ≥ {min:0.00}:1", Ratio(color.Value, p.Surface) >= min);
+            }
         }
         check("单色主题（像素）的强调色就是文字色", Palette.Pixel.Accent == Palette.Pixel.Text);
         check("彩色主题的强调色不是文字色（否则选中态分不出来）",

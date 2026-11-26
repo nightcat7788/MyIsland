@@ -128,6 +128,10 @@
     <!-- 跨端语义 token 用法漂移检查（2026-11-26 task14）：同一个界面元素在两端必须用同一个语义 token -->
     <Compile Remove="ThemeTokenUsageTests.cs" />
     <Compile Include="ThemeTokenUsageTests.cs" />
+    <!-- 主题可读性门禁（2026-11-26）：静态解析两端主题源码 → 逐套主题逐 token 比对"按平台各设"的门槛。
+         门槛数据在 Island.Core/Capabilities/ThemeContrastGate.cs（唯一真相源），本文件只做解析与比对。 -->
+    <Compile Remove="ThemeContrastTests.cs" />
+    <Compile Include="ThemeContrastTests.cs" />
     <!-- 展开面板规格（2026-11-26 阶段 2：Windows 展开面板对齐 mac 版）：纯常量类，可链进测试工程 -->
     <Compile Include="..\..\src\Island.App\Controls\ExpandedPanelSpec.cs" Link="Merged\ExpandedPanelSpec.cs" />
     <!-- 离屏渲染视觉回归（2026-11-26）：监控页 / 设备页是纯自绘控件，

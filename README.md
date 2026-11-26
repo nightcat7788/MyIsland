@@ -43,11 +43,23 @@ Windows 与 macOS 各自一套原生实现（Windows WPF 自绘 + macOS Avalonia
 > 这张图是**离屏渲染**出来的：亮度行**不在**——这台机器的内置屏不支持 Dxva2 调亮度，
 > 产品按「该机不支持 ⇒ 整行不出现」处理（与夜灯同一口径），不留一对点了没反应的按钮。
 
-### 收起态（两端胶囊读数带）
+### 收起态 · 时间胶囊（**默认视图**，两端已统一）
 
 | Windows | macOS |
 |---|---|
-| ![Windows 收起态](docs/screenshots/windows-dash.png) | ![macOS 收起态](docs/screenshots/macos-dash.png) |
+| ![Windows 收起态 clock](docs/screenshots/windows-clock.png) | ![macOS 收起态 clock](docs/screenshots/macos-clock.png) |
+
+> 2026-11-26 起两端**默认收起视图都是「时间胶囊」（clock）** —— 两端共用同一个 `Settings` 类，
+> 改一处即两端生效，两台机器首次打开观感一致。
+>
+> ⚠️ 两端 clock 的**内容还不一致**：mac 是「时间 + 秒 + 日期 + 天气」，Windows 是「时间 + 天气 + 上下行网速」。
+> 按「基准以 mac 为准」的总规，Windows 应补上秒与日期 —— 这一项待产品拍板，见 `docs/capabilities.md` §7.6。
+
+### 收起态 · 读数带（dash）
+
+| Windows | macOS |
+|---|---|
+| ![Windows 收起态 dash](docs/screenshots/windows-dash.png) | ![macOS 收起态 dash](docs/screenshots/macos-dash.png) |
 
 > 两张图是**同一套读数项结构**：温度组 │ 占用组 │ 网速。两处已知差异是平台能力导致的
 > （Windows 另有「核心柱群」、mac 另有「电池环」）—— 见 `docs/capabilities.md` §7.3。
