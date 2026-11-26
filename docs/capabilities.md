@@ -50,7 +50,7 @@
 | `network` | 网速 | 两端都有 | 口径已对齐：排除虚拟网卡（Hyper-V/WSL/容器等） |
 | `runtime` | 运行时长 | 两端都有 | 口径已对齐：两端**同一实现** —— `Environment.TickCount64`（系统开机时长）。注：Windows 侧曾有一段 PDH 的 System Up Time 计数器，是**死代码**（建了从不读），已于 2026-11-26 删除 |
 | `cpu-power` | CPU 功耗 | 仅 Windows | Windows 走 LHM CPU 功耗传感器（需管理员）；mac 无对应数据源 |
-| `board-temp` | 主板温度 | 仅 Windows | Windows 走 LHM 主板传感器（需管理员）；mac 无对应数据源 |
+| `board-temp` | 主板温度 | 仅 Windows | Windows 走 LHM 主板传感器（需管理员）；mac 无对应数据源。**现显示在温度卡里**（2026-11-26 task16 从底部状态行移来） |
 | `today-traffic` | 今日流量 | 仅 Windows | Windows 走 PDH 网络计数器累计（今日 ↓/↑）；mac 无每日流量口径 |
 | `battery-bt` | 蓝牙设备电量 | 两端都有（两端实现不同源） | Windows 走 BLE GATT 0x180F/0x2A19；mac 走 IOKit 电池属性 |
 | `battery-hid` | 2.4G 接收器电量 | 两端都有 | 两端共用同一份协议表与三层校验；mac 侧原生探针待实机验证（核对流程：`bash tools/mac-selfcheck.sh` → 报告 `docs/verification/mac-<日期>.md`）；内置表只收**已实机验证**的条目（见 §9） |
@@ -96,8 +96,9 @@
 5. **渲染层与小形象是两份独立实现**：
    渲染层 Windows `src/Island.App/Controls/RenderKit.cs`（38 KB）vs macOS `src/Island.Avalonia/RenderKit.cs`（18 KB）；
    小形象同理（`PetFace.cs` vs `PetFaceAv.cs`），mac 工程没有 link Windows 的实现。
-6. **展开页监控页**：Windows 的 2×2 栅格里不显示 **功耗 / 主板温度 / SSD 温度 / 运行时长 / 今日流量**
-   （2×2 栅格放不下，**收起态的 dash / combo 里仍然有**）。
+6. **展开页监控页**：Windows 的 2×2 栅格里不显示 **功耗 / SSD 温度 / 运行时长 / 今日流量**
+   （2×2 栅格放不下，**收起态的 dash / combo 里仍然有**）；**主板温度**已从底部状态行移进**温度卡**
+   （Windows 专属行，见 §7.3），避免同屏出现两次。
 
 ---
 
@@ -122,7 +123,7 @@
 | 字段位 | Windows | macOS | 说明 |
 |---|---|---|---|
 | 功耗 | 出现 | **不出现** | Windows 走 LHM CPU 功耗；mac 无对应数据源 |
-| 主板温度 | 出现 | **不出现** | Windows 走 LHM 主板传感器（需管理员） |
+| 主板温度 | **不出现** | **不出现** | 已移到**温度卡**（Windows 专属行，§7.3）—— 同一读数不在同屏出现两次 |
 | SSD 温度 | **不出现** | 出现 | Windows 侧 NVMe SMART IOCTL 有 0x1EA 蓝屏史 |
 | 运行时长 | 出现 | 出现 | 两端同一实现：`Environment.TickCount64`（系统开机时长） |
 | 今日流量 | 出现 | **不出现** | Windows 走 PDH 网络计数器累计；mac 无每日流量口径 |
@@ -158,12 +159,13 @@ Windows「CPU / 内存 / 上下速度 / 占用最高」）—— 信息量接近
 | 卡 | 标题 | 行 | Windows | macOS |
 |---|---|---|---|---|
 | 1 | 占用 | CPU / 内存 / 磁盘 | 三行全有 | 三行全有 |
-| 2 | 温度 | CPU / GPU / 存储（SSD） | **只有 CPU / GPU**（SSD 整行不出现） | 三行全有 |
+| 2 | 温度 | CPU / GPU / 存储（SSD） | **CPU / GPU / 主板**（SSD 整行不出现；用同样平台专属的主板温度补位 ⇒ 两端行数一致、卡底不留空） | 三行全有 |
 | 3 | 上下速度 | 下行 / 上行 | 两行全有 | 两行全有 |
 | 4 | 占用最高 | 进程榜 | 进程榜 | 进程榜 |
 
 **平台专属读数保留，且挂在同一类位置**：卡头右上角的附加读数（Windows 挂 CPU 频率、mac 挂 GPU 占用）；
-Windows 的 GPU 显存并进 GPU 温度那一行（mac 无显存可读）。
+Windows 的 GPU 显存并进 GPU 温度那一行（mac 无显存可读）；温度卡的第三行也是平台专属补位
+（Windows = 主板温度，mac = 存储温度）⇒ **两端温度卡都是 3 行、卡底不留空**。
 **部件形态与配色身份各端保留**（Windows 进度条 + 走势曲线 / 暗色科技；mac 环表盘 / 按资源配色）—— 那是视觉身份，不是分组。
 
 **门禁**：`tools/visual-probe/VisualProbeCore.cs` 按规格算出每一行该落在哪一带，断言

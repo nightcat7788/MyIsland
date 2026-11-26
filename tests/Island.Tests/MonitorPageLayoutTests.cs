@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using Island.App.Controls;
+using Island.App.Services;
 using Island.Core.Capabilities;
 using Island.Core.Monitoring;
 
@@ -62,9 +63,12 @@ internal static class MonitorPageLayoutTests
         check("监控页分组：每行至少在一个平台出现",
             rows.All(r => r.Windows || r.MacOS));
 
-        // 行槽的 Field 必须是 MonitorSnapshot 上**真的存在**的字段（规格与快照对得上）
-        var props = typeof(MonitorSnapshot).GetProperties().Select(p => p.Name).ToHashSet(StringComparer.Ordinal);
-        check("监控页分组：每行读的字段在 MonitorSnapshot 上真的存在",
+        // 行槽的 Field 必须是**真的存在**的字段（规格与快照对得上）：
+        // 占用/速度类读数在 MonitorSnapshot，温度类在 ThermalSnapshot（主板温度只在后者）。
+        var props = typeof(MonitorSnapshot).GetProperties().Select(p => p.Name)
+            .Concat(typeof(ThermalSnapshot).GetProperties().Select(p => p.Name))
+            .ToHashSet(StringComparer.Ordinal);
+        check("监控页分组：每行读的字段在快照上真的存在（MonitorSnapshot / ThermalSnapshot）",
             rows.All(r => props.Contains(r.Field)));
     }
 
@@ -90,13 +94,19 @@ internal static class MonitorPageLayoutTests
                 .SequenceEqual(new[] { "cpu-usage", "memory", "disk" }));
 
         var winTemp = MonitorPageLayoutSpec.RowsFor(temp, macOS: false);
-        check("监控页分组：Windows 的温度卡只有 CPU / GPU 两行",
-            winTemp.Select(r => r.Key).SequenceEqual(new[] { "cpu-temp", "gpu-temp" }));
+        check("监控页分组：Windows 的温度卡三行（CPU / GPU / 主板）",
+            winTemp.Select(r => r.Key).SequenceEqual(new[] { "cpu-temp", "gpu-temp", "board-temp" }));
         check("监控页分组：Windows 侧不出现 SSD 温度（平台不支持 ⇒ 整行不出现）",
             !winTemp.Any(r => r.Key == "storage-temp"));
+        check("监控页分组：Windows 侧出现主板温度（平台专属补位）",
+            winTemp.Any(r => r.Key == "board-temp"));
+        var macTemp = MonitorPageLayoutSpec.RowsFor(temp, macOS: true);
         check("监控页分组：mac 的温度卡有三行（CPU / GPU / SSD）",
-            MonitorPageLayoutSpec.RowsFor(temp, macOS: true).Select(r => r.Key)
-                .SequenceEqual(new[] { "cpu-temp", "gpu-temp", "storage-temp" }));
+            macTemp.Select(r => r.Key).SequenceEqual(new[] { "cpu-temp", "gpu-temp", "storage-temp" }));
+        check("监控页分组：mac 侧不出现主板温度（Windows 专属）",
+            !macTemp.Any(r => r.Key == "board-temp"));
+        check("监控页分组：两端温度卡行数一致（都是 3 行 —— 卡底不留空）",
+            winTemp.Count == macTemp.Count && winTemp.Count == 3);
 
         check("监控页分组：上下速度卡两端都是下行 / 上行",
             MonitorPageLayoutSpec.RowsFor(speed, macOS: false).Select(r => r.Key)
@@ -111,6 +121,9 @@ internal static class MonitorPageLayoutTests
         check("监控页分组：温度卡的行标签（CPU / GPU / SSD）",
             MonitorPageLayoutSpec.RowsFor(temp, macOS: true).Select(r => r.Label)
                 .SequenceEqual(new[] { "CPU", "GPU", "SSD" }));
+        check("监控页分组：Windows 温度卡的行标签（CPU / GPU / 主板）",
+            MonitorPageLayoutSpec.RowsFor(temp, macOS: false).Select(r => r.Label)
+                .SequenceEqual(new[] { "CPU", "GPU", "主板" }));
         check("监控页分组：卡片标题（占用 / 温度 / 上下速度 / 占用最高）",
             MonitorPageLayoutSpec.Cards.Select(c => c.Title)
                 .SequenceEqual(new[] { "占用", "温度", "上下速度", "占用最高" }));
@@ -134,14 +147,19 @@ internal static class MonitorPageLayoutTests
         check("监控页分组：Windows 端占用卡三行（CPU / 内存 / 磁盘），行标签取自规格",
             usage.Rows.Where(r => r.Drawn).Select(r => r.Label).SequenceEqual(new[] { "CPU", "内存", "磁盘" }));
 
-        check("监控页分组：Windows 端温度卡只有 CPU / GPU 两行",
-            temp.Rows.Where(r => r.Drawn).Select(r => r.RowKey).SequenceEqual(new[] { "cpu-temp", "gpu-temp" }));
+        check("监控页分组：Windows 端温度卡三行（CPU / GPU / 主板）",
+            temp.Rows.Where(r => r.Drawn).Select(r => r.RowKey)
+                .SequenceEqual(new[] { "cpu-temp", "gpu-temp", "board-temp" }));
 
-        // SSD 温度：整行不出现 —— 它在规格里标了 Windows: false，行带落在第三行位置且不画
+        // 主板温度落在第三行（卡底不留空的那一行）
+        check("监控页分组：Windows 端主板温度行在 GPU 温度行之下（第三行）",
+            temp.Rows.First(r => r.RowKey == "board-temp").Rect.Top
+            > temp.Rows.First(r => r.RowKey == "gpu-temp").Rect.Top);
+
+        // SSD 温度在 Windows 上**没有位置**（那一格归主板温度）⇒ 不画、也没有行带
         var ssd = temp.Rows.Where(r => !r.Drawn).ToList();
-        check("监控页分组：Windows 端温度卡的 SSD 温度行带在第三行位置（平台不支持 ⇒ 不画）",
-            ssd.Count == 1 && ssd[0].RowKey == "storage-temp"
-            && ssd[0].Rect.Top > temp.Rows.First(r => r.RowKey == "gpu-temp").Rect.Top);
+        check("监控页分组：Windows 端温度卡里 SSD 温度没有行带（平台不支持 ⇒ 整行不出现）",
+            ssd.Count == 1 && ssd[0].RowKey == "storage-temp" && ssd[0].Rect.IsEmpty);
 
         // 行带互不压住（每行一条带）
         bool disjoint = true;
