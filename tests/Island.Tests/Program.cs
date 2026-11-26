@@ -53,6 +53,7 @@ try
     MonitorStatusLineTests.Run(Check); // 2026-11-26 E2：底部状态行 —— Windows 端字段位/渲染/「读不到⇒未知」
     MonitorStatusLineMacTests.Run(Check); // 2026-11-26 E2：底部状态行 —— macOS 端字段位与格式化规则
     ThemeTokenTests.Run(Check); // 2026-11-26 task9：主题 token 语义清单漂移检查（两端同名 token 必须指同一语义角色）
+    ThemeTokenUsageTests.Run(Check); // 2026-11-26 task14：跨端语义 token 用法漂移检查（同一个界面元素在两端必须用同一个语义 token）
     VisualRenderTests.Run(Check); // 2026-11-26 视觉回归探针：离屏渲染 + 像素不变量（防全黑 / 栅格几何 / 文本越界）
 }
 catch (Exception ex)

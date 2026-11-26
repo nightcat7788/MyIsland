@@ -42,6 +42,31 @@ public sealed record ThemeTokenEntry(
     string? Note);
 
 /// <summary>
+/// 一个界面元素在两端的**统一语义 token** 登记（2026-11-26 task14）。
+///
+/// 这是 E3 的另一半：`ThemeTokenTests` 守住"两端 Palette **声明**了清单里的每个 token"（不缺项），
+/// 但那管不到**渲染代码实际引用了哪个 token** —— Windows 把卡片标题画成 `pal.Text`、mac 画成 `pal.TextDim`，
+/// 清单照样不缺项、旧门禁照样全绿，可同一个界面元素在两端用了不同的语义角色。
+/// 本表把**界面元素 → 两端统一语义 token** 显式登记下来，门禁再按本表回读两端渲染源码逐条核对。
+/// </summary>
+/// <param name="Key">元素键（稳定标识，用于测试与文档引用）。</param>
+/// <param name="Title">显示名。</param>
+/// <param name="TokenKey">两端统一使用的语义 token 键（<see cref="SharedTokens"/> 里的 Key）。</param>
+/// <param name="WindowsLocator">
+/// Windows 端绘制点的定位正则（作用在 <c>src/Island.App/Controls/MonitorPage.cs</c> 上）：
+/// 恰好一个捕获组 = 该绘制点实际用的 Palette 属性名。
+/// </param>
+/// <param name="MacLocator">macOS 端绘制点的定位正则（作用在 <c>src/Island.Avalonia/IslandCanvas.cs</c> 上），同上。</param>
+/// <param name="Note">说明（为什么是它 / 覆盖了哪几处绘制点）。</param>
+public sealed record ThemeElementTokenEntry(
+    string Key,
+    string Title,
+    string TokenKey,
+    string WindowsLocator,
+    string MacLocator,
+    string? Note);
+
+/// <summary>
 /// **主题 token 语义清单 —— 两端唯一的真相源**（呈现规则层的另一半，与能力清单同构）。
 ///
 /// 为什么要有它：两端各写一份 Palette（Windows `src/Island.App/Themes/Theme.cs`、
@@ -206,4 +231,71 @@ public static class ThemeTokenManifest
     /// <summary>macOS 端 Palette 上登记的属性名（含开关型 token）。</summary>
     public static IEnumerable<string> MacProperties =>
         AllTokens.Where(e => e.MacProperty is not null).Select(e => e.MacProperty!);
+
+    /// <summary>
+    /// **界面元素 → 两端统一语义 token 对照表**（2026-11-26 task14）。
+    ///
+    /// 本表只登记**语义角色**（同一个 token 键），不登记色值 —— 两端取值按设计不同，见 <see cref="ValueDifferenceReason"/>。
+    /// 门禁（`tests/Island.Tests/ThemeTokenUsageTests.cs`）按本表逐条回读两端渲染源码核对，
+    /// 所以**表里的 TokenKey 才是断言的来源**，测试里不另写一份硬编码的期望值。
+    ///
+    /// Locator 的约定（门禁靠它定位**绘制调用点**，不靠数 `pal.` 出现次数 —— 计数法太脆）：
+    ///   · 是一条正则，作用在对应的渲染源码上；
+    ///   · **恰好一个捕获组** = 该绘制点实际用的 Palette 属性名（如 `Text` / `TextDim`）；
+    ///   · 匹配不到 ⇒ 门禁红（说明绘制点改名 / 挪位了，门禁必须跟着更新，而不是默默放过）。
+    /// </summary>
+    public static readonly IReadOnlyList<ThemeElementTokenEntry> ElementTokens = new ThemeElementTokenEntry[]
+    {
+        new ThemeElementTokenEntry(
+            "card-title", "卡片标题", "text-primary",
+            @"CardTitle\(dc,\s*pal,\s*ppd,[^;]*?pal\.(\w+)(?:\s*,[^)]*)?\)",
+            @"RenderKit\.Text\(title,\s*12,\s*pal\.(\w+)\s*,\s*true\s*\)",
+            "Windows 端 4 处调用（CPU / 内存 / 上下速度 / 进程榜卡）必须全部是同一个 token；mac 端是 Card(...) 局部函数。"),
+
+        new ThemeElementTokenEntry(
+            "row-label", "读数行标签", "text-secondary",
+            @"T\(label,\s*labelX,\s*cy\s*\+\s*1[46],\s*ExpandedPanelSpec\.RowLabelFont,\s*pal\.(\w+)\)",
+            @"RenderKit\.Text\(label,\s*10,\s*pal\.(\w+)\)",
+            "Windows 端 2 处（读数行 / 速度行），mac 端 2 处（Row / Speed）；都是次要文字角色。"),
+
+        new ThemeElementTokenEntry(
+            "status-line", "底部状态行", "text-tertiary",
+            @"MonitorStatusLineSpec\.FontSize,\s*pal\.(\w+)",
+            @"MonitorStatusLineSpec\.FontSize,\s*pal\.(\w+)",
+            "Windows 端 3 处（标签 / 等宽读数 / 普通读数），mac 端 1 处（标签与读数合成一段）。"),
+
+        new ThemeElementTokenEntry(
+            "empty-state", "空态 / 未采集提示", "text-tertiary",
+            @"RenderKit\.Text\(empty,\s*ExpandedPanelSpec\.EmptyListFont,\s*pal\.(\w+)",
+            @"RenderKit\.Text\(s\?\.TopProcesses is null[^\n]*?pal\.(\w+)\)",
+            "进程榜没有数据时的提示文字：弱化提示色（两端都区分未采集与暂无高占用应用）。"),
+
+        new ThemeElementTokenEntry(
+            "process-name", "进程榜条目名称", "text-primary",
+            @"RenderKit\.Trimmed\(p\.Name,\s*ExpandedPanelSpec\.ProcessNameFont,\s*pal\.(\w+)",
+            @"RenderKit\.Trimmed\(tp\.Name,\s*11,\s*pal\.(\w+)",
+            "应用名是正文级文字（主文字色），不是弱化提示。"),
+
+        new ThemeElementTokenEntry(
+            "process-value", "进程榜条目数值", "text-secondary",
+            @"ExpandedPanelSpec\.ProcessValueFont,\s*pal\.(\w+)",
+            @"RenderKit\.Text\(val,\s*11,\s*pal\.(\w+)",
+            "占用数值是次级文字色（名称是主角，数值是配角）。"),
+
+        new ThemeElementTokenEntry(
+            "sort-segment-selected-bg", "排序分段控件选中段底", "accent",
+            @"dc\.DrawRoundedRectangle\(RenderKit\.BrushOf\(pal\.(\w+)\), null,\s*RenderKit\.SafeRect\(segX",
+            @"dc\.DrawRectangle\(RenderKit\.BrushOf\(pal\.(\w+)\), null, new RoundedRect\(bxx, 6\)\)",
+            "进程榜右上角「CPU / 内存」切换控件：选中段实心强调色（Windows 端 2 处分支，mac 端 1 处）。"),
+
+        new ThemeElementTokenEntry(
+            "sort-segment-selected-text", "排序分段控件选中段文字", "surface",
+            @"RenderKit\.Text\(segLabels\[i\],\s*ExpandedPanelSpec\.RowLabelFont,\s*on\s*\?\s*pal\.(\w+)\s*:\s*pal\.\w+",
+            @"RenderKit\.Text\(label,\s*10,\s*on\s*\?\s*pal\.(\w+)\s*:\s*pal\.\w+",
+            "强调色实心段上的文字用底色（surface）压出反差 —— 两端必须一致，否则选中态一边糊一边清。"),
+    };
+
+    /// <summary>按元素键取条目（取不到返回 null）。</summary>
+    public static ThemeElementTokenEntry? FindElement(string key) =>
+        ElementTokens.FirstOrDefault(e => string.Equals(e.Key, key, StringComparison.Ordinal));
 }
