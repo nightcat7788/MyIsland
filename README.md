@@ -36,9 +36,11 @@ Windows 与 macOS 各自一套原生实现（Windows WPF 自绘 + macOS Avalonia
 |---|---|
 | ![Windows 监控页](docs/screenshots/windows-monitor-page.png) | ![macOS 监控页](docs/screenshots/macos-monitor-page.png) |
 
-### 收起态（macOS 胶囊读数带）
+### 收起态（两端胶囊读数带）
 
-![macOS 收起态](docs/screenshots/macos-dash.png)
+| Windows | macOS |
+|---|---|
+| ![Windows 收起态](docs/screenshots/windows-dash.png) | ![macOS 收起态](docs/screenshots/macos-dash.png) |
 
 ### 设备页（Windows）
 
