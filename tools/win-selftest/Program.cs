@@ -41,6 +41,10 @@ internal static class Program
     private static int Main(string[] args)
     {
         bool mutate = args.Contains("--mutate", StringComparer.OrdinalIgnoreCase);
+        // --out <文件>：指定报告落盘路径（提权那一次要写到别的文件，别覆盖已回填的报告）
+        string outFile = "";
+        for (int i = 0; i < args.Length - 1; i++)
+            if (args[i] == "--out") outFile = args[i + 1];
         string outDir = Path.Combine(FindRepoRoot() ?? Directory.GetCurrentDirectory(), "docs", "verification");
         var checks = new List<Check>();
 
@@ -134,6 +138,22 @@ internal static class Program
                 : (on.Value ? "已开启" : "已关闭", true);
         });
 
+        // 轮询等待 WLAN 适配器状态变成目标值（产品的 SetWlan 是**异步**的：
+        // 它用 netsh + runas 起一个进程就返回了，实际动作还在后台 ⇒ 立刻读回会读到旧状态）。
+        bool? WaitAdapterState(bool? target, int timeoutMs)
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            bool? last = null;
+            while (sw.ElapsedMilliseconds < timeoutMs)
+            {
+                var (a, _) = ControlService.GetWlanState();
+                last = a;
+                if (a == target) return a;
+                Thread.Sleep(300);
+            }
+            return last;
+        }
+
         // ---------- 控制页：WLAN 开关往返（--mutate）----------
         // 风险：关掉 Wi-Fi 会**真的断网**约 2–3 秒 ⇒ 必须「关 → 读回 → 开 → 读回」在同一条命令里做完，
         // 断网窗口结束后网络自动恢复（下面的 finally 兜底再开一次）。
@@ -145,13 +165,14 @@ internal static class Program
                 bool? wasEnabled = adapter0;
                 if (wasEnabled is null) return ("读不到适配器状态，跳过", true);
                 var (ok1, msg1) = ControlService.SetWlan(!wasEnabled.Value);
-                System.Threading.Thread.Sleep(1200);
-                var (adapter1, connected1) = ControlService.GetWlanState();
+                // 等状态真的变（产品的 netsh 是异步的）
+                bool? adapter1 = WaitAdapterState(!wasEnabled.Value, 15000);
+                var (_, connected1) = ControlService.GetWlanState();
                 var (ok2, msg2) = ControlService.SetWlan(wasEnabled.Value);
-                System.Threading.Thread.Sleep(1200);
-                var (adapter2, _) = ControlService.GetWlanState();
-                return ($"原状态 适配器{(wasEnabled.Value ? "启用" : "禁用")} → 关掉 {(ok1 ? "成功" : "失败: " + msg1)}，读回 {(adapter1 is null ? "未知" : adapter1.Value ? "启用" : "禁用")}/连接 {(connected1 is null ? "未知" : connected1.Value ? "已连接" : "未连接")} → 还原 {(ok2 ? "成功" : "失败: " + msg2)}，读回 {(adapter2 is null ? "未知" : adapter2.Value ? "启用" : "禁用")}",
-                    ok1 && ok2 && adapter2 == wasEnabled);
+                bool? adapter2 = WaitAdapterState(wasEnabled.Value, 15000);
+                var (_, connected2) = ControlService.GetWlanState();
+                return ($"原状态 适配器{(wasEnabled.Value ? "启用" : "禁用")} → 关掉 {(ok1 ? "已下发" : "失败: " + msg1)}，等待后读回 {(adapter1 is null ? "未知" : adapter1.Value ? "启用" : "禁用")}/连接 {(connected1 is null ? "未知" : connected1.Value ? "已连接" : "未连接")} → 还原 {(ok2 ? "已下发" : "失败: " + msg2)}，等待后读回 {(adapter2 is null ? "未知" : adapter2.Value ? "启用" : "禁用")}/连接 {(connected2 is null ? "未知" : connected2.Value ? "已连接" : "未连接")}",
+                    ok1 && ok2 && adapter1 == !wasEnabled.Value && adapter2 == wasEnabled.Value);
             });
         }
 
@@ -272,7 +293,11 @@ internal static class Program
         try
         {
             Directory.CreateDirectory(outDir);
-            string path = Path.Combine(outDir, $"windows-selftest-{DateTime.Now:yyyy-MM-dd}.md");
+            string path = outFile.Length > 0
+                ? (Path.IsPathRooted(outFile) ? outFile : Path.Combine(FindRepoRoot() ?? Directory.GetCurrentDirectory(), outFile))
+                : Path.Combine(outDir, $"windows-selftest-{DateTime.Now:yyyy-MM-dd}.md");
+            string? parent = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(parent)) Directory.CreateDirectory(parent);
             File.WriteAllText(path, BuildReport(checks, mutate), new UTF8Encoding(false));
             Console.WriteLine("报告：" + path);
         }

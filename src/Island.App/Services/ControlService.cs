@@ -231,9 +231,13 @@ public static class ControlService
             System.Diagnostics.Process.Start(psi);
             return (true, enable ? $"已请求开启无线网络（{nic}）" : $"已请求关闭无线网络（{nic}）");
         }
-        catch (System.ComponentModel.Win32Exception)
+        catch (System.ComponentModel.Win32Exception ex)
         {
-            return (false, "需要管理员权限才能开关无线网络");   // 用户取消了 UAC
+            // 1223 = ERROR_CANCELLED：**用户取消了 UAC 弹窗**（不是权限不够）。
+            // 两者都说成"需要管理员权限"会误导人 —— 取消授权重试一次就好，不必换权限。
+            return (false, ex.NativeErrorCode == 1223
+                ? "已取消授权，未改动无线网络（UAC 弹窗点『否』或超时）。"
+                : "需要管理员权限才能开关无线网络。");
         }
         catch { return (false, "开关无线网络失败"); }
     }
