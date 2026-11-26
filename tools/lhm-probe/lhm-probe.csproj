@@ -1,3 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
@@ -14,11 +15,20 @@
   <ItemGroup>
     <!-- 与主工程同一个版本的硬件库，保证看到的传感器名与产品里一致 -->
     <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.6" />
+    <!-- matrix 模式要读显卡清单（WMI）与 GPU 占用（PDH 计数器），版本与 Island.Native 对齐 -->
+    <PackageReference Include="System.Management" Version="10.0.2" />
+    <PackageReference Include="System.Diagnostics.PerformanceCounter" Version="8.0.0" />
   </ItemGroup>
 
   <!-- 直接链接主工程的取值规则，保证工具与产品用的是同一套判定 -->
   <ItemGroup>
     <Compile Include="..\..\src\Island.App\Services\CpuTemperatureRule.cs" Link="Merged\CpuTemperatureRule.cs" />
+    <Compile Include="..\..\src\Island.App\Services\HardwareSensorRules.cs" Link="Merged\HardwareSensorRules.cs" />
+    <!-- 显卡名称/占用口径：直接链接 Island.Native 的实现，工具跑的就是产品那份代码 -->
+    <Compile Include="..\..\src\Island.Native\GpuUsageReader.cs" Link="Merged\Native\GpuUsageReader.cs" />
+    <Compile Include="..\..\src\Island.Native\PdhWildcardQuery.cs" Link="Merged\Native\PdhWildcardQuery.cs" />
+    <!-- Intel GCL 拦停策略：不链接它，探针在"只有核显"的机器上会触发 700MB–4.5GB 的提交内存尖峰 -->
+    <Compile Include="..\..\src\Island.App\Services\IntelComputePolicy.cs" Link="Merged\IntelComputePolicy.cs" />
   </ItemGroup>
 
 </Project>
