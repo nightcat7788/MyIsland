@@ -807,6 +807,10 @@ public static class VisualProbeCore
 
     /// <summary>同 <see cref="TryRenderExpandedPanel(string,int,int,Palette)"/>，但把失败原因带出来（如实报告，不猜）。</summary>
     public static BitmapSource? TryRenderExpandedPanel(string islandAppDll, int width, int height, Palette palette, out string? error)
+        => TryRenderExpandedPanel(islandAppDll, width, height, palette, out error, -1);
+
+    /// <summary>渲染展开面板的指定页（pageIndex = -1 表示默认的监控页）。</summary>
+    public static BitmapSource? TryRenderExpandedPanel(string islandAppDll, int width, int height, Palette palette, out string? error, int pageIndex)
     {
         error = null;
         BitmapSource? result = null;
@@ -816,7 +820,7 @@ public static class VisualProbeCore
         // 调用方（控制台主线程）是 MTA ⇒ 这里自己开一条 STA 工作线程。
         var worker = new Thread(() =>
         {
-            try { result = RenderExpandedPanelOnSta(islandAppDll, width, height, palette); }
+            try { result = RenderExpandedPanelOnSta(islandAppDll, width, height, palette, pageIndex); }
             catch (Exception ex) { failure = ex; }
         });
         worker.SetApartmentState(ApartmentState.STA);
@@ -833,7 +837,7 @@ public static class VisualProbeCore
         return result;
     }
 
-    private static BitmapSource? RenderExpandedPanelOnSta(string islandAppDll, int width, int height, Palette palette)
+    private static BitmapSource? RenderExpandedPanelOnSta(string islandAppDll, int width, int height, Palette palette, int pageIndex = -1)
     {
         try
         {
@@ -879,6 +883,42 @@ public static class VisualProbeCore
                 // 喂不进去读数不算失败：面板照样能渲染（只是读数位显示 "—"），
                 // 但那样出来的图看不出内容，所以这里让上层知道。
                 throw new InvalidOperationException("展开面板读数注入失败", new InvalidOperationException("见内层异常"));
+            }
+
+            // 控制页：给面板接上**真实的 PanelData**（产品的 DataContext）。
+            // 不接的话：① 绑定解析不了 ⇒ Visibility 保持默认（Visible）——
+            //   「该机不支持」的行（例如亮度）会**假装能点**；② 电源计划 / 内存清理那些行只会显示「读取中…」。
+            // PanelData 是被加载程序集自己的类型 ⇒ 必须用反射造、用反射调 UpdateControls()。
+            if (pageIndex >= 0)
+            {
+                try
+                {
+                    var pdType = app.GetType("Island.App.Controls.PanelData");
+                    object? pd = pdType is null ? null : Activator.CreateInstance(pdType);
+                    if (pd is not null && pdType is not null)
+                    {
+                        pdType.GetMethod("UpdateControls", BindingFlags.Public | BindingFlags.Instance)?.Invoke(pd, null);
+                        // 夜灯行：**恒显示**（与宿主 IslandWindow.BuildPanelData 同一口径 ——
+                        // 从没配置过夜灯也显示卡片，点了写不进去就带去系统设置开启）。
+                        // 这里显式摆上：不摆的话探针渲出来的控制页会比真机少一行。
+                        pdType.GetProperty("HasNightLight", BindingFlags.Public | BindingFlags.Instance)
+                            ?.SetValue(pd, true);
+                        panel.DataContext = pd;
+                    }
+                }
+                catch
+                {
+                    // 接不上 DataContext 不是致命问题：面板照样能渲染（只是绑定那几行保持默认）
+                }
+            }
+
+            // 切到指定页（-1 = 不切，保持默认的监控页）。
+            // 控制页是 Windows 专属页，此前**从没被离屏渲染过** —— 这一页里就有"该机不支持的能力"
+            // 怎么处理（亮度行不出现、夜灯带去系统设置…），得看得见才算测过。
+            if (pageIndex >= 0)
+            {
+                var selectPage = panelType.GetMethod("SelectPage", BindingFlags.Public | BindingFlags.Instance);
+                if (selectPage is not null) selectPage.Invoke(instance, new object[] { pageIndex });
             }
 
             panel.Width = width;

@@ -95,6 +95,28 @@ internal static class Program
                         "展开面板整体：渲染结果非全黑", false, $"非背景像素占比 {ratio:P2}"));
                     Console.WriteLine($"  PNG: {panelPath}");
                 }
+
+                // 控制页（Windows 专属页，此前从没被离屏渲染过）：
+                // 这一页里全是"这台机器支不支持"的分支（亮度行 / 夜灯 / 电源计划 / 麦克风…），
+                // 看得见才算测过 —— 亮度不支持时那一行**应当整行不出现**。
+                const int controlPage = 3;
+                var controlBitmap = VisualProbeCore.TryRenderExpandedPanel(appDll, 540, 400, palette, out string? controlError, controlPage);
+                if (controlBitmap is null)
+                {
+                    Console.WriteLine("SKIP: 控制页未渲染 —— " + (controlError ?? "原因未知"));
+                }
+                else
+                {
+                    Directory.CreateDirectory(outDir);
+                    string controlPath = Path.Combine(outDir, "expanded-panel-control.png");
+                    VisualProbeCore.SavePng(controlBitmap, controlPath);
+                    double ratio = VisualProbeCore.PaintedRatioOf(controlBitmap, palette.Surface);
+                    Console.WriteLine((ratio > 0.02 ? "PASS: " : "FAIL: ")
+                        + $"控制页：渲染结果非全黑（非背景像素占比 = {ratio:P2}）");
+                    if (ratio <= 0.02) report.Checks.Add(new ProbeCheck(
+                        "控制页：渲染结果非全黑", false, $"非背景像素占比 {ratio:P2}"));
+                    Console.WriteLine($"  PNG: {controlPath}");
+                }
             }
         }
         catch (Exception ex)
