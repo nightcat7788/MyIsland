@@ -65,9 +65,9 @@ internal static class ThemeTokenUsageTests
             elements.All(e => TryCompile(e.WindowsLocator) is not null && TryCompile(e.MacLocator) is not null));
 
         // 已知的元素全集（防止悄悄少登记一个元素 ⇒ 门禁覆盖面缩水）。
-        check("用法清单：覆盖了已知的 8 个关键界面元素",
+        check("用法清单：覆盖了已知的 9 个关键界面元素",
             KnownKeys("card-title", "row-label", "status-line", "empty-state",
-                      "process-name", "process-value",
+                      "process-name", "process-value", "process-icon-fallback",
                       "sort-segment-selected-bg", "sort-segment-selected-text")
                 .All(k => elements.Any(e => e.Key == k)));
     }

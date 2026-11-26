@@ -206,6 +206,7 @@ Windows 独有的 4 个视图（`monitor` 高密度读数带 / `devices` 设备�
 | 空态 / 未采集提示 | `text-tertiary`（`TextTertiary`） | 进程榜空态 1 处 | 进程榜空态 1 处 |
 | 进程榜条目名称 | `text-primary`（`Text`） | 1 处 | 1 处 |
 | 进程榜条目数值 | `text-secondary`（`TextDim`） | 1 处 | 1 处 |
+| 应用图标首字母兜底 | `text-secondary`（`TextDim`） | 1 处 | 1 处（2026-11-26 由 `text-primary` 改齐：它是图标的替身，应比应用名更安静） |
 | 排序分段控件选中段底 | `accent`（`Accent`） | 2 处分支 | 1 处 |
 | 排序分段控件选中段文字 | `surface`（`Surface`） | 1 处 | 1 处 |
 

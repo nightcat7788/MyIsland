@@ -247,6 +247,13 @@ public static class ThemeTokenManifest
     public static readonly IReadOnlyList<ThemeElementTokenEntry> ElementTokens = new ThemeElementTokenEntry[]
     {
         new ThemeElementTokenEntry(
+            "process-icon-fallback", "应用图标首字母兜底", "text-secondary",
+            @"RenderKit\.Mono\(p\.Name\.Length[\s\S]*?pal\.(\w+)",
+            @"RenderKit\.Text\(string\.IsNullOrEmpty\(tp\.Name\)[\s\S]*?pal\.(\w+)",
+            "取不到真实应用图标时用首字母代替：它是**图标的替身**，视觉上要比旁边的应用名更安静，" +
+            "所以用次要文字色（两端一致）。2026-11-26 首轮门禁实测发现 mac 曾用主文字色，已改齐。"),
+
+        new ThemeElementTokenEntry(
             "card-title", "卡片标题", "text-primary",
             @"CardTitle\(dc,\s*pal,\s*ppd,[^;]*?pal\.(\w+)(?:\s*,[^)]*)?\)",
             @"RenderKit\.Text\(title,\s*12,\s*pal\.(\w+)\s*,\s*true\s*\)",

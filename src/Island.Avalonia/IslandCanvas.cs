@@ -1831,7 +1831,9 @@ public sealed class IslandCanvas : Control
             }
             else
             {
-                var initial = RenderKit.Text(string.IsNullOrEmpty(tp.Name) ? "?" : tp.Name[..1].ToUpperInvariant(), 9, pal.Text, true);
+                // 首字母兜底（取不到应用图标时）：用**次要文字色**，与 Windows 端一致 ——
+                // 它是图标的替身，视觉上应比旁边的应用名更安静，不该抢眼。
+                var initial = RenderKit.Text(string.IsNullOrEmpty(tp.Name) ? "?" : tp.Name[..1].ToUpperInvariant(), 9, pal.TextDim, true);
                 dc.DrawEllipse(RenderKit.BrushOf(pal.Track), null, new Point(x2 + 23, ry + 8), 8, 8);
                 dc.DrawText(initial, new Point(x2 + 23 - initial.Width / 2, ry + 3));
             }
