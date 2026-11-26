@@ -124,6 +124,16 @@
     <!-- 新测试文件：默认 glob 已包含它，这里显式登记（先移除默认项，避免重复编译项报错） -->
     <Compile Remove="VisualRenderTests.cs" />
     <Compile Include="VisualRenderTests.cs" />
+    <!-- macOS 端离屏渲染视觉回归（2026-11-26 task-11）：判定核心 + 布局规格 + 测试用例。
+         判定核心（tools\avalonia-probe\AvaloniaVisualCore.cs）与探针共用同一份源码，
+         避免"工具里过了、门禁里是另一套标准"。
+         ⚠️ 这两个文件是**纯 .NET**（不引用 Avalonia）——所以零 NuGet 的测试工程能链进来；
+         Avalonia 的真渲染在 tools\avalonia-probe 里做（那边才允许有 Avalonia 依赖）。
+         布局规格 MonitorLayoutSpec.cs 同样纯 .NET，链接进来才能断言"两端几何一致"。 -->
+    <Compile Include="..\..\tools\avalonia-probe\AvaloniaVisualCore.cs" Link="Merged\AvaloniaProbeCore.cs" />
+    <Compile Include="..\..\src\Island.Avalonia\MonitorLayoutSpec.cs" Link="Merged\Avalonia\MonitorLayoutSpec.cs" />
+    <Compile Remove="AvaloniaVisualTests.cs" />
+    <Compile Include="AvaloniaVisualTests.cs" />
     <!-- PDH 通配符读取器（GPU Engine 分组聚合）：纯 P/Invoke，无 NuGet 依赖，可链进测试工程 -->
     <Compile Include="..\..\src\Island.Native\PdhWildcardQuery.cs" Link="Merged\PdhWildcardQuery.cs" />
   </ItemGroup>
