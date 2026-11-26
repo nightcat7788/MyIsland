@@ -191,7 +191,12 @@ internal static class SettingsTests
         Thread.Sleep(120);
         check("防抖窗口内还没落盘",
             !File.Exists(Settings.FilePath) && Settings.SaveWriteCount == before);
-        Thread.Sleep(700);
+        // 等防抖窗口真正走完并落盘（最多 5 秒）—— **不能固定 sleep**：
+        // 防抖定时器是 400ms，但满载机器上线程调度一慢，写盘就落在 820ms 之后 ⇒ 旧写法随机变红
+        // （2026-11-26 在发布流水线并行时实测挂过一次，拦下了整个发布）。
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < 5000 && Settings.SaveWriteCount == before)
+            Thread.Sleep(50);
         check("连续 RequestSave 只落一次盘",
             Settings.SaveWriteCount == before + 1 && File.Exists(Settings.FilePath));
         check("防抖写入的内容正确",
