@@ -7,6 +7,17 @@ using Island.Core.Monitoring;
 
 namespace Island.App.Controls;
 
+/// <summary>监控页的一个**读数行行带**（行标签所在的那一条带）—— 视觉探针的门禁用。</summary>
+/// <param name="CardKey">所属卡片在共享规格里的键。</param>
+/// <param name="RowKey">行槽在共享规格里的键。</param>
+/// <param name="Label">行标签（取自共享规格，两端一致）。</param>
+/// <param name="Rect">行带矩形（页面坐标）。</param>
+/// <param name="Drawn">该行在 Windows 上是否出现（平台不支持 ⇒ 整行不出现）。</param>
+public sealed record MonitorRowBand(string CardKey, string RowKey, string Label, Rect Rect, bool Drawn);
+
+/// <summary>监控页的一张**卡片带**（卡片矩形 + 它的读数行行带）—— 视觉探针的门禁用。</summary>
+public sealed record MonitorCardBand(string Key, string Title, Rect Rect, IReadOnlyList<MonitorRowBand> Rows);
+
 /// <summary>
 /// 展开面板的系统监控页。整页自绘，读数变化只触发重绘、不重新测量布局；文本/画笔/几何走 RenderKit 缓存。
 ///
@@ -16,8 +27,10 @@ namespace Island.App.Controls;
 ///   · 卡片：卡头 42px（12px SemiBold 标题 + 12×12 矢量图标 + 标题下 1px 发丝线，左右内缩 15）
 ///           → 下面若干「读数行」（行高 44、行距 7）：12×12 图标 + 10px TextDim 标签
 ///             + 右对齐 14px SemiBold 数值 + 4px 圆角 2 的进度条 + 1.4px 走势曲线（框高 14）。
-///   · 四张卡：① CPU（占用 / 频率 / 温度）② 内存（内存 / GPU / 磁盘）
-///             ③ 上下速度（下行 / 上行 + 卡底网络与电池）④ 进程榜（占用最高 · CPU / 内存 + 排序分段控件）。
+///   · 四张卡（**分组取自两端共享规格 <see cref="MonitorPageLayoutSpec"/>**，两端一致）：
+///             ① 占用（CPU / 内存 / 磁盘；卡头右上角挂 CPU 频率 —— 平台专属附加读数）
+///             ② 温度（CPU / GPU（显存并进 GPU 那一行）；SSD 温度在 Windows 上整行不出现）
+///             ③ 上下速度（下行 / 上行 + 卡底网络与电池）④ 占用最高（进程榜 + 排序分段控件）。
 ///   · 底部状态行：栅格**下方**一行 9px 中性色读数（功耗 / 主板温度 / 运行时长 / 今日流量），
 ///     字段位清单取自两端共享规格 MonitorStatusLineSpec（平台不支持的不出现，读不到显示"未知"）。
 ///
@@ -99,14 +112,148 @@ public sealed class MonitorPage : FrameworkElement
     private const double FlowCorner = 1.5;
     /// <summary>流量条满格 = 2 MB/s（对数刻度的分母）。</summary>
     private const double FullSpeed = 2 * 1024 * 1024;
-    /// <summary>频率条满格基准 = 5.0 GHz（常见加速上限；超了按满格算）。</summary>
-    private const double FreqFull = 5.0;
     /// <summary>温度条满格基准（mac：110℃）。</summary>
     private const double TempFull = 110;
     /// <summary>速度数值字号（mac：16 SemiBold）。</summary>
     private const double SpeedValueFont = 16;
     /// <summary>读数行的图标边长（mac：12）。</summary>
     private const double RowIconSize = 12;
+
+    // ================= 栅格几何（渲染与门禁共用同一份算式） =================
+
+    /// <summary>高度分档的结果（完整 / 让位 / 紧凑）。</summary>
+    private readonly struct Tier
+    {
+        /// <summary>读数行高（不含走势曲线那部分）。</summary>
+        public readonly double RowH;
+        /// <summary>首行行高（带走势曲线，更高）。</summary>
+        public readonly double FirstRowH;
+        /// <summary>上排卡高。</summary>
+        public readonly double TopH;
+        /// <summary>速度两行的行距。</summary>
+        public readonly double SpeedRowH;
+        /// <summary>下排卡高。</summary>
+        public readonly double BotH;
+        /// <summary>进程榜最多行数。</summary>
+        public readonly int ProcRows;
+        /// <summary>速度两行是否画走势曲线。</summary>
+        public readonly bool SpeedCurve;
+
+        public Tier(double rowH, double firstRowH, double topH, double speedRowH, double botH,
+            int procRows, bool speedCurve)
+        {
+            RowH = rowH; FirstRowH = firstRowH; TopH = topH; SpeedRowH = speedRowH;
+            BotH = botH; ProcRows = procRows; SpeedCurve = speedCurve;
+        }
+    }
+
+    /// <summary>
+    /// 高度分档：骨架不变，放不下时让曲线 / 行数逐级让位（老做法：排不下就不画，绝不越出面板）。
+    ///   A 完整档 349 = 181 + 12 + 156（mac 口径）
+    ///   B 让位档 304 = 160 + 12 + 132（只有 CPU 占用行保留走势曲线）
+    ///   C 紧凑档 290 = 146 + 12 + 132（全部读数行不带曲线）
+    /// </summary>
+    private static Tier TierFor(double availH)
+    {
+        if (availH >= TopCardH + GridGap + BotCardH)
+            return new Tier(RowH, RowH, TopCardH, SpeedRowH, BotCardH, ExpandedPanelSpec.ProcessMaxRows, true);
+        if (availH >= TightTopH + GridGap + TightBotH)
+            return new Tier(TightRowH, RowH, TightTopH, TightSpeedRowH, TightBotH, 4, false);
+        double topH = CardHeadH + 3 * TightRowH + 2 * RowGap;
+        double botH = TightBotH;
+        // 连紧凑档都装不下时（真机：展开面板 540×380 ⇒ 监控页只有 308 高，
+        // 146 + 12 + 132 + 20 = 310 > 308），把下排卡按"扣掉状态行后的剩余高度"再收一收 ——
+        // 状态行必须永远放得下（硬要求），宁可卡片矮 2px，也不让状态行越出面板。
+        double botBudget = availH - topH - GridGap;
+        if (botBudget < botH) botH = Math.Max(MinBotCardH, botBudget);
+        return new Tier(TightRowH, TightRowH, topH, TightSpeedRowH, botH, 4, false);
+    }
+
+    /// <summary>
+    /// 栅格：左右内缩与卡片宽 —— 内容宽 560（mac 口径）⇒ 卡片宽 (560 - 18×2 - 12) / 2 = 256；
+    /// 面板更窄时等比收窄，绝不重叠。
+    /// </summary>
+    private static (double Pad, double CardW) GridFor(double width)
+    {
+        double pad = GridPad;
+        double cardW = (width - pad * 2 - GridGap) / 2;
+        if (cardW < 150)
+        {
+            pad = Math.Max(0, (width - GridGap - 300) / 2);
+            cardW = (width - pad * 2 - GridGap) / 2;
+        }
+        return (pad, cardW);
+    }
+
+    /// <summary>读数行顶边：首行带走势曲线（行高 firstRowH），其余行行高 rowH。</summary>
+    private static double MetricRowTop(double cardTop, int index, double rowH, double firstRowH)
+        => index == 0
+            ? cardTop + CardHeadH
+            : cardTop + CardHeadH + firstRowH + RowGap + (index - 1) * (rowH + RowGap);
+
+    /// <summary>
+    /// 监控页在给定尺寸下的**卡片带**（卡片矩形 + 每个读数行的行带）—— 视觉探针的门禁用。
+    ///
+    /// 为什么由产品代码算：探针自己抄一份排版 ⇒ 两边漂移 ⇒ 门禁变假（"分组错了也判绿"）。
+    /// 卡片清单、标题、行标签、行槽的平台可用性一律取自两端共享规格
+    /// <see cref="MonitorPageLayoutSpec"/>，这里只补**几何**。
+    ///
+    /// 备注：按"显示项全开"算（探针就是这么渲染的）；设置里关掉某一项时画出来的行会更少。
+    /// </summary>
+    public static IReadOnlyList<MonitorCardBand> PlannedCards(double width, double height)
+    {
+        var (pad, cardW) = GridFor(width);
+        var tier = TierFor(height - MonitorStatusLineSpec.TopMargin - MonitorStatusLineSpec.LineHeight);
+        double x1 = pad, x2 = pad + cardW + GridGap;
+        double y2 = tier.TopH + GridGap;
+
+        var result = new List<MonitorCardBand>();
+        var cards = MonitorPageLayoutSpec.CardsFor(macOS: false);
+        for (int ci = 0; ci < cards.Count; ci++)
+        {
+            var card = cards[ci];
+            // 2×2 栅格：清单顺序 = 左上 / 右上 / 左下 / 右下
+            int col = ci % 2, row = ci / 2;
+            var rect = new Rect(col == 0 ? x1 : x2, row == 0 ? 0 : y2, cardW, row == 0 ? tier.TopH : tier.BotH);
+
+            var rows = new List<MonitorRowBand>();
+            int drawn = 0;
+            for (int ri = 0; ri < card.Rows.Count; ri++)
+            {
+                var slot = card.Rows[ri];
+                if (slot.Label.Length == 0) continue;   // 进程榜没有行标签（榜体是清单，不是读数行）
+                // 出现的行按"已经画了几行"排位；不出现的行按规格序排位（它若出现就会落在那儿）
+                int index = slot.Windows ? drawn : ri;
+                rows.Add(new MonitorRowBand(card.Key, slot.Key, slot.Label,
+                    RowLabelBand(card.Key, index, rect, tier), slot.Windows));
+                if (slot.Windows) drawn++;
+            }
+            result.Add(new MonitorCardBand(card.Key, card.Title, rect, rows));
+        }
+        return result;
+    }
+
+    /// <summary>读数行的**标签带**（图标 + 行标签所在的那一条）—— 门禁看的就是它。</summary>
+    private static Rect RowLabelBand(string cardKey, int index, Rect card, Tier tier)
+    {
+        if (cardKey == "speed")
+        {
+            double speedTop = card.Top + CardHeadH + index * tier.SpeedRowH;
+            return new Rect(card.Left + 13, speedTop + 4, 90, 14);
+        }
+        double rowTop = MetricRowTop(card.Top, index, tier.RowH, tier.FirstRowH);
+        return new Rect(card.Left + 13, rowTop + 2, 90, 16);
+    }
+
+    /// <summary>共享规格里的卡片槽（Windows 侧）—— 卡片标题不许在代码里另写一份字符串。</summary>
+    private static MonitorCardSlot SpecCard(string key)
+        => MonitorPageLayoutSpec.CardsFor(macOS: false).FirstOrDefault(c => c.Key == key)
+           ?? throw new InvalidOperationException($"共享规格 MonitorPageLayoutSpec 里没有卡片 {key}");
+
+    /// <summary>共享规格里的行标签（Windows 侧）—— 两端一致，代码里不另写一份字符串。</summary>
+    private static string RowLabel(MonitorCardSlot card, string rowKey)
+        => MonitorPageLayoutSpec.RowsFor(card, macOS: false).FirstOrDefault(r => r.Key == rowKey)?.Label
+           ?? throw new InvalidOperationException($"共享规格里没有行槽 {card.Key}/{rowKey}");
 
     /// <summary>磁盘空间（"12 GB/500 GB" 那一串）：与旧版口径一致。</summary>
     private static string DriveText(DiskStat d)
@@ -173,13 +320,7 @@ public sealed class MonitorPage : FrameworkElement
 
         // ---------- 栅格几何 ----------
         // 内容宽 560（mac 口径）→ 卡片宽 (560 - 18×2 - 12) / 2 = 256；面板更窄时等比收窄，绝不重叠。
-        double pad = GridPad;
-        double cardW = (W - pad * 2 - GridGap) / 2;
-        if (cardW < 150)
-        {
-            pad = Math.Max(0, (W - GridGap - 300) / 2);
-            cardW = (W - pad * 2 - GridGap) / 2;
-        }
+        var (pad, cardW) = GridFor(W);
         if (cardW < 60) return;
 
         // 高度分档：骨架不变，放不下时让曲线 / 行数逐级让位（老做法：排不下就不画，绝不越出面板）。
@@ -192,36 +333,12 @@ public sealed class MonitorPage : FrameworkElement
         //    变的只是"什么时候降档"——状态行必须永远放得下，不压栅格、不越出面板。
         double statusLineH = MonitorStatusLineSpec.TopMargin + MonitorStatusLineSpec.LineHeight;
         double availH = H - statusLineH;
-        double rowH, firstRowH, topH, speedRowH, botH;
+        var tier = TierFor(availH);
+        double rowH = tier.RowH, firstRowH = tier.FirstRowH, topH = tier.TopH;
+        double speedRowH = tier.SpeedRowH, botH = tier.BotH;
+        bool speedCurve = tier.SpeedCurve;     // 速度两行的走势曲线（只有完整档放得下）
         double procGap = ExpandedPanelSpec.ProcessRowGap;
-        int procRows;
-        bool speedCurve;      // 速度两行的走势曲线（只有完整档放得下）
-        if (availH >= TopCardH + GridGap + BotCardH)
-        {
-            rowH = RowH; firstRowH = RowH;
-            topH = TopCardH; speedRowH = SpeedRowH; botH = BotCardH;
-            procRows = ExpandedPanelSpec.ProcessMaxRows;
-            speedCurve = true;
-        }
-        else if (availH >= TightTopH + GridGap + TightBotH)
-        {
-            rowH = TightRowH; firstRowH = RowH;
-            topH = TightTopH; speedRowH = TightSpeedRowH; botH = TightBotH;
-            procRows = 4;
-            speedCurve = false;
-        }
-        else
-        {
-            rowH = TightRowH; firstRowH = TightRowH;
-            topH = CardHeadH + 3 * rowH + 2 * RowGap; speedRowH = TightSpeedRowH; botH = TightBotH;
-            procRows = 4;
-            speedCurve = false;
-            // 连紧凑档都装不下时（真机：展开面板 540×380 ⇒ 监控页只有 308 高，
-            // 146 + 12 + 132 + 20 = 310 > 308），把下排卡按"扣掉状态行后的剩余高度"再收一收 ——
-            // 状态行必须永远放得下（硬要求），宁可卡片矮 2px，也不让状态行越出面板。
-            double botBudget = availH - topH - GridGap;
-            if (botBudget < botH) botH = Math.Max(MinBotCardH, botBudget);
-        }
+        int procRows = tier.ProcRows;
 
         // 进程榜：行数与行距都从**卡内可用高度**倒推（先给卡底信息行留出位置）——
         // 固定行距 + 固定行数会撞上卡底那行：末行文字底边会压到「进程/线程 · 今日流量」那行
@@ -270,11 +387,24 @@ public sealed class MonitorPage : FrameworkElement
             dc.DrawRoundedRectangle(RenderKit.BrushOf(fill), null, RenderKit.SafeRect(mx, my, fw, mh), mc, mc);
         }
 
+        // 卡头右上角的**平台专属附加读数**（Windows：CPU 频率；mac 那里挂 GPU 占用 —— 同一类位置）。
+        // 返回这串读数的左端 x（卡标题要给它让位，窄卡片时不叠字）。
+        double HeadExtra(double cx, double cy, double cw, string value, string unit)
+        {
+            double right = cx + cw - CardPadX;
+            double vw = NW(value, ExpandedPanelSpec.SecondaryFont, true);
+            double uw = unit.Length == 0 ? 0 : NW(unit, ExpandedPanelSpec.SecondaryFont, false);
+            double left = right - vw - uw;
+            N(value, left, cy + 11, ExpandedPanelSpec.SecondaryFont, pal.Text, true);
+            if (uw > 0) N(unit, left + vw, cy + 11, ExpandedPanelSpec.SecondaryFont, pal.TextDim);
+            return left;
+        }
+
         // 一行读数（mac 口径的 Row）：12×12 图标 + 10px TextDim 标签（+ 次级说明）
         //   + 右对齐 14px SemiBold 数值 + 4px 圆角 2 的进度条 + 1.4px 走势曲线（框高 14）
         void MetricRow(double cx, double cy, double cw, GlyphKind? icon, string iconText, Color iconColor,
             Color valueColor, Color meterColor, string label, string sub, string value, string unit,
-            double share, double[]? history)
+            double share, double[]? history, string extra = "")
         {
             double right = cx + cw - CardPadX;
             double labelX = cx + 33;
@@ -285,7 +415,10 @@ public sealed class MonitorPage : FrameworkElement
             double uw = unit.Length == 0 ? 0
                 : unitAscii ? NW(unit, ExpandedPanelSpec.SecondaryFont, false)
                             : RenderKit.Text(unit, ExpandedPanelSpec.SecondaryFont, pal.TextDim, false, ppd).WidthIncludingTrailingWhitespace;
-            double vx = right - nw - uw;      // 数值左端（整组右对齐到卡内右边）
+            // 附加读数（平台专属，挂在数值后面）：Windows 的 GPU 显存并进 GPU 温度那一行
+            double ew = extra.Length == 0 ? 0
+                : RenderKit.Text(extra, ExpandedPanelSpec.SecondaryFont, pal.TextDim, false, ppd).WidthIncludingTrailingWhitespace;
+            double vx = right - nw - uw - ew;  // 数值左端（整组右对齐到卡内右边）
 
             // 图标（12×12）：矢量图标没有对应字形时用一个小字符（温度 = 度数符号）
             if (icon is { } g)
@@ -308,6 +441,8 @@ public sealed class MonitorPage : FrameworkElement
                 if (unitAscii) N(unit, vx + nw, cy + 15, ExpandedPanelSpec.SecondaryFont, pal.TextDim);
                 else RenderKit.Baseline(dc, RenderKit.Text(unit, ExpandedPanelSpec.SecondaryFont, pal.TextDim, false, ppd), vx + nw, cy + 15);
             }
+            if (ew > 0)
+                RenderKit.Baseline(dc, RenderKit.Text(extra, ExpandedPanelSpec.SecondaryFont, pal.TextDim, false, ppd), vx + nw + uw, cy + 15);
 
             // 进度条
             Meter(labelX, cy + 22, cw - 48, share, meterColor);
@@ -347,77 +482,46 @@ public sealed class MonitorPage : FrameworkElement
                     history, Neutral(0x99), 36, ExpandedPanelSpec.SparkStroke);
         }
 
-        // ================= ① CPU 卡（上排左）：这一页的主角 =================
-        if (Want("cpu"))
+        // ================= ① 占用卡（上排左）：CPU / 内存 / 磁盘 =================
+        // 分组取自两端共享规格（MonitorPageLayoutSpec）：卡1 = 占用（CPU / 内存 / 磁盘）。
+        if (Want("cpu") || Want("mem") || Want("disk"))
         {
             Card(x1, y1, cardW, topH);
-            CardTitle(dc, pal, ppd, "CPU", GlyphKind.Monitor, x1, y1, x1 + cardW, pal.Text);
+            var usage = SpecCard("usage");
 
-            double cy = y1 + CardHeadH;
-            double cpu = s?.CpuUsage ?? 0;
-            // CPU 是唯一用强调色的读数（暗色科技的身份）：告警时才换成状态色
-            Color cpuColor = s is null ? pal.TextTertiary : RenderKit.LevelColor(cpu, pal.Accent, pal);
-            MetricRow(x1, cy, cardW, GlyphKind.Sliders, "", cpuColor, cpuColor, cpuColor,
-                "占用", "", s is null ? "—" : $"{Math.Round(cpu)}", "%", s is null ? 0 : cpu / 100, CpuHistory);
-
-            // 频率（满格基准 5.0 GHz）
-            double ghz = s?.CpuFrequencyGHz ?? 0;
-            MetricRow(x1, cy + firstRowH + RowGap, cardW, GlyphKind.Gear, "", pal.TextDim, pal.Text, Neutral(0x8C),
-                "频率", "", ghz > 0.1 ? $"{ghz:F1}" : "—", ghz > 0.1 ? " GHz" : "", ghz / FreqFull, null);
-
-            // 温度（取整度数：与 ThermalDisplay.Signature 的口径一致）
-            double ty = cy + firstRowH + RowGap + rowH + RowGap;
-            string tempValue, tempUnit;
-            Color tempColor;
-            double tempShare;
-            if (th?.CpuTemp is { } tv)
+            // 卡头右上角：**CPU 频率**（平台专属附加读数 —— 两端同一类位置，mac 那里挂 GPU 占用）
+            double freqLeft = double.MaxValue;
+            if (Want("cpu"))
             {
-                tempValue = $"{Math.Round(tv)}"; tempUnit = "°";
-                tempColor = TempColor(tv, pal); tempShare = tv / TempFull;
+                double ghz = s?.CpuFrequencyGHz ?? 0;
+                freqLeft = HeadExtra(x1, y1, cardW, ghz > 0.1 ? $"{ghz:F1}" : "—", ghz > 0.1 ? " GHz" : "");
             }
-            else
-            {
-                tempValue = TempMissingText; tempUnit = "";
-                tempColor = TempMissingColor(pal); tempShare = 0;
-            }
-            MetricRow(x1, ty, cardW, null, "°", pal.TextDim, tempColor, Neutral(0x8C),
-                "温度", "", tempValue, tempUnit, tempShare, null);
-        }
+            // 卡标题给卡头右上角那串读数让位（窄卡片时不叠字）
+            double titleMax = freqLeft < double.MaxValue
+                ? freqLeft - 8 - (x1 + ExpandedPanelSpec.CardTitleIconSize + 8)
+                : 0;
+            CardTitle(dc, pal, ppd, usage.Title, GlyphKind.Monitor, x1, y1, x1 + cardW, pal.Text, titleMax);
 
-        // ================= ② 内存卡（上排右）：内存 / GPU / 磁盘 =================
-        if (Want("mem") || Want("gpu") || Want("disk"))
-        {
-            Card(x2, y1, cardW, topH);
-            CardTitle(dc, pal, ppd, "内存", GlyphKind.Grid, x2, y1, x2 + cardW, pal.Text);
-
-            double cy = y1 + CardHeadH;
             int slot = 0;
+            // CPU 占用（唯一用强调色的读数 —— 暗色科技的身份：一屏一主角；带走势曲线）
+            if (Want("cpu"))
+            {
+                double cpu = s?.CpuUsage ?? 0;
+                // CPU 是唯一用强调色的读数（暗色科技的身份）：告警时才换成状态色
+                Color cpuColor = s is null ? pal.TextTertiary : RenderKit.LevelColor(cpu, pal.Accent, pal);
+                MetricRow(x1, MetricRowTop(y1, slot, rowH, firstRowH), cardW, GlyphKind.Sliders, "", cpuColor, cpuColor, cpuColor,
+                    RowLabel(usage, "cpu-usage"), "", s is null ? "—" : $"{Math.Round(cpu)}", "%", s is null ? 0 : cpu / 100, CpuHistory);
+                slot++;
+            }
             // 内存：占用 % + 已用/总量（次级说明里）
             if (Want("mem"))
             {
                 double mp = s?.MemoryUsagePercent ?? 0;
                 string sub = s is null ? "" : $"{s.MemoryUsedGB:F1}/{s.MemoryTotalGB:F0} GB";
-                MetricRow(x2, cy + slot * (rowH + RowGap), cardW, GlyphKind.Monitor, "", pal.TextDim,
+                MetricRow(x1, MetricRowTop(y1, slot, rowH, firstRowH), cardW, GlyphKind.Monitor, "", pal.TextDim,
                     RenderKit.LevelColor(mp, pal.Text, pal),
                     RenderKit.LevelColor(mp, Neutral(0x8C), pal),
-                    "内存", sub, s is null ? "—" : $"{Math.Round(mp)}", "%", mp / 100, null);
-                slot++;
-            }
-            // GPU：占用 % + 温度 / 显存（次级说明里）
-            if (Want("gpu"))
-            {
-                double gp = s?.GpuUsage ?? 0;
-                var parts = new List<string>();
-                if (th?.GpuTemp is { } gt) parts.Add($"{Math.Round(gt)}°");
-                // 显存读数按**口径**渲染（2026-11-26 task15）：共享口径下那个"总量"是共享内存池大小
-                // （≈ 系统内存），不是显存容量 —— 显示出来会被读成"核显有十几 GB 显存"，所以不显示，只标"共享"。
-                // 专用 / 厂商显存照旧显示"已用/总量"（那就是显存容量）；口径未知则只显示已用（宁可少显示）。
-                if (th?.GpuMemoryUsedGB is { } gmu)
-                    parts.Add(GpuMemoryDisplay.Text(gmu, th.GpuMemoryTotalGB, th.GpuMemoryKind));
-                MetricRow(x2, cy + slot * (rowH + RowGap), cardW, GlyphKind.Grid, "", pal.TextDim,
-                    RenderKit.LevelColor(gp, pal.Text, pal),
-                    RenderKit.LevelColor(gp, Neutral(0x8C), pal),
-                    "GPU", string.Join(" · ", parts), s is null ? "—" : $"{Math.Round(gp)}", "%", gp / 100, null);
+                    RowLabel(usage, "memory"), sub, s is null ? "—" : $"{Math.Round(mp)}", "%", mp / 100, null);
                 slot++;
             }
             // 磁盘：活动 % + 空间
@@ -431,10 +535,70 @@ public sealed class MonitorPage : FrameworkElement
                     if (disks is not null && disks[0].TotalGB > 0.1) sub = DriveText(disks[0]);
                     else if (s.DriveTotalGB > 0.1) sub = $"{s.DriveUsedGB:F0}/{s.DriveTotalGB:F0} GB";
                 }
-                MetricRow(x2, cy + slot * (rowH + RowGap), cardW, GlyphKind.File, "", pal.TextDim,
+                MetricRow(x1, MetricRowTop(y1, slot, rowH, firstRowH), cardW, GlyphKind.File, "", pal.TextDim,
                     RenderKit.LevelColor(dp, pal.Text, pal),
                     RenderKit.LevelColor(dp, Neutral(0x8C), pal),
-                    "磁盘", sub, s is null ? "—" : $"{Math.Round(dp)}", "%", dp / 100, null);
+                    RowLabel(usage, "disk"), sub, s is null ? "—" : $"{Math.Round(dp)}", "%", dp / 100, null);
+            }
+        }
+
+        // ================= ② 温度卡（上排右）：CPU / GPU =================
+        // **SSD 温度在 Windows 上整行不出现**（平台不支持：NVMe SMART IOCTL 有 0x1EA 蓝屏史）——
+        // 不是显示 0，也不是显示"未知"；共享规格里那一行标了 Windows: false。
+        if (Want("cpu") || Want("gpu"))
+        {
+            Card(x2, y1, cardW, topH);
+            var tempCard = SpecCard("temp");
+            CardTitle(dc, pal, ppd, tempCard.Title, GlyphKind.Grid, x2, y1, x2 + cardW, pal.Text);
+
+            int slot = 0;
+            // CPU 温度（取整度数：与 ThermalDisplay.Signature 的口径一致）
+            if (Want("cpu"))
+            {
+                double ty = MetricRowTop(y1, slot, rowH, firstRowH);
+                string tempValue, tempUnit;
+                Color tempColor;
+                double tempShare;
+                if (th?.CpuTemp is { } tv)
+                {
+                    tempValue = $"{Math.Round(tv)}"; tempUnit = "°";
+                    tempColor = TempColor(tv, pal); tempShare = tv / TempFull;
+                }
+                else
+                {
+                    tempValue = TempMissingText; tempUnit = "";
+                    tempColor = TempMissingColor(pal); tempShare = 0;
+                }
+                MetricRow(x2, ty, cardW, null, "°", pal.TextDim, tempColor, Neutral(0x8C),
+                    RowLabel(tempCard, "cpu-temp"), "", tempValue, tempUnit, tempShare, null);
+                slot++;
+            }
+            // GPU 温度（**显存并进这一行**：如 48° · 1.5/8 GB —— mac 无显存可读）
+            if (Want("gpu"))
+            {
+                double gy = MetricRowTop(y1, slot, rowH, firstRowH);
+                string gpuValue, gpuUnit;
+                Color gpuColor;
+                double gpuShare;
+                if (th?.GpuTemp is { } gt)
+                {
+                    gpuValue = $"{Math.Round(gt)}"; gpuUnit = "°";
+                    gpuColor = TempColor(gt, pal); gpuShare = gt / TempFull;
+                }
+                else
+                {
+                    gpuValue = TempMissingText; gpuUnit = "";
+                    gpuColor = TempMissingColor(pal); gpuShare = 0;
+                }
+                // 显存读数按**口径**渲染（2026-11-26 task15）：共享口径下那个"总量"是共享内存池大小
+                // （≈ 系统内存），不是显存容量 —— 显示出来会被读成"核显有十几 GB 显存"，所以不显示，只标"共享"。
+                // 专用 / 厂商显存照旧显示"已用/总量"（那就是显存容量）；口径未知则只显示已用（宁可少显示）。
+                string vram = th?.GpuMemoryUsedGB is { } gmu
+                    ? GpuMemoryDisplay.Text(gmu, th.GpuMemoryTotalGB, th.GpuMemoryKind)
+                    : "";
+                MetricRow(x2, gy, cardW, GlyphKind.Grid, "", pal.TextDim, gpuColor, Neutral(0x8C),
+                    RowLabel(tempCard, "gpu-temp"), "", gpuValue, gpuUnit, gpuShare, null,
+                    vram.Length == 0 ? "" : "· " + vram);
             }
         }
 
@@ -442,7 +606,7 @@ public sealed class MonitorPage : FrameworkElement
         if (Want("net") || Want("power"))
         {
             Card(x1, y2, cardW, botH);
-            CardTitle(dc, pal, ppd, "上下速度", GlyphKind.Bolt, x1, y2, x1 + cardW, pal.Text);
+            CardTitle(dc, pal, ppd, SpecCard("speed").Title, GlyphKind.Bolt, x1, y2, x1 + cardW, pal.Text);
 
             double cy = y2 + CardHeadH;
             if (Want("net"))
@@ -506,11 +670,13 @@ public sealed class MonitorPage : FrameworkElement
             }
 
             // 榜标题：跟随排序切换；卡片窄得放不下就只留"占用最高"（分段控件本身已经说明按什么排）
-            string title = TopSort == "mem" ? "占用最高 · 内存" : "占用最高 · CPU";
+            // 榜标题：跟随排序切换（共享规格：占用最高 · CPU / 占用最高 · 内存）
+            var topCard = SpecCard("topproc");
+            string title = topCard.Title + " · " + segLabels[TopSort == "mem" ? 1 : 0];
             double titleMax = segX - 8 - (x2 + 20);
             if (RenderKit.Text(title, ExpandedPanelSpec.CardTitleFont, pal.Text, true, ppd)
                     .WidthIncludingTrailingWhitespace > titleMax)
-                title = "占用最高";
+                title = topCard.Title;
             CardTitle(dc, pal, ppd, title, GlyphKind.File, x2, y2, x2 + cardW, pal.Text, titleMax);
 
             // 卡底信息位：进程 / 线程数（2×2 栅格重排时一度被删掉，这里补回 —— 这些读数在收起态
