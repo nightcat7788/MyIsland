@@ -36,6 +36,13 @@ Windows 与 macOS 各自一套原生实现（Windows WPF 自绘 + macOS Avalonia
 |---|---|
 | ![Windows 监控页](docs/screenshots/windows-monitor-page.png) | ![macOS 监控页](docs/screenshots/macos-monitor-page.png) |
 
+### 控制页（Windows 专属）
+
+![Windows 控制页](docs/screenshots/windows-control-page.png)
+
+> 这张图是**离屏渲染**出来的：亮度行**不在**——这台机器的内置屏不支持 Dxva2 调亮度，
+> 产品按「该机不支持 ⇒ 整行不出现」处理（与夜灯同一口径），不留一对点了没反应的按钮。
+
 ### 收起态（两端胶囊读数带）
 
 | Windows | macOS |
