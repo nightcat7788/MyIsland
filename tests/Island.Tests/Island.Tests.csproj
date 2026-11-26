@@ -103,6 +103,9 @@
     <!-- 底部状态行（macOS 端）：字段位与顺序 + 格式化规则 -->
     <Compile Remove="MonitorStatusLineMacTests.cs" />
     <Compile Include="MonitorStatusLineMacTests.cs" />
+    <!-- GPU 显存读数口径（2026-11-26 task15）：厂商/专用/共享三种口径 + 显示形状（共享不显示总量） -->
+    <Compile Remove="GpuMemoryKindTests.cs" />
+    <Compile Include="GpuMemoryKindTests.cs" />
     <!-- 能力清单漂移检查（2026-11-26 阶段 4/5）：清单改了、两端没跟着改 ⇒ 门禁红 -->
     <Compile Remove="CapabilityManifestTests.cs" />
     <Compile Include="CapabilityManifestTests.cs" />
