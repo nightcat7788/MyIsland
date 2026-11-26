@@ -359,6 +359,45 @@ public static class AvaloniaVisualCore
     /// 监控页的像素不变量（非全黑 / 有内容 / 四张卡片落在规格位置 / 卡片间留白 /
     /// 底部状态行存在且不压栅格 / 状态行左缘对齐）。
     /// </summary>
+    /// <summary>
+    /// 行带里有没有"有内容"的像素：先取该区域**最常见的颜色**当局部底色（卡片自身的底），
+    /// 再看有没有与它差得够远的像素（文字/图标/分隔线）。
+    /// 为什么不用固定底色：卡底色与页面底色不同，用固定色会把卡外那截也算成"内容"，断言恒真；
+    /// 为什么不用高亮阈值：卡底那行是三级色（偏暗），按高亮阈值会整行被判漏 —— 而它正是要判的那行。
+    /// （与 Windows 端 tools\visual-probe 的同名判定同思路。）
+    /// </summary>
+    public static bool BandHasContent(ProbeImage img, LayoutRect rect, int minDelta = 25)
+    {
+        int x0 = (int)Math.Round(rect.X), y0 = (int)Math.Round(rect.Y);
+        int x1 = (int)Math.Round(rect.Right) - 1, y1 = (int)Math.Round(rect.Bottom) - 1;
+        x0 = Math.Max(0, x0); y0 = Math.Max(0, y0);
+        x1 = Math.Min(img.Width - 1, x1); y1 = Math.Min(img.Height - 1, y1);
+        if (x1 < x0 || y1 < y0) return false;
+
+        // 众数色 = 该区域的局部底色（文字只占极小比例）
+        var hist = new Dictionary<int, int>();
+        for (int y = y0; y <= y1; y++)
+            for (int x = x0; x <= x1; x++)
+            {
+                var (b, g, r) = img.At(x, y);
+                int key = (r << 16) | (g << 8) | b;
+                hist.TryGetValue(key, out int c);
+                hist[key] = c + 1;
+            }
+        int modal = 0, best = -1;
+        foreach (var kv in hist) if (kv.Value > best) { best = kv.Value; modal = kv.Key; }
+        int mr = (modal >> 16) & 0xFF, mg = (modal >> 8) & 0xFF, mb = modal & 0xFF;
+
+        for (int y = y0; y <= y1; y++)
+            for (int x = x0; x <= x1; x++)
+            {
+                var (b, g, r) = img.At(x, y);
+                int d = Math.Max(Math.Abs(r - mr), Math.Max(Math.Abs(g - mg), Math.Abs(b - mb)));
+                if (d >= minDelta) return true;
+            }
+        return false;
+    }
+
     public static void CheckMonitorPage(ProbeReport report, ProbeImage img, ProbePalette pal,
                                         double panelWidth, double panelHeight)
     {
@@ -384,6 +423,34 @@ public static class AvaloniaVisualCore
                 $"监控页：第 {i + 1} 张卡片画在规格位置（卡片底色占比 > 40%）",
                 fill > MinCardFillRatio,
                 $"规格 {cards[i]} ⇒ 卡片底色占比 {fill:P1}（下限 {MinCardFillRatio:P0}）"));
+        }
+
+        // ---- 分组门禁：按规格算出的每一行区域里必须有绘制（那个读数确实画在这一张卡里）----
+        // 这是「两端监控页卡片分组统一」的守门人：若某个读数被画到别的卡，本卡对应的行带就没有内容 ⇒ 红。
+        // 行带位置按 mac 的行几何算（卡片内容起始 + 行号 × 行高），参考色取**卡片底色**
+        // （否则整块卡底会被当成"内容"，断言就恒真了）。
+        var specCards = Island.Core.Capabilities.MonitorPageLayoutSpec.CardsFor(macOS: true);
+        for (int ci = 0; ci < specCards.Count && ci < cards.Length; ci++)
+        {
+            var specCard = specCards[ci];
+            var specRows = Island.Core.Capabilities.MonitorPageLayoutSpec.RowsFor(specCard, macOS: true);
+            double bandH = specCard.Key == "speed" ? MonitorLayoutSpec.SpeedRowH : MonitorLayoutSpec.RowH;
+            for (int ri = 0; ri < specRows.Count; ri++)
+            {
+                double bandY = cards[ci].Y + MonitorLayoutSpec.CardContentTop + ri * bandH;
+                var raw = new LayoutRect(cards[ci].X + 12, bandY, cards[ci].Width - 24, bandH - 2);
+                // 行带必须**夹在卡片矩形内**再量：卡外的页面底色与卡片底色不同，
+                // 不夹的话「卡外那截」会被当成"内容"，断言就恒真了（2026-11-26 实测踩过）。
+                double bx0 = Math.Max(raw.X, cards[ci].X), by0 = Math.Max(raw.Y, cards[ci].Y);
+                double bx1 = Math.Min(raw.Right, cards[ci].Right), by1 = Math.Min(raw.Bottom, cards[ci].Bottom);
+                var band = bx1 > bx0 && by1 > by0 ? new LayoutRect(bx0, by0, bx1 - bx0, by1 - by0) : raw;
+                bool rowHasContent = BandHasContent(img, band);
+                report.Checks.Add(new ProbeCheck(
+                    $"监控页：{specCard.Title} 卡的「{specRows[ri].Label}」行确实画在这张卡里（分组门禁）",
+                    rowHasContent,
+                    $"规格 {specCard.Key}/{specRows[ri].Key} ⇒ 行带 y∈[{band.Y:F0},{band.Bottom:F0}) ⇒" +
+                    $"该带有内容像素：{(rowHasContent ? "有" : "无")}"));
+            }
         }
 
         // 卡片之间的留白：列间与行间都必须是面板底色（不能有卡片底色漏出来）

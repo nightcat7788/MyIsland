@@ -168,9 +168,16 @@ Windows 的 GPU 显存并进 GPU 温度那一行（mac 无显存可读）；温�
 （Windows = 主板温度，mac = 存储温度）⇒ **两端温度卡都是 3 行、卡底不留空**。
 **部件形态与配色身份各端保留**（Windows 进度条 + 走势曲线 / 暗色科技；mac 环表盘 / 按资源配色）—— 那是视觉身份，不是分组。
 
-**门禁**：`tools/visual-probe/VisualProbeCore.cs` 按规格算出每一行该落在哪一带，断言
-「那一带里必须有绘制」且「平台不支持的行那一带里必须没有绘制」（整行不出现，不是 0、也不是未知）；
-规格自身与平台过滤由 `tests/Island.Tests/MonitorPageLayoutTests.cs` 锁住。
+**门禁（两端各一套，同一套判定思路）**：
+- Windows：`tools/visual-probe/VisualProbeCore.cs` —— 卡片与行带几何**由产品代码给出**
+  （`MonitorPage.PlannedCards`），断言「卡片清单与规格一致」「画出来的行 == 规格里该平台的行」
+  「每一行该在的那一带里必须有绘制」；规格过滤由 `tests/Island.Tests/MonitorPageLayoutTests.cs` 锁住。
+- macOS：`tools/avalonia-probe/AvaloniaVisualCore.cs` —— 同样按规格逐行算行带并断言「那一带里有内容」
+  （底色取**该区域众数色**，避免把卡外那截算成内容）；规格过滤与「源码绘制顺序 == 规格顺序」
+  由 `tests/Island.Tests/MonitorPageLayoutMacTests.cs` 锁住。
+
+两个探针的这条门禁都**做过「改坏即红」的实测**：把某一行的绘制去掉（或让规格与绘制对不上），
+对应断言变红、探针退出码非 0。
 
 ---
 

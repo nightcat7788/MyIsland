@@ -80,13 +80,21 @@ public static class MonitorPageLayoutSpec
 
         new("topproc", "占用最高", new MonitorRowSlot[]
         {
-            new("top-processes", "", "TopProcesses"),
+            new("top-processes", "进程榜", "TopProcesses"),
         }, Note: "标题随排序切换：占用最高 · CPU / 占用最高 · 内存；Windows 卡底另有「进程 · 线程」"),
     };
 
     /// <summary>某平台要画的卡片（顺序同 <see cref="Cards"/>）。</summary>
     public static IReadOnlyList<MonitorCardSlot> CardsFor(bool macOS) =>
         Cards.Where(c => macOS ? c.MacOS : c.Windows).ToList();
+
+    /// <summary>按键取卡片标题（找不到就回落到键本身，避免崩）。</summary>
+    public static string TitleOf(string cardKey) =>
+        Cards.FirstOrDefault(c => c.Key == cardKey)?.Title ?? cardKey;
+
+    /// <summary>按卡片键 + 行键取行标签（找不到就回落到行键本身）。</summary>
+    public static string LabelOf(string cardKey, string rowKey) =>
+        Cards.FirstOrDefault(c => c.Key == cardKey)?.Rows.FirstOrDefault(r => r.Key == rowKey)?.Label ?? rowKey;
 
     /// <summary>某张卡在某平台要画的行（顺序同 <see cref="MonitorCardSlot.Rows"/>）。</summary>
     public static IReadOnlyList<MonitorRowSlot> RowsFor(MonitorCardSlot card, bool macOS) =>

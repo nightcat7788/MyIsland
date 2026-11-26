@@ -1695,7 +1695,7 @@ public sealed class IslandCanvas : Control
             dc.DrawText(t, new Point(cx + 33, cy0 + 12));
             dc.DrawLine(RenderKit.PenOf(pal.Hairline, 1, 0.9),
                 new Point(cx + 15, cy0 + 36), new Point(cx + cardW - 15, cy0 + 36));
-            return cy0 + 44;
+            return cy0 + MonitorLayoutSpec.CardContentTop;
         }
 
         // 曲线用的暂存数组（避免每帧分配）
@@ -1742,29 +1742,29 @@ public sealed class IslandCanvas : Control
         string Pct(Reading<double> r, double v) => r.HasValue ? $"{Math.Round(v)}%" : "--";
 
         // ① 占用：CPU / 内存 / 磁盘，各用资源色 + 历史曲线（对齐 BrimDeck）
-        double cy = Card(x1, y1, topH, "占用", Glyph.Cpu, ResColor(Res.Cpu, pal));
+        double cy = Card(x1, y1, topH, MonitorPageLayoutSpec.TitleOf("usage"), Glyph.Cpu, ResColor(Res.Cpu, pal));
         if (s is not null && s.GpuUsage > 0)
         {
             var gx = RenderKit.Text($"GPU {Math.Round(s.GpuUsage)}%", 10, ResColor(Res.Gpu, pal), true);
             dc.DrawText(gx, new Point(x1 + cardW - 15 - gx.WidthIncludingTrailingWhitespace, y1 + 14));
         }
         // 行高 44：进度条下方留 16px 给历史曲线（否则曲线会压到下一行的标签上）
-        Row(x1, cy,             Glyph.Cpu,  ResColor(Res.Cpu, pal),  "CPU",  Pct(stt.Cpu, s?.CpuUsage ?? 0),           (s?.CpuUsage ?? 0) / 100,  null, HistoryBuffer.Kind.Cpu);
-        Row(x1, cy + rowH,      Glyph.Mem,  ResColor(Res.Mem, pal),  "内存", Pct(stt.Memory, s?.MemoryUsagePercent ?? 0), (s?.MemoryUsagePercent ?? 0) / 100, null, HistoryBuffer.Kind.Mem);
-        Row(x1, cy + rowH * 2,  Glyph.Disk, ResColor(Res.Disk, pal), "磁盘", Pct(stt.Disk, s?.DiskUsagePercent ?? 0),   (s?.DiskUsagePercent ?? 0) / 100, null, HistoryBuffer.Kind.DiskRead, 8 * 1024 * 1024);
+        Row(x1, cy,             Glyph.Cpu,  ResColor(Res.Cpu, pal),  MonitorPageLayoutSpec.LabelOf("usage", "cpu-usage"),  Pct(stt.Cpu, s?.CpuUsage ?? 0),           (s?.CpuUsage ?? 0) / 100,  null, HistoryBuffer.Kind.Cpu);
+        Row(x1, cy + rowH,      Glyph.Mem,  ResColor(Res.Mem, pal),  MonitorPageLayoutSpec.LabelOf("usage", "memory"), Pct(stt.Memory, s?.MemoryUsagePercent ?? 0), (s?.MemoryUsagePercent ?? 0) / 100, null, HistoryBuffer.Kind.Mem);
+        Row(x1, cy + rowH * 2,  Glyph.Disk, ResColor(Res.Disk, pal), MonitorPageLayoutSpec.LabelOf("usage", "disk"), Pct(stt.Disk, s?.DiskUsagePercent ?? 0),   (s?.DiskUsagePercent ?? 0) / 100, null, HistoryBuffer.Kind.DiskRead, 8 * 1024 * 1024);
 
         // ② 温度：CPU / GPU / SSD，条长按 0-110°C 映射
         // 温度用语义色：正常走强调色、偏高走警告色、过高走红色（规范：语义色要精确而非喊叫）
-        cy = Card(x2, y1, topH, "温度", Glyph.Thermo, ResColor(Res.Cpu, pal));
+        cy = Card(x2, y1, topH, MonitorPageLayoutSpec.TitleOf("temp"), Glyph.Thermo, ResColor(Res.Cpu, pal));
         string Deg(double? v) => v is { } x && x > 0 ? $"{Math.Round(x)}°" : "--";
         // 返回 null=正常（用中性强调），非 null=超阈值（用警告色）
         string? TempWarn(double? v) => v is { } t ? (t >= 90 ? "过热" : t >= 70 ? "偏高" : null) : null;
-        Row(x2, cy,             Glyph.Thermo, ResColor(Res.Cpu, pal),  "CPU", Deg(s?.CpuTemp), (s?.CpuTemp ?? 0) / 110, TempWarn(s?.CpuTemp));
-        Row(x2, cy + rowH,      Glyph.Gpu,    ResColor(Res.Gpu, pal),  "GPU", Deg(s?.GpuTemp), (s?.GpuTemp ?? 0) / 110, TempWarn(s?.GpuTemp));
-        Row(x2, cy + rowH * 2,  Glyph.Ssd,    ResColor(Res.Disk, pal), "SSD", Deg(s?.SsdTemp), (s?.SsdTemp ?? 0) / 110, TempWarn(s?.SsdTemp));
+        Row(x2, cy,             Glyph.Thermo, ResColor(Res.Cpu, pal),  MonitorPageLayoutSpec.LabelOf("temp", "cpu-temp"), Deg(s?.CpuTemp), (s?.CpuTemp ?? 0) / 110, TempWarn(s?.CpuTemp));
+        Row(x2, cy + rowH,      Glyph.Gpu,    ResColor(Res.Gpu, pal),  MonitorPageLayoutSpec.LabelOf("temp", "gpu-temp"), Deg(s?.GpuTemp), (s?.GpuTemp ?? 0) / 110, TempWarn(s?.GpuTemp));
+        Row(x2, cy + rowH * 2,  Glyph.Ssd,    ResColor(Res.Disk, pal), MonitorPageLayoutSpec.LabelOf("temp", "storage-temp"), Deg(s?.SsdTemp), (s?.SsdTemp ?? 0) / 110, TempWarn(s?.SsdTemp));
 
         // ③ 上下速度：图标 + 数值 + 流量条（2 MB/s 为满格）
-        cy = Card(x1, y2, botH, "上下速度", Glyph.Down, pal.Accent);
+        cy = Card(x1, y2, botH, MonitorPageLayoutSpec.TitleOf("speed"), Glyph.Down, pal.Accent);
         void Speed(double yy, Glyph g, Color c, string label, double v, HistoryBuffer.Kind? curve = null)
         {
             DrawIcon(dc, g, x1 + 15, yy + 11, c);
@@ -1787,8 +1787,8 @@ public sealed class IslandCanvas : Control
                 if (n > 1) RenderKit.Sparkline(dc, new Rect(bx, yy + 33, bw, 14), _curveBuf, n, c);
             }
         }
-        Speed(cy,      Glyph.Down, DownC, "下行", s?.DownloadSpeed ?? 0, HistoryBuffer.Kind.Down);
-        Speed(cy + speedRowH, Glyph.Up,   UpC,   "上行", s?.UploadSpeed ?? 0, HistoryBuffer.Kind.Up);
+        Speed(cy,      Glyph.Down, DownC, MonitorPageLayoutSpec.LabelOf("speed", "down"), s?.DownloadSpeed ?? 0, HistoryBuffer.Kind.Down);
+        Speed(cy + speedRowH, Glyph.Up,   UpC,   MonitorPageLayoutSpec.LabelOf("speed", "up"), s?.UploadSpeed ?? 0, HistoryBuffer.Kind.Up);
         // 卡底信息位：网络类型 + 电池（应用榜占了右下角，电池信息挪到这里）
         var link = RenderKit.Text($"网络 {s?.LinkType ?? "--"}", 10, pal.TextTertiary);
         dc.DrawText(link, new Point(x1 + 15, y2 + botH - 18));
@@ -1801,7 +1801,7 @@ public sealed class IslandCanvas : Control
 
         // ④ 应用榜（右下）：真实应用图标 + 名称 + 数值，右上角「CPU / 内存」切换排序依据。
         //    对齐 BrimDeck 监控页右区。电池信息挪到速度卡底部（那里本来就有"网络"这类信息位）。
-        cy = Card(x2, y2, botH, ProcessListByMemory ? "占用最高 · 内存" : "占用最高 · CPU", Glyph.Ping, pal.Accent);
+        cy = Card(x2, y2, botH, MonitorPageLayoutSpec.TitleOf("topproc") + " · " + (ProcessListByMemory ? "内存" : "CPU"), Glyph.Ping, pal.Accent);
 
         // 右上角：CPU / 内存 分段切换
         {

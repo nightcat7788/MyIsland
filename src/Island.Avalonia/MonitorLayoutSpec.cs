@@ -73,6 +73,9 @@ public static class MonitorLayoutSpec
     /// <summary>卡片头高度（mac：42）。</summary>
     public const double CardHeadH = 42;
 
+    /// <summary>卡片内容起始 y 相对卡片顶边（mac：44 —— 标题 + 分隔线之下）。</summary>
+    public const double CardContentTop = 44;
+
     /// <summary>读数行行高（mac：44）。</summary>
     public const double RowH = 44;
 
