@@ -480,13 +480,46 @@ public sealed class IslandCanvas : FrameworkElement
     /// <summary>紧凑网速单行：箭头是次要文字色，读数是等宽数字。返回右端 x。</summary>
     private static double DrawNet(DrawingContext dc, Palette pal, double x, double bl, double size, MonitorSnapshot snap, double ppd, double netGap, NetSpeedFormat format)
     {
-        var di = Text("↓", size, pal.TextDim, true, ppd);
+        var di = Text("↓", size, NetDownColor, true, ppd);
         Baseline(dc, di, x, bl); x += di.Width + CompactSpec.ArrowValueGap;
         x = Num(dc, NetSpeedText(snap.DownloadSpeed, format), x, bl, size, pal.Text, true, ppd) + netGap;
-        var ui = Text("↑", size, pal.TextDim, true, ppd);
+        var ui = Text("↑", size, NetUpColor, true, ppd);
         Baseline(dc, ui, x, bl); x += ui.Width + CompactSpec.ArrowValueGap;
         return Num(dc, NetSpeedText(snap.UploadSpeed, format), x, bl, size, pal.Text, true, ppd);
     }
+
+    // ---- 按资源配色的色值 ----
+    // 两端唯一真相源：Island.Core/Capabilities/ResourceColorSpec.cs（色值由用户给的参考图逐像素取样得出）。
+    // 收起态（dash / combo）按资源分色；**展开面板不动**（保持「暗色科技」口径，见 §8）。
+    private static Color ResourceColor(string hex) => Color.FromRgb(
+        (byte)Convert.ToInt32(hex.Substring(1, 2), 16),
+        (byte)Convert.ToInt32(hex.Substring(3, 2), 16),
+        (byte)Convert.ToInt32(hex.Substring(5, 2), 16));
+
+    /// <summary>CPU：蓝（#0A84FF）。</summary>
+    private static readonly Color CpuColor = ResourceColor(ResourceColorSpec.Cpu);
+    /// <summary>内存：青（#5CE1E6）。</summary>
+    private static readonly Color MemColor = ResourceColor(ResourceColorSpec.Memory);
+    /// <summary>GPU：粉（#FF8FB1）。</summary>
+    private static readonly Color GpuColor = ResourceColor(ResourceColorSpec.Gpu);
+    /// <summary>磁盘：薄荷绿（#98DBB0）。</summary>
+    private static readonly Color DiskColor = ResourceColor(ResourceColorSpec.Disk);
+    /// <summary>网速·下行箭头：蓝（#0A84FF）。</summary>
+    private static readonly Color NetDownColor = ResourceColor(ResourceColorSpec.NetDown);
+    /// <summary>网速·上行箭头：青（#5CE1E6）。</summary>
+    private static readonly Color NetUpColor = ResourceColor(ResourceColorSpec.NetUp);
+
+    /// <summary>
+    /// 温度的显示色：**资源色打底**，超过阈值才转警示色（mac 的 dash 同款：资源色 + 阈值覆盖）。
+    /// 读不到（null）是「未知」，用第三级文字色 —— 不是 0、也不是假装有值。
+    /// </summary>
+    private static Color TempResourceColor(double? t, Color resource, Palette pal) => t switch
+    {
+        null => pal.TextTertiary,
+        _ when t >= RenderKit.CritPct => pal.Up,
+        _ when t >= RenderKit.WarnPct => pal.Warning,
+        _ => resource,
+    };
 
     /// <summary>温度的显示色：正常是文字色（不着色），71–85° 警示，&gt;85° 危险；读不到是第三级文字色。</summary>
     private static Color TempColor(double? t, Palette pal) => t switch
@@ -659,8 +692,9 @@ public sealed class IslandCanvas : FrameworkElement
 
     /// <summary>
     /// monitor 视图（单排高密度读数带）：细核心柱群（≤16 核）+ C/M/G/D 表盘读数 + 紧凑网速。
-    /// 配色与展开后的监控页同一套层级（2026-11-24 视觉重做）：CPU 是强调色，其余表盘是中性色，
-    /// 只有 ≥70% / ≥90% 才换成状态色。以前每个指标一种写死的颜色，9 套主题的收起态只差底色。
+    /// 配色（2026-11-27）：**环按资源分色**（CPU 蓝 / 内存 青 / GPU 粉 / 磁盘 薄荷绿），
+    /// 数字按阈值分级（正常白）；每核柱用 CPU 蓝 —— 与用户给的参考图形态一致，
+    /// 也与 dash / combo 同源同色（此前这三处各画各的，同一批数据三套配色语言）。
     /// </summary>
     private double DrawMonitor(DrawingContext dc, Palette pal, Rect r, double cy,
         MonitorSnapshot? snap)
@@ -670,7 +704,6 @@ public sealed class IslandCanvas : FrameworkElement
         double ppd = Ppd;
         DrawCapsuleBase(dc, pal);
 
-        Color neutral = Neutral(pal);
         var groups = new List<CompactGroup>();
 
         // ---- 细核心柱群（2.6px 细柱、2px 间距、最多 16 核，垂直居中） ----
@@ -690,7 +723,8 @@ public sealed class IslandCanvas : FrameworkElement
                         dc.DrawRoundedRectangle(BrushOf(pal.Track), null,
                             RenderKit.SafeRect(x + i * (bw + gap), cy - maxH / 2, bw, maxH), 1.2, 1.2);
                         double h = 1.6 + v * (maxH - 1.6);
-                        dc.DrawRoundedRectangle(BrushOf(LevelColor(v * 100, pal.Accent, pal)), null,
+                        // 柱色 = CPU 资源色（参考图里的每核直方图就是蓝的）；不再按占用率阈值变色。
+                        dc.DrawRoundedRectangle(BrushOf(CpuColor), null,
                             RenderKit.SafeRect(x + i * (bw + gap), cy + maxH / 2 - h, bw, h), 1.2, 1.2);
                     }
                 },
@@ -699,16 +733,18 @@ public sealed class IslandCanvas : FrameworkElement
 
         // ---- 表盘读数（数字按 "100%" 预留，跳数不动布局） ----
         const double dialSize = 20, dialFont = 12.5;
-        void Gauge(double value, Color color, string letter)
+        void Gauge(double value, Color color, string letter, bool pureArc = false)
             => groups.Add(new CompactGroup
             {
                 Width = dialSize + 5 + Math.Ceiling(RenderKit.NumWidth("100%", dialFont, true, ppd)),
-                Draw = x => DrawDialGauge(dc, pal, x, cy, ppd, value, color, letter, dialSize, dialFont),
+                Draw = x => DrawDialGauge(dc, pal, x, cy, ppd, value, color, letter, dialSize, dialFont,
+                    null, null, null, "100%", pureArc ? color : null),
             });
-        Gauge(snap.CpuUsage, pal.Accent, "C");
-        Gauge(snap.MemoryUsagePercent, neutral, "M");
-        if (snap.GpuUsage > 0) Gauge(snap.GpuUsage, neutral, "G");
-        Gauge(snap.DiskUsagePercent, neutral, "D");
+        // 环 = 资源色（CPU 蓝 / 内存 青 / GPU 粉 / 磁盘 薄荷绿），数字 = 阈值色（正常白）—— 参考图同款。
+        Gauge(snap.CpuUsage, CpuColor, "C", pureArc: true);
+        Gauge(snap.MemoryUsagePercent, MemColor, "M", pureArc: true);
+        if (snap.GpuUsage > 0) Gauge(snap.GpuUsage, GpuColor, "G", pureArc: true);
+        Gauge(snap.DiskUsagePercent, DiskColor, "D", pureArc: true);
         groups.Add(new CompactGroup
         {
             // clock / monitor 视图保持改动前外观（旧紧凑格式 + 10 间距）；dash 的网速已在 Task 5 按 mac 对齐（见 DrawDash）
@@ -725,7 +761,10 @@ public sealed class IslandCanvas : FrameworkElement
     /// 时间│占用组之间没有线，只有 ClockGap=12 的留白（mac :677 的 x += L.ClockW + L.ClockGap）。
     /// 规格：环 20px 闭环（RenderKit.Ring），环心字母，数值 13px 等宽放环外，槽宽 21px，
     /// 有分隔线的边界总带 24px（SeparatorBand），线在「组尾 + 18px」。
-    /// 配色沿用 Windows 的「暗色科技」口径（见 Global Constraints），不是 mac 的每资源一色。
+    /// 配色（2026-11-27）：**环按资源分色**（CPU 蓝 / 内存 青 / GPU 粉 / 磁盘 薄荷绿），
+    /// **数字按阈值分级**（正常白、≥70% 黄、≥90% 红）—— 与 mac 的 combo 完全同口径，
+    /// 色值取自两端唯一真相源 `ResourceColorSpec`（来源：用户给的参考图）。
+    /// 展开页（MonitorPage）**不**跟着改：它仍是 Windows 的「暗色科技」单强调色口径。
     /// </summary>
     private double DrawCombo(DrawingContext dc, Palette pal, Rect r, double cy,
         MonitorSnapshot? snap, Services.ThermalSnapshot? thermal)
@@ -733,7 +772,6 @@ public sealed class IslandCanvas : FrameworkElement
         if (r.Width < 40 || r.Height < 20) return 0;
         double ppd = Ppd;
         DrawCapsuleBase(dc, pal);
-        Color neutral = Neutral(pal);
         var groups = new List<CompactGroup>();
 
         // 一个环项：环心字母 + 环外等宽数值。
@@ -792,17 +830,16 @@ public sealed class IslandCanvas : FrameworkElement
         if (WantCombo("dials") && snap is not null)
         {
             // C/M 无条件画（mac 同款：0% 也画空环 + "0%"）—— 环数恒定，胶囊宽度不因读数跳到 0 而抖。
-            var c = LevelColor(snap.CpuUsage, pal.Accent, pal);
-            dials.Add(("C", snap.CpuUsage / 100.0, $"{Math.Round(snap.CpuUsage)}%", c,
+            // 环 = 资源色（CPU 蓝 / 内存 青 / GPU 粉），数字 = 阈值色（正常白、≥70% 黄、≥90% 红）
+            // —— 与 mac 的 combo 完全同口径（参考图里也是「彩色环 + 白字」）。
+            dials.Add(("C", snap.CpuUsage / 100.0, $"{Math.Round(snap.CpuUsage)}%", CpuColor,
                 LevelColor(snap.CpuUsage, pal.Text, pal)));
-            var m = LevelColor(snap.MemoryUsagePercent, neutral, pal);
-            dials.Add(("M", snap.MemoryUsagePercent / 100.0, $"{Math.Round(snap.MemoryUsagePercent)}%", m,
+            dials.Add(("M", snap.MemoryUsagePercent / 100.0, $"{Math.Round(snap.MemoryUsagePercent)}%", MemColor,
                 LevelColor(snap.MemoryUsagePercent, pal.Text, pal)));
             // G 保留 >0 判断：Windows 无独显 / 读不到时不出这个环（改动前的既有取舍，mac 是恒画三个环）。
             if (snap.GpuUsage > 0)
             {
-                var g = LevelColor(snap.GpuUsage, neutral, pal);
-                dials.Add(("G", snap.GpuUsage / 100.0, $"{Math.Round(snap.GpuUsage)}%", g,
+                dials.Add(("G", snap.GpuUsage / 100.0, $"{Math.Round(snap.GpuUsage)}%", GpuColor,
                     LevelColor(snap.GpuUsage, pal.Text, pal)));
             }
         }
@@ -833,9 +870,9 @@ public sealed class IslandCanvas : FrameworkElement
             }
             if (WantCombo("disk"))
             {
-                var d = LevelColor(snap.DiskUsagePercent, neutral, pal);
+                // 磁盘环 = 资源色（薄荷绿），数字仍按阈值分级 —— mac 的 combo 同款。
                 sys.Add(("D", snap.DiskUsagePercent / 100.0,
-                    $"{Math.Round(snap.DiskUsagePercent)}%", d,
+                    $"{Math.Round(snap.DiskUsagePercent)}%", DiskColor,
                     LevelColor(snap.DiskUsagePercent, pal.Text, pal)));
             }
         }
@@ -867,10 +904,13 @@ public sealed class IslandCanvas : FrameworkElement
     /// 这样"占用率环"与"温度环/硬盘环"是同一套视觉语言。</summary>
     private double DrawDialGauge(DrawingContext dc, Palette pal, double x, double yc, double ppd,
         double? usage, Color arc, string letter, double dialSize, double font,
-        double? fill = null, string? text = null, Color? textColor = null, string sample = "100%")
+        double? fill = null, string? text = null, Color? textColor = null, string sample = "100%",
+        Color? arcPure = null)
     {
-        // 环用 arc（按占用率分级），数字用文字色（按占用率分级）；给了 textColor 就两者都用它
-        Color arcColor = textColor ?? (usage is { } a ? LevelColor(a, arc, pal) : arc);
+        // 环用 arc（按占用率分级），数字用文字色（按占用率分级）；给了 textColor 就两者都用它。
+        // arcPure 给出时环**不做阈值分级**（按资源色），数字仍按阈值分级 —— 对齐 mac 的 combo：
+        // 环是资源色（蓝/青/粉），数字正常时是白色、≥70% 黄、≥90% 红。
+        Color arcColor = arcPure ?? textColor ?? (usage is { } a ? LevelColor(a, arc, pal) : arc);
         Color color = textColor ?? (usage is { } u ? LevelColor(u, pal.Text, pal) : pal.TextTertiary);
         Dial(dc, new Point(x + dialSize / 2, yc), dialSize, Math.Max(1.6, dialSize * 0.11),
             fill ?? (usage is { } f ? f / 100 : null), pal.Track, arcColor, pal.Text, letter, ppd);
@@ -935,9 +975,9 @@ public sealed class IslandCanvas : FrameworkElement
         // 数值槽按**实画宽**推进，窄值再按最小槽宽 21 兜底（mac 的 max(实画宽, CompactValueMinW) 同口径）：
         // 预留宽与实画宽必须同口径，否则组尾比墨迹尾多出一截，分隔线整体右移、且随读数跳变
         // （2026-11-25 复审 Must-fix 1：曾用样本宽 "125°"/"100%" 预留，每项空出 7.1px）。
-        void InlineItem(string label, string value, Color? valueColor, ref double x)
+        void InlineItem(string label, string value, Color? labelColor, Color? valueColor, ref double x)
         {
-            var icon = Text(label, 9.5, pal.TextTertiary, ppd: ppd);
+            var icon = Text(label, 9.5, labelColor ?? pal.TextTertiary, ppd: ppd);
             Baseline(dc, icon, x, Math.Round(cy + 13 * 0.36));
             x += icon.Width + CompactSpec.ArrowValueGap;
             double vx = x;
@@ -950,10 +990,10 @@ public sealed class IslandCanvas : FrameworkElement
         // 组宽按**实画文本宽**预留（不是样本宽）：组宽必须等于这一组真正画出来的宽度，
         // 否则组尾（分隔线的定位基准）会离最后一个字形远一截 —— 与 mac 的 DashLayout.TempW/UsageW 同口径
         // （mac 量的是 max(实画文本宽, 最小槽)）。
-        void AddItemGroup(List<(string Label, string Value, Color? Color)> items, bool dividerAfter)
+        void AddItemGroup(List<(string Label, string Value, Color? LabelColor, Color? ValueColor)> items, bool dividerAfter)
         {
             if (items.Count == 0) return;
-            var labels = items.Select(i => (double)Text(i.Label, 9.5, pal.TextTertiary, ppd: ppd).Width).ToArray();
+            var labels = items.Select(i => (double)Text(i.Label, 9.5, i.LabelColor ?? pal.TextTertiary, ppd: ppd).Width).ToArray();
             var values = items.Select(i => (double)RenderKit.NumWidth(i.Value, 13, true, ppd)).ToArray();
             double groupW = CompactSpec.InlineGroupWidth(items.Count, i => labels[i], i => values[i]);
             groups.Add(new CompactGroup
@@ -964,7 +1004,7 @@ public sealed class IslandCanvas : FrameworkElement
                     double ix = x;
                     for (int i = 0; i < items.Count; i++)
                     {
-                        InlineItem(items[i].Label, items[i].Value, items[i].Color, ref ix);
+                        InlineItem(items[i].Label, items[i].Value, items[i].LabelColor, items[i].ValueColor, ref ix);
                     }
                 },
                 DividerAfter = dividerAfter,
@@ -1038,9 +1078,10 @@ public sealed class IslandCanvas : FrameworkElement
         // ---- 组 2：温度项组（CPU/GPU/SSD）—— 图标盒形态（mac dash 温度组）----
         double? ct = thermal?.CpuTemp, gt = thermal?.GpuTemp, st = thermal?.SsdTemp;
         var temps = new List<(GlyphKind Glyph, string Value, Color Color)>();
-        if (Want("cputemp")) temps.Add((GlyphKind.Cpu, ct is { } c1 ? $"{Math.Round(c1)}°" : "--", TempColor(ct, pal)));
-        if (Want("gputemp")) temps.Add((GlyphKind.Gpu, gt is { } g1 ? $"{Math.Round(g1)}°" : "--", TempColor(gt, pal)));
-        if (Want("ssd")) temps.Add((GlyphKind.Ssd, st is { } s1 ? $"{Math.Round(s1)}°" : "--", TempColor(st, pal)));
+        // 配色：**资源色打底**（CPU 蓝 / GPU 粉 / SSD 薄荷绿），超阈值才转黄/红 —— 与 mac 的 dash 同口径。
+        if (Want("cputemp")) temps.Add((GlyphKind.Cpu, ct is { } c1 ? $"{Math.Round(c1)}°" : "--", TempResourceColor(ct, CpuColor, pal)));
+        if (Want("gputemp")) temps.Add((GlyphKind.Gpu, gt is { } g1 ? $"{Math.Round(g1)}°" : "--", TempResourceColor(gt, GpuColor, pal)));
+        if (Want("ssd")) temps.Add((GlyphKind.Ssd, st is { } s1 ? $"{Math.Round(s1)}°" : "--", TempResourceColor(st, DiskColor, pal)));
         if (temps.Count > 0)
         {
             // 组宽按**实画文本宽**预留（不是样本宽）—— 与 mac 的 DashLayout.TempW 同口径
@@ -1063,12 +1104,13 @@ public sealed class IslandCanvas : FrameworkElement
         if (density != CompactDensity.Minimal)
         {
             var usage = new List<(GlyphKind Glyph, double Share, string Value, Color Color)>();
+            // 占用组：**纯资源色**（内存 青 / GPU 粉 / 磁盘 薄荷绿），环与数字同色 —— 与 mac 的 dash 同口径。
             if (Want("mem")) usage.Add((GlyphKind.Memory, snap.MemoryUsagePercent / 100.0,
-                $"{snap.MemoryUsagePercent:F0}%", LevelColor(snap.MemoryUsagePercent, pal.Text, pal)));
+                $"{snap.MemoryUsagePercent:F0}%", MemColor));
             if (Want("gpu")) usage.Add((GlyphKind.Gpu, snap.GpuUsage / 100.0,
-                $"{snap.GpuUsage:F0}%", LevelColor(snap.GpuUsage, pal.Text, pal)));
+                $"{snap.GpuUsage:F0}%", GpuColor));
             if (Want("disk")) usage.Add((GlyphKind.Disk, snap.DiskUsagePercent / 100.0,
-                $"{snap.DiskUsagePercent:F0}%", LevelColor(snap.DiskUsagePercent, pal.Text, pal)));
+                $"{snap.DiskUsagePercent:F0}%", DiskColor));
             if (usage.Count > 0)
             {
                 // 组宽按**实画文本宽**预留（不是样本宽）—— 与 mac 的 DashLayout.UsageW 同口径
@@ -1091,10 +1133,11 @@ public sealed class IslandCanvas : FrameworkElement
         // 电池读数不在这里：设备收起视图已经有一份，dash 不重复（修复轮 2 裁决）。
         if (Want("net"))
         {
-            AddItemGroup(new List<(string, string, Color?)>
+            // 方向箭头用资源色（↓ 蓝 / ↑ 青，参考图同款），数值仍是文字色。
+            AddItemGroup(new List<(string, string, Color?, Color?)>
             {
-                ("↓", MonitorSnapshot.FormatSpeedFixed(snap.DownloadSpeed), null),
-                ("↑", MonitorSnapshot.FormatSpeedFixed(snap.UploadSpeed), null),
+                ("↓", MonitorSnapshot.FormatSpeedFixed(snap.DownloadSpeed), NetDownColor, null),
+                ("↑", MonitorSnapshot.FormatSpeedFixed(snap.UploadSpeed), NetUpColor, null),
             }, dividerAfter: false);
         }
 

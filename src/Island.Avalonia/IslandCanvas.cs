@@ -311,12 +311,26 @@ public sealed class IslandCanvas : Control
 
     // ---- 资源色：每种资源一个固定色，环 / 图标 / 数字三处同色（对齐 BrimDeck）----
     // 这些色**独立于主题**（主题换的是底色和文字色，资源色不变），只在浅色主题下过 Readable() 压对比度。
-    private static readonly Color CpuC = Color.FromRgb(0x2E, 0x9B, 0xFF);   // CPU  蓝
-    private static readonly Color MemC = Color.FromRgb(0x4F, 0xE3, 0xD7);   // 内存 青
-    private static readonly Color GpuC = Color.FromRgb(0xF2, 0x72, 0xA8);   // GPU  粉
-    private static readonly Color DiskC = Color.FromRgb(0x5F, 0xD3, 0xA0);  // 硬盘 青绿（BrimDeck 同款；原来是蓝紫，和内存的青分不开）
-    private static readonly Color BattC = Color.FromRgb(0x3F, 0xB8, 0xFF);  // 电池 蓝
-    private static readonly Color NetC  = Color.FromRgb(0x6F, 0xB8, 0xFF);  // 网络 蓝
+    // 色值**取自两端唯一真相源** Island.Core.Capabilities.ResourceColorSpec（从用户参考图逐像素取样），
+    // 本文件不再写死 —— 两端各写一份就会漂。浅色主题的压对比度仍走 ReadableCached()，机制不变。
+    private static Color Hex(string h)
+        => Color.FromRgb((byte)Convert.ToInt32(h.Substring(1, 2), 16),
+                         (byte)Convert.ToInt32(h.Substring(3, 2), 16),
+                         (byte)Convert.ToInt32(h.Substring(5, 2), 16));
+
+    private static readonly Color CpuC = Hex(ResourceColorSpec.Cpu);       // CPU  蓝
+    private static readonly Color MemC = Hex(ResourceColorSpec.Memory);    // 内存 青
+    private static readonly Color GpuC = Hex(ResourceColorSpec.Gpu);       // GPU  粉
+    private static readonly Color DiskC = Hex(ResourceColorSpec.Disk);     // 硬盘 薄荷绿
+    private static readonly Color BattC = Hex(ResourceColorSpec.Battery);  // 电池 蓝紫
+    private static readonly Color NetC  = Hex(ResourceColorSpec.NetDown);  // 网络 蓝
+
+    /// <summary>网速方向箭头色：↓ 蓝 / ↑ 青（取自 ResourceColorSpec，跨端一致）。</summary>
+    private static readonly Color NetDownC = Hex(ResourceColorSpec.NetDown);
+    private static readonly Color NetUpC   = Hex(ResourceColorSpec.NetUp);
+
+    /// <summary>网速箭头与数值之间的间距（combo / dash 共用同一口径）。</summary>
+    private const double NetArrowGap = 3;
 
     /// <summary>按资源取色（环 / 图标 / 数字共用一个来源）。</summary>
     private enum Res { Cpu, Mem, Gpu, Disk, Batt, Net }
@@ -594,8 +608,8 @@ public sealed class IslandCanvas : Control
         public double Dial => ComboDial;
         public double FigureFont => ComboFigureFont;
         public double NetGap => 7;
-        public double NetDownW => NetDownArrow.WidthIncludingTrailingWhitespace + 3 + NetDownValue.WidthIncludingTrailingWhitespace;
-        public double NetUpW => NetUpArrow.WidthIncludingTrailingWhitespace + 3 + NetUpValue.WidthIncludingTrailingWhitespace;
+        public double NetDownW => NetDownArrow.WidthIncludingTrailingWhitespace + NetArrowGap + NetDownValue.WidthIncludingTrailingWhitespace;
+        public double NetUpW => NetUpArrow.WidthIncludingTrailingWhitespace + NetArrowGap + NetUpValue.WidthIncludingTrailingWhitespace;
         public double GaugesW => GaugeWidth(Gauges);
         public double SystemGaugesW => GaugeWidth(SystemGauges);
         private double GaugeWidth(List<(Glyph Icon, Res Res, double? Usage, Color Arc, FormattedText Figure)> gauges)
@@ -617,9 +631,9 @@ public sealed class IslandCanvas : Control
         var l = new ComboLayout { Style = style };
         l.Clock = RenderKit.Text(DateTime.Now.ToString("HH:mm"), FontValue,
             style.ClockStrong ? pal.Text : pal.TextDim, style.ClockStrong);
-        l.NetDownArrow = RenderKit.Text("↓", FontValue, pal.Down, true);
+        l.NetDownArrow = RenderKit.Text("↓", FontValue, ReadableCached(NetDownC, pal), true);
         l.NetDownValue = RenderKit.Text(MonitorSnapshot.FormatSpeedFixed(snap?.DownloadSpeed ?? 0), FontValue, pal.Text, true);
-        l.NetUpArrow = RenderKit.Text("↑", FontValue, pal.Up, true);
+        l.NetUpArrow = RenderKit.Text("↑", FontValue, ReadableCached(NetUpC, pal), true);
         l.NetUpValue = RenderKit.Text(MonitorSnapshot.FormatSpeedFixed(snap?.UploadSpeed ?? 0), FontValue, pal.Text, true);
         if (snap is not null)
         {
@@ -699,11 +713,11 @@ public sealed class IslandCanvas : Control
         // 网速方向由箭头表达，数值统一使用中性色。
         double netBaseline = Math.Round(cy + FontValue * 0.36);
         RenderKit.Baseline(dc, L.NetDownArrow, x, netBaseline);
-        x += L.NetDownArrow.WidthIncludingTrailingWhitespace + 3;
+        x += L.NetDownArrow.WidthIncludingTrailingWhitespace + NetArrowGap;
         RenderKit.Baseline(dc, L.NetDownValue, x, netBaseline);
         x += L.NetDownValue.WidthIncludingTrailingWhitespace + L.NetGap;
         RenderKit.Baseline(dc, L.NetUpArrow, x, netBaseline);
-        x += L.NetUpArrow.WidthIncludingTrailingWhitespace + 3;
+        x += L.NetUpArrow.WidthIncludingTrailingWhitespace + NetArrowGap;
         RenderKit.Baseline(dc, L.NetUpValue, x, netBaseline);
     }
 
@@ -1919,7 +1933,7 @@ public sealed class IslandCanvas : Control
         public readonly List<(Glyph Icon, Res Res, bool Ok, FormattedText Text)> Temps = new();   // 温度组
         public readonly List<(Glyph Icon, Res Res, double Share, FormattedText Text)> Usage = new();  // 占用组（环包图标）
         public (Glyph Icon, double Share, Color Color, FormattedText Text)? Battery;
-        public FormattedText NetDown = null!, NetUp = null!;
+        public FormattedText NetDownArrow = null!, NetDownValue = null!, NetUpArrow = null!, NetUpValue = null!;
         /// <summary>渐变频谱柱（CPU 历史，对齐 BrimDeck 收起形态的柱状图）。</summary>
         public double[] Spectrum = Array.Empty<double>();
         public int SpectrumCount;
@@ -1932,7 +1946,9 @@ public sealed class IslandCanvas : Control
         public double UsageW => Usage.Sum(u => DashRing + 5 + Math.Max(u.Text.WidthIncludingTrailingWhitespace, 34) + DashItemGap) - (Usage.Count > 0 ? DashItemGap : 0);
         public double BattW => Battery is { } b ? DashRing + 5 + Math.Max(b.Text.WidthIncludingTrailingWhitespace, 34) : 0;
         public const double NetGap = 10;
-        public double NetW => NetDown.WidthIncludingTrailingWhitespace + NetGap + NetUp.WidthIncludingTrailingWhitespace;
+        /// <summary>网速总宽：↓箭头 + 间距 + 数值 + 组间距 + ↑箭头 + 间距 + 数值。</summary>
+        public double NetW => (NetDownArrow.WidthIncludingTrailingWhitespace + NetArrowGap + NetDownValue.WidthIncludingTrailingWhitespace)
+            + NetGap + (NetUpArrow.WidthIncludingTrailingWhitespace + NetArrowGap + NetUpValue.WidthIncludingTrailingWhitespace);
 
         public double ContentW
         {
@@ -1987,8 +2003,10 @@ public sealed class IslandCanvas : Control
             l.Battery = (Glyph.Battery, (double)bp / 100, bc, RenderKit.Text($"{Math.Round(bp)}%", FontValue, ReadableCached(bc, pal), true));
         }
         // ④ 网速
-        l.NetDown = RenderKit.Text("↓" + Core.Monitoring.MonitorSnapshot.FormatSpeedFixed(snap.DownloadSpeed), FontValue, pal.Down);
-        l.NetUp = RenderKit.Text("↑" + Core.Monitoring.MonitorSnapshot.FormatSpeedFixed(snap.UploadSpeed), FontValue, pal.Up);
+        l.NetDownArrow = RenderKit.Text("↓", FontValue, ReadableCached(NetDownC, pal));
+        l.NetDownValue = RenderKit.Text(Core.Monitoring.MonitorSnapshot.FormatSpeedFixed(snap.DownloadSpeed), FontValue, pal.Text);
+        l.NetUpArrow = RenderKit.Text("↑", FontValue, ReadableCached(NetUpC, pal));
+        l.NetUpValue = RenderKit.Text(Core.Monitoring.MonitorSnapshot.FormatSpeedFixed(snap.UploadSpeed), FontValue, pal.Text);
         // ⑤ 渐变频谱柱：CPU 历史（对齐 BrimDeck 收起形态的柱状图）
         var spec = new double[20];
         int n = _history.Series(HistoryBuffer.Kind.Cpu, spec.Length, spec, 100);
@@ -2082,10 +2100,14 @@ public sealed class IslandCanvas : Control
         }
         if (L.Devices.Count > 0) Gap();
 
-        // ④ 网速：一行，下载在前。方向语义色保留。
-        RenderKit.Baseline(dc, L.NetDown, x, Math.Round(cy + FontValue * 0.36));
-        x += L.NetDown.WidthIncludingTrailingWhitespace + DashLayout.NetGap;
-        RenderKit.Baseline(dc, L.NetUp, x, Math.Round(cy + FontValue * 0.36));
+        // ④ 网速：一行，下载在前。箭头按方向取色（↓蓝 / ↑青），数值中性。
+        RenderKit.Baseline(dc, L.NetDownArrow, x, Math.Round(cy + FontValue * 0.36));
+        x += L.NetDownArrow.WidthIncludingTrailingWhitespace + NetArrowGap;
+        RenderKit.Baseline(dc, L.NetDownValue, x, Math.Round(cy + FontValue * 0.36));
+        x += L.NetDownValue.WidthIncludingTrailingWhitespace + DashLayout.NetGap;
+        RenderKit.Baseline(dc, L.NetUpArrow, x, Math.Round(cy + FontValue * 0.36));
+        x += L.NetUpArrow.WidthIncludingTrailingWhitespace + NetArrowGap;
+        RenderKit.Baseline(dc, L.NetUpValue, x, Math.Round(cy + FontValue * 0.36));
     }
 
     // ============ 胶囊监控图标（12×12 单位矢量，描边式） ============

@@ -167,6 +167,23 @@ public static class AvaloniaVisualCore
     /// <summary>状态行墨迹簇的最小横向间隔（把两个字段位分开、但同一字段位内部的空格不算断开）。</summary>
     public const int StatusSlotMinGap = 8;
 
+    // ---------- 「按资源配色」门禁的判定参数（与 Windows 端 VisualProbeCore 同一套口径） ----------
+
+    /// <summary>色相分桶数（12 桶 × 30°）。</summary>
+    public const int HueBucketCount = 12;
+
+    /// <summary>"彩色像素"的饱和度下限（0.25）：白 / 灰 / 近灰的抗锯齿边缘都过不了这一关。</summary>
+    public const double MinHueSaturation = 0.25;
+
+    /// <summary>"彩色像素"的亮度下限（0.35 ≈ 89/255）：排除深色胶囊底与暗部抗锯齿。</summary>
+    public const double MinHueValue = 0.35;
+
+    /// <summary>每个色相桶至少要有这么多像素才算"落到"（挡掉单像素噪点）。</summary>
+    public const int MinPixelsPerHueBucket = 2;
+
+    /// <summary>收起态 dash 至少要落进多少个不同色相桶（"按资源配色"这件事本身）。</summary>
+    public const int MinDashHueBuckets = 3;
+
     // ==================== 通用像素统计 ====================
 
     /// <summary>像素与参考色的通道最大差。</summary>
@@ -284,6 +301,67 @@ public static class AvaloniaVisualCore
             i = end + 1;
         }
         return clusters;
+    }
+
+    /// <summary>
+    /// **高饱和像素的色相桶统计**（"按资源配色"门禁的核心判据）。
+    ///
+    /// 判定口径与 Windows 端 tools\visual-probe\VisualProbeCore.cs **完全同一套**：
+    ///   · 像素转 HSV：V = max(R,G,B)/255、S = (max-min)/max、H = 标准色相角（0..360°）；
+    ///   · "彩色像素"门槛：**S ≥ 0.25 且 V ≥ 0.35** ——
+    ///     白 / 灰 / 近灰（文字与抗锯齿边缘）的饱和度远低于 0.25，
+    ///     深色胶囊底与暗部抗锯齿的亮度低于 0.35 ⇒ 都被挡在外面；
+    ///   · 色相分 **12 桶**（每桶 30°），每桶至少 **2 个**彩色像素才算"落到"（挡掉单像素噪点）；
+    ///   · 返回：命中桶数 / 彩色像素数 / 人可读的桶分布。
+    ///
+    /// 为什么这样有牙齿：改回单色（白 / 灰）⇒ 彩色像素归零 ⇒ 桶数 0 ⇒ 门禁红；
+    /// 而不同资源本来就该落在不同桶（蓝 ≈210°、青 ≈182°、粉 ≈342°、薄荷 ≈142°…）。
+    /// </summary>
+    public static (int Buckets, int Colored, string Detail) HueBucketStats(ProbeImage img, LayoutRect rect)
+    {
+        int x0 = Math.Max(0, (int)Math.Floor(rect.X));
+        int y0 = Math.Max(0, (int)Math.Floor(rect.Y));
+        int x1 = Math.Min(img.Width - 1, (int)Math.Ceiling(rect.Right) - 1);
+        int y1 = Math.Min(img.Height - 1, (int)Math.Ceiling(rect.Bottom) - 1);
+
+        var counts = new int[HueBucketCount];
+        int colored = 0;
+        for (int y = y0; y <= y1; y++)
+            for (int x = x0; x <= x1; x++)
+            {
+                var (b, g, r) = img.At(x, y);
+                if (!TryHueBucket(r, g, b, out int bucket)) continue;
+                counts[bucket]++;
+                colored++;
+            }
+
+        var hit = Enumerable.Range(0, HueBucketCount).Where(i => counts[i] >= MinPixelsPerHueBucket).ToList();
+        string buckets = string.Join(", ", hit.Select(i => $"{i * 30}°~{(i + 1) * 30}°:{counts[i]}px"));
+        string detail = $"彩色像素 {colored} 个；命中色相桶 {hit.Count} 个（{buckets}）；门槛 S≥{MinHueSaturation:0.00}、V≥{MinHueValue:0.00}，每桶至少 {MinPixelsPerHueBucket} 像素";
+        return (hit.Count, colored, detail);
+    }
+
+    /// <summary>
+    /// 一个像素落在哪个色相桶（0..HueBucketCount-1）。
+    /// 饱和度或亮度不达标 ⇒ 返回 false（这个像素不算"彩色"）。
+    /// </summary>
+    private static bool TryHueBucket(byte r8, byte g8, byte b8, out int bucket)
+    {
+        double r = r8 / 255.0, g = g8 / 255.0, b = b8 / 255.0;
+        double max = Math.Max(r, Math.Max(g, b));
+        double min = Math.Min(r, Math.Min(g, b));
+        double delta = max - min;
+        double sat = max <= 0 ? 0 : delta / max;
+        if (sat < MinHueSaturation || max < MinHueValue) { bucket = 0; return false; }
+
+        double hue;
+        if (delta <= 0) hue = 0;
+        else if (max == r) hue = 60 * (((g - b) / delta) % 6);
+        else if (max == g) hue = 60 * (((b - r) / delta) + 2);
+        else hue = 60 * (((r - g) / delta) + 4);
+        if (hue < 0) hue += 360;
+        bucket = Math.Min(HueBucketCount - 1, (int)(hue / 360.0 * HueBucketCount));
+        return true;
     }
 
     // ==================== 几何判定（不需要像素，探针与门禁都能跑） ====================
@@ -606,5 +684,13 @@ public static class AvaloniaVisualCore
             "收起态 dash：图标盒确有绘制（存在高度接近图标盒边长 10.8 的墨迹簇）",
             iconSized.Count > 0,
             $"高度在 [7,14]（图标盒边长 12×0.9=10.8）的墨迹簇 {iconSized.Count} 段；全部簇高：{string.Join(", ", clusters.Select(c => c.Y1 - c.Y0 + 1))}"));
+
+        // 「按资源配色」门禁：收起态 dash 必须真的画出**多种资源色**。
+        // 改回单色（白 / 灰）⇒ 彩色像素归零 ⇒ 桶数不足 ⇒ 这里红（与 Windows 端同一套口径与下限）。
+        var hue = HueBucketStats(img, full);
+        report.Checks.Add(new ProbeCheck(
+            $"收起态 dash：读数按资源分色（高饱和像素落在 ≥ {MinDashHueBuckets} 个色相桶）",
+            hue.Buckets >= MinDashHueBuckets,
+            hue.Detail));
     }
 }

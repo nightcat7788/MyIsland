@@ -10,6 +10,10 @@ namespace Island.App.Themes;
 ///   其余读数一律中性色，只有超阈值（≥70% 警示、≥90% 危险）才换成状态色 —— 告警是画面里唯一跳出来的颜色。
 /// - 数据不再按指标配色（以前 CPU 蓝 / 内存青 / GPU 粉是写死的常量）：9 套主题因此只差一个强调色，
 ///   "像素""赛博朋克"这类有个性的主题在展开面板里完全看不出来。
+///   ⚠️ **例外（2026-11-27）**：**收起态**（dash / combo / monitor 三条胶囊带）改为**按资源配色** ——
+///   色值取自两端唯一真相源 `Island.Core/Capabilities/ResourceColorSpec.cs`（来源：用户给的参考图），
+///   环/图标/柱用资源色、读数仍按阈值分级（正常白、≥70% 黄、≥90% 红）。
+///   **展开面板仍然是本契约**：单强调色 + 状态色，不按指标配色（范围门禁见 ResourceColorTests）。
 /// - 文字对比度：Text ≥ 7:1、TextDim ≥ 6:1、TextTertiary ≥ 4.5:1（10px 的说明文字也要读得清）；
 ///   强调色当文字用（选中的电源计划之外的场景）≥ 4.5:1。由 Island.Tests 的 DesignSystemTests 守着。
 public sealed record Palette

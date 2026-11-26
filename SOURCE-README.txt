@@ -1,7 +1,7 @@
 MyIsland 源码包说明
 ====================
 
-【版本】1.1.3 · 本目录是 git 仓库（分支 main），版本号集中定义在根目录的 Directory.Build.props。
+【版本】1.1.4 · 本目录是 git 仓库（分支 main），版本号集中定义在根目录的 Directory.Build.props。
         改版本号需同步三处：Directory.Build.props / packaging/macos/Info.plist / installer/MyIsland.iss
         （Windows 发布流水线 release.ps1 会自动读 props，再把 /DAppVersion= 注入安装包脚本。）
 
