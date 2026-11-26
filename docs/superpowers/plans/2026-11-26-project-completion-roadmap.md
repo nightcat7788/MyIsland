@@ -68,9 +68,15 @@
 
 ## 阶段 C：mac 侧收尾
 
-- [ ] C1 用户在 Mac 上编译两个原生探针（`bash tools/build-mac-probes.sh`）并核对三处：
-      ① Feature 报告**第 0 字节是不是报告 ID**；② `thermal: cpu source` 是否指向 `PMU tdie`；
-      ③ 设备页读不到电量时是否显示「未知」而不是 0%。
+- [ ] C1 **在 Mac 上跑一条命令出报告**（不再靠人工逐条核对）：
+      `bash tools/mac-selfcheck.sh` —— 编译两个原生探针 → 跑探针 → 自动判定三处 →
+      出报告 `docs/verification/mac-<日期>.md`（三态：**已核对且通过 / 已核对但不通过 / 没法核对**；
+      缺工具链如实写缺什么，退出码非 0 即未全通过）。
+      判定项与口径：① Feature 报告**第 0 字节是不是报告 ID**（HIDFTR 行第 5 字段首字节 ==
+      报告 ID 十六进制）；② `thermal: cpu source` 是否指向 `PMU tdie`；
+      ③ 设备页读不到电量时是否显示「未知」而不是 0%（**静态核对源码 + 运行时核对探针输出**，
+      画面确认仍需人工勾选）。
+      ↳ 脚本与口径：`tools/mac-selfcheck.sh`；任务报告：`task-12-mac-selfcheck-report.md`。
 - [x] C2 mac 设备页补 per-type 矢量图标（`58027de`）：按共享词表 battery / ble / mouse / keyboard / headset /
       gamepad / other 画七种矢量图标，**沿用 Windows 端同一套 16×16 图形语言**（新增 src\Island.Avalonia\DeviceGlyphs.cs）。
       ↳ 「读不到就是未知」的既有渲染分支**原样保留**（dev.LevelText 非 null 时显示「未知」，不显示 0%）。
@@ -185,7 +191,9 @@
 
 ## 仍需用户侧配合才能关闭的项（如实记，未假装完成）
 
-- **C1**：两个 mac 原生探针（`bash tools/build-mac-probes.sh`）需在**用户的 Mac** 上编译并核对三处。
+- **C1**：mac 原生探针的三处核对已变成**可重复流程** —— 在**用户的 Mac** 上跑
+  `bash tools/mac-selfcheck.sh`，产出报告 `docs/verification/mac-<日期>.md`（三态判定，缺工具链如实写缺什么）。
+  待用户跑完回填实测值（报告路径与回填步骤见 `task-12-mac-selfcheck-report.md`）。
 - **D3 / F1–F4**：SSD 温度、AMD 平台、Intel 桌面、核显+独显、其它 2.4G 接收器 —— 都**缺硬件**，
   本机只有 Intel Core Ultra 5 225H 一台。阶段 F 已把这项变成**可执行**：`tools\verify-matrix.ps1`
   在别的机器上跑一次即产出一份带原始探针输出的覆盖报告。

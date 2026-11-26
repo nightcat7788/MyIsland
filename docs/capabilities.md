@@ -53,7 +53,7 @@
 | `board-temp` | 主板温度 | 仅 Windows | Windows 走 LHM 主板传感器（需管理员）；mac 无对应数据源 |
 | `today-traffic` | 今日流量 | 仅 Windows | Windows 走 PDH 网络计数器累计（今日 ↓/↑）；mac 无每日流量口径 |
 | `battery-bt` | 蓝牙设备电量 | 两端都有（两端实现不同源） | Windows 走 BLE GATT 0x180F/0x2A19；mac 走 IOKit 电池属性 |
-| `battery-hid` | 2.4G 接收器电量 | 两端都有 | 两端共用同一份协议表与三层校验；mac 侧原生探针待实机验证；内置表只收**已实机验证**的条目（见 §9） |
+| `battery-hid` | 2.4G 接收器电量 | 两端都有 | 两端共用同一份协议表与三层校验；mac 侧原生探针待实机验证（核对流程：`bash tools/mac-selfcheck.sh` → 报告 `docs/verification/mac-<日期>.md`）；内置表只收**已实机验证**的条目（见 §9） |
 | `battery-internal` | 本机内置电池 | 两端都有（两端实现不同源） | Windows 走 WMI Win32_Battery；mac 走 AppleSmartBattery |
 | `storage-temp` | SSD 温度 | 仅 macOS | Windows 不可用：LHM 的 NVMe SMART IOCTL 在本机触发 0x1EA 蓝屏两次；mac 走 IOHID NAND 传感器 |
 
