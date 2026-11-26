@@ -1665,7 +1665,10 @@ public sealed class IslandCanvas : Control
         var s = Snapshot;
         const double pad = 18, gap = 12;
         double cardW = (r.Width - pad * 2 - gap) / 2;
-        double availH = r.Bottom - y0 - pad;
+        // 底部状态行（9px 单行，两端共享规格 MonitorStatusLineSpec）占的高度**先从可用高度里扣掉**：
+        // TopMargin(6) + LineHeight(14) = 20。不扣的话最紧凑时状态行会压到栅格底边 / 越出面板底。
+        double statusLineH = MonitorStatusLineSpec.TopMargin + MonitorStatusLineSpec.LineHeight;
+        double availH = r.Bottom - y0 - pad - statusLineH;
         if (cardW < 120 || availH < 100) return;
 
         // 卡片高度按内容算，不再两行均分——原来 3 行内容撑满 230px 高度，下半大片空白。
@@ -1723,6 +1726,11 @@ public sealed class IslandCanvas : Control
 
         double x1 = r.X + pad, x2 = x1 + cardW + gap;
         double y1 = y0, y2 = y1 + topH + gap;
+        // 栅格底边与状态行的落点：状态行在栅格**下方** TopMargin 处；
+        // 再夹在内容区底边内 ⇒ 绝不越出面板；实在放不下就不画（不压栅格）。
+        double gridBottom = y2 + botH;
+        double statusY = Math.Min(gridBottom + MonitorStatusLineSpec.TopMargin,
+                                  r.Bottom - pad - MonitorStatusLineSpec.LineHeight);
         // 读不到显示 "--"（Reading 三态），读到 0 显示 0%
         var stt = s?.Status ?? ReadingStatus.Empty;
         string Pct(Reading<double> r, double v) => r.HasValue ? $"{Math.Round(v)}%" : "--";
@@ -1839,7 +1847,28 @@ public sealed class IslandCanvas : Control
             dc.DrawText(none, new Point(x2 + 16, cy + 8));
         }
 
-        // ⑤ 底部：读数健康状态（Reading<T> 三态）。
+        // ⑤ 底部状态行（9px 单行）：2×2 栅格**下方**，左边与栅格左缘对齐，一行不换行。
+        //    字段位与顺序取自两端共享规格（SlotsFor 决定本平台显示哪些：平台不支持的**直接不出现**，
+        //    不置灰、不留空位）；读不到显示「未知」，绝不用 0 / 默认值 / 换算百分比充数（项目硬红线）。
+        if (statusY >= gridBottom)
+        {
+            double sx = x1;
+            foreach (var slot in MonitorStatusLineSpec.SlotsFor(macOS: true))
+            {
+                string? value = slot.Key switch
+                {
+                    "storage-temp" => MonitorStatusLineText.SsdTemp(s?.SsdTemp),
+                    "runtime" => MonitorStatusLineText.Uptime(s?.UptimeHours),
+                    _ => null,   // 规格里有、但本端还没有数据源的键 ⇒ 不出现（不显示假的未知）
+                };
+                if (value is null) continue;
+                var txt = RenderKit.Text($"{slot.Label} {value}", MonitorStatusLineSpec.FontSize, pal.TextTertiary);
+                dc.DrawText(txt, new Point(sx, statusY));
+                sx += txt.WidthIncludingTrailingWhitespace + MonitorStatusLineSpec.SlotGap;
+            }
+        }
+
+        // ⑥ 底部：读数健康状态（Reading<T> 三态）。
         // 有读不到的项就把名字和原因列出来，让采样错误一眼可见，而不是在卡片里显示一个假的 0。
         if (s is not null)
         {
@@ -1853,7 +1882,8 @@ public sealed class IslandCanvas : Control
             Check("CPU", stt.Cpu); Check("内存", stt.Memory); Check("磁盘", stt.Disk);
             Check("网速", stt.NetDown); Check("CPU 温度", stt.CpuTemp); Check("GPU 温度", stt.GpuTemp);
             Check("SSD 温度", stt.SsdTemp);
-            double sy = Math.Min(r.Bottom - 16, y2 + botH + 10);   // 贴着卡片底，不浮在面板底
+            // 状态行占了栅格底边下方第一行（TopMargin + LineHeight），健康行排在其下 ⇒ 两行不重叠。
+            double sy = Math.Min(r.Bottom - 14, statusY + MonitorStatusLineSpec.LineHeight + 2);
             if (problems.Count > 0)
             {
                 var line = RenderKit.Trimmed("⚠ " + string.Join(" · ", problems), 9, pal.Warning, r.Width - 2 * pad, false);

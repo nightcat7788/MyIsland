@@ -158,6 +158,11 @@ public sealed class MacSampler : ISampler
         TopProcessesByMem = d.HasFlag(SamplerDemand.Processes) ? _topProcessesByMem : null,
             DownloadSpeed = down.GetValueOrDefault(0),
             UploadSpeed = up.GetValueOrDefault(0),
+            // 运行时长：与 Windows 端（Island.Native.SystemMonitor）**同一口径、同一实现** ——
+            // Environment.TickCount64（系统开机时长）。mac 之前没填 ⇒ 底部状态行取不到值。
+            // 注意：Windows 侧 SystemMonitor 里那段 PDH "System Up Time" 是**死代码**（从未被调用），
+            // 两端都以这一行为准。
+            UptimeHours = Environment.TickCount64 / 3600000.0,
             Status = new ReadingStatus
             {
                 Cpu = cpu, Memory = memPct, Disk = disk, NetDown = down, NetUp = up,
