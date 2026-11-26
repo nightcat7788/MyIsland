@@ -64,35 +64,10 @@ public sealed class SystemMonitor : IDisposable
         _timer.Elapsed += OnTick;
     }
 
-    /// <summary>
-    /// 运行时长计数器（PDH "System" / "System Up Time"）。
-    /// 比 Environment.TickCount64 准：后者把**休眠**时间也算进去（合盖一夜后显示"运行了 12 小时"）。
-    /// LiteMonitor 同款口径。
-    /// </summary>
-    private void InitUptime()
-    {
-        try
-        {
-            _uptimeCounter = new PerformanceCounter("System", "System Up Time", true);
-            _uptimeCounter.NextValue();   // 原始值计数器：第一次读就是当前值
-        }
-        catch { _uptimeCounter = null; }
-    }
-
-    /// <summary>运行时长（小时）：PDH 优先，回退 Environment.TickCount64。</summary>
-    private double SampleUptimeHours()
-    {
-        if (_uptimeCounter is not null)
-        {
-            try
-            {
-                float seconds = _uptimeCounter.NextValue();
-                if (seconds > 0) return seconds / 3600.0;
-            }
-            catch { _uptimeCounter = null; }
-        }
-        return Environment.TickCount64 / 3600000.0;
-    }
+    // 运行时长口径：**Environment.TickCount64**（系统开机时长）。
+    // 曾有一段 PDH 的 System Up Time 计数器（不含休眠），但它**从未被读取** —— 建了不读、还不释放，
+    // 于是文档按它写、代码按 TickCount64 跑，两边对不上（2026-11-26 清掉，文档已改正）。
+    // 现在两端（Windows / macOS）**同一实现**、同一口径，数值可比。
 
     /// <summary>进程数/线程数计数器（PDH "System" 分类）—— 后台初始化时建。</summary>
     private void InitProcCounters()
@@ -200,8 +175,7 @@ public sealed class SystemMonitor : IDisposable
             LoadTraffic();               // 恢复今日累计（重启不归零）
             InitNetworkBaseline();
             InitProcCounters();
-            InitUptime();
-            InitCpu();
+                InitCpu();
             InitDisk();
             _gpuCache = new CounterSampleCache();   // 打开 PDH 查询 + WMI 查显卡名（最慢的一步）
         }
@@ -402,7 +376,6 @@ public sealed class SystemMonitor : IDisposable
 
     private PerformanceCounter? _freqCounter;
     private PerformanceCounter? _actualFreqCounter;
-    private PerformanceCounter? _uptimeCounter;
     private int _baseFreqMHz;
 
     // ---------- 磁盘（LiteMonitor 同款：PDH PhysicalDisk；_Total + 逐盘实例） ----------

@@ -74,7 +74,8 @@
 - [x] C2 mac 设备页补 per-type 矢量图标（`58027de`）：按共享词表 battery / ble / mouse / keyboard / headset /
       gamepad / other 画七种矢量图标，**沿用 Windows 端同一套 16×16 图形语言**（新增 src\Island.Avalonia\DeviceGlyphs.cs）。
       ↳ 「读不到就是未知」的既有渲染分支**原样保留**（dev.LevelText 非 null 时显示「未知」，不显示 0%）。
-- [ ] C3 mac 收起视图补 `devices`（mac 已有设备电量数据，但收起态没有这一视图）。
+- [x] C3 mac 收起视图补 `devices` —— **不再需要**（2026-11-26 产品决策：收起视图集**明确归为平台专属**，
+      不给 mac 补 Windows 独有的视图；mac 的设备电量在**展开页设备页**里已有）。
 
 ---
 
@@ -107,9 +108,12 @@
 
 ## 阶段 E：行为一致性收口（总纲阶段 3）
 
-- [ ] E1 收起视图集定案：Windows 多出的 monitor/devices/clipboard/window ——
-      要么补 mac 视图，要么明确归为平台专属（清单已能表达，等产品定）。
-- [ ] E2 展开页监控的底部状态行统一（两端同结构：9px 一行）。
+- [x] E1 收起视图集定案（2026-11-26 产品决策）：Windows 多出的 monitor/devices/clipboard/window
+      **明确归为平台专属** —— 不收掉、也不给 mac 补；差异公开在 `docs/capabilities.md` §1 与能力清单里
+      （它们是 `PlatformSpecific` / `WindowsOnly`）。两端收起视图顺序仍以 mac 为准。
+- [ ] E2 展开页监控的底部状态行统一（两端同结构：9px 一行）—— **进行中**（2026-11-26 产品决策：恢复）。
+      两端共享规格 `src/Island.Core/Capabilities/MonitorStatusLineSpec.cs`（字段位清单 / 顺序 / 几何 /
+      各平台是否出现，由能力清单的数据源决定）；Windows 与 macOS 两端并行实现中。
 - [x] E3 主题 token 口径 —— **方向已定并落地：统一「语义名」，不改任何具体色值**。
       - 新增 `src/Island.Core/Capabilities/ThemeTokenManifest.cs`：12 个共享 token 的语义键 + 语义说明 +
         两端属性名映射 + 「取值是否两端同值」（一律标「按设计不同」并写明原因：Windows 暗色科技 vs mac 按资源配色）；
