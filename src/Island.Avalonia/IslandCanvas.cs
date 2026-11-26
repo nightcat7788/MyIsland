@@ -1196,7 +1196,9 @@ public sealed class IslandCanvas : Control
         }
 
         // 每个设备一张小卡：大环 + 环内图标 + 百分比 + 名称 + 状态
-        const double cardW = 132, cardH = 150, gap = 12;
+        const double cardW = MonitorLayoutSpec.DeviceCardWidth;
+        const double cardH = MonitorLayoutSpec.DeviceCardHeight;
+        const double gap = MonitorLayoutSpec.DeviceCardGap;
         int perRow = Math.Max(1, (int)((w + gap) / (cardW + gap)));
         for (int i = 0; i < Devices.Count; i++)
         {
@@ -1663,8 +1665,11 @@ public sealed class IslandCanvas : Control
     private void DrawMonitorPage(DrawingContext dc, Palette pal, Rect r, double y0)
     {
         var s = Snapshot;
-        const double pad = 18, gap = 12;
-        double cardW = (r.Width - pad * 2 - gap) / 2;
+        // 栅格常量取自 MonitorLayoutSpec（唯一真相源，探针与门禁链同一份）。
+        // 局部抄一份的话，产品改了这里探针不会知道 ⇒ 探针的断言会悄悄失效。
+        const double pad = MonitorLayoutSpec.ContentPadX;
+        const double gap = MonitorLayoutSpec.GridGap;
+        double cardW = MonitorLayoutSpec.MonitorCardWidth(r.Width);
         // 底部状态行（9px 单行，两端共享规格 MonitorStatusLineSpec）占的高度**先从可用高度里扣掉**：
         // TopMargin(6) + LineHeight(14) = 20。不扣的话最紧凑时状态行会压到栅格底边 / 越出面板底。
         double statusLineH = MonitorStatusLineSpec.TopMargin + MonitorStatusLineSpec.LineHeight;
@@ -1673,9 +1678,10 @@ public sealed class IslandCanvas : Control
 
         // 卡片高度按内容算，不再两行均分——原来 3 行内容撑满 230px 高度，下半大片空白。
         // 上排：标题 44 + 3 行 × 37 + 12 余量 = 167
-        const double headH = 42, rowH = 44, rowGap = 7;   // 行高 44：进度条下方留 16px 给历史曲线
-        double topCardH = headH + 3 * rowH + rowGap;                       // 占用 / 温度：3 行 → 148
-        double botCardH = Math.Max(headH + 2 * 46 + 22, headH + 86);      // 速度：2 行 + 网络标签；电池：大字 → 156
+        const double rowH = MonitorLayoutSpec.RowH;         // 行高 44：进度条下方留 16px 给历史曲线
+        const double speedRowH = MonitorLayoutSpec.SpeedRowH;
+        double topCardH = MonitorLayoutSpec.TopCardH;                        // 占用 / 温度：3 行 → 181
+        double botCardH = MonitorLayoutSpec.BottomCardHeight;               // 速度：2 行 + 网络标签；电池：大字 → 156
         double topH = topCardH, botH = botCardH;
 
         // 卡片外壳 + 图标标题 + 分隔线，返回内容起始 y
@@ -1743,9 +1749,9 @@ public sealed class IslandCanvas : Control
             dc.DrawText(gx, new Point(x1 + cardW - 15 - gx.WidthIncludingTrailingWhitespace, y1 + 14));
         }
         // 行高 44：进度条下方留 16px 给历史曲线（否则曲线会压到下一行的标签上）
-        Row(x1, cy,       Glyph.Cpu,  ResColor(Res.Cpu, pal),  "CPU",  Pct(stt.Cpu, s?.CpuUsage ?? 0),           (s?.CpuUsage ?? 0) / 100,  null, HistoryBuffer.Kind.Cpu);
-        Row(x1, cy + 44,  Glyph.Mem,  ResColor(Res.Mem, pal),  "内存", Pct(stt.Memory, s?.MemoryUsagePercent ?? 0), (s?.MemoryUsagePercent ?? 0) / 100, null, HistoryBuffer.Kind.Mem);
-        Row(x1, cy + 88,  Glyph.Disk, ResColor(Res.Disk, pal), "磁盘", Pct(stt.Disk, s?.DiskUsagePercent ?? 0),   (s?.DiskUsagePercent ?? 0) / 100, null, HistoryBuffer.Kind.DiskRead, 8 * 1024 * 1024);
+        Row(x1, cy,             Glyph.Cpu,  ResColor(Res.Cpu, pal),  "CPU",  Pct(stt.Cpu, s?.CpuUsage ?? 0),           (s?.CpuUsage ?? 0) / 100,  null, HistoryBuffer.Kind.Cpu);
+        Row(x1, cy + rowH,      Glyph.Mem,  ResColor(Res.Mem, pal),  "内存", Pct(stt.Memory, s?.MemoryUsagePercent ?? 0), (s?.MemoryUsagePercent ?? 0) / 100, null, HistoryBuffer.Kind.Mem);
+        Row(x1, cy + rowH * 2,  Glyph.Disk, ResColor(Res.Disk, pal), "磁盘", Pct(stt.Disk, s?.DiskUsagePercent ?? 0),   (s?.DiskUsagePercent ?? 0) / 100, null, HistoryBuffer.Kind.DiskRead, 8 * 1024 * 1024);
 
         // ② 温度：CPU / GPU / SSD，条长按 0-110°C 映射
         // 温度用语义色：正常走强调色、偏高走警告色、过高走红色（规范：语义色要精确而非喊叫）
@@ -1753,9 +1759,9 @@ public sealed class IslandCanvas : Control
         string Deg(double? v) => v is { } x && x > 0 ? $"{Math.Round(x)}°" : "--";
         // 返回 null=正常（用中性强调），非 null=超阈值（用警告色）
         string? TempWarn(double? v) => v is { } t ? (t >= 90 ? "过热" : t >= 70 ? "偏高" : null) : null;
-        Row(x2, cy,      Glyph.Thermo, ResColor(Res.Cpu, pal),  "CPU", Deg(s?.CpuTemp), (s?.CpuTemp ?? 0) / 110, TempWarn(s?.CpuTemp));
-        Row(x2, cy + 44, Glyph.Gpu,    ResColor(Res.Gpu, pal),  "GPU", Deg(s?.GpuTemp), (s?.GpuTemp ?? 0) / 110, TempWarn(s?.GpuTemp));
-        Row(x2, cy + 88, Glyph.Ssd,    ResColor(Res.Disk, pal), "SSD", Deg(s?.SsdTemp), (s?.SsdTemp ?? 0) / 110, TempWarn(s?.SsdTemp));
+        Row(x2, cy,             Glyph.Thermo, ResColor(Res.Cpu, pal),  "CPU", Deg(s?.CpuTemp), (s?.CpuTemp ?? 0) / 110, TempWarn(s?.CpuTemp));
+        Row(x2, cy + rowH,      Glyph.Gpu,    ResColor(Res.Gpu, pal),  "GPU", Deg(s?.GpuTemp), (s?.GpuTemp ?? 0) / 110, TempWarn(s?.GpuTemp));
+        Row(x2, cy + rowH * 2,  Glyph.Ssd,    ResColor(Res.Disk, pal), "SSD", Deg(s?.SsdTemp), (s?.SsdTemp ?? 0) / 110, TempWarn(s?.SsdTemp));
 
         // ③ 上下速度：图标 + 数值 + 流量条（2 MB/s 为满格）
         cy = Card(x1, y2, botH, "上下速度", Glyph.Down, pal.Accent);
@@ -1782,7 +1788,7 @@ public sealed class IslandCanvas : Control
             }
         }
         Speed(cy,      Glyph.Down, DownC, "下行", s?.DownloadSpeed ?? 0, HistoryBuffer.Kind.Down);
-        Speed(cy + 46, Glyph.Up,   UpC,   "上行", s?.UploadSpeed ?? 0, HistoryBuffer.Kind.Up);
+        Speed(cy + speedRowH, Glyph.Up,   UpC,   "上行", s?.UploadSpeed ?? 0, HistoryBuffer.Kind.Up);
         // 卡底信息位：网络类型 + 电池（应用榜占了右下角，电池信息挪到这里）
         var link = RenderKit.Text($"网络 {s?.LinkType ?? "--"}", 10, pal.TextTertiary);
         dc.DrawText(link, new Point(x1 + 15, y2 + botH - 18));
@@ -2591,9 +2597,9 @@ public sealed class IslandCanvas : Control
     /// <summary>设备页高度：每行 150 + 间距 12。</summary>
     public double MeasureDevicesHeight()
     {
-        const double cardH = 150, gap = 12;
-        double w = 520;                                  // 与 DrawDevicesPage 的可用宽度一致
-        int perRow = Math.Max(1, (int)((w + gap) / (132 + gap)));
+        const double cardH = MonitorLayoutSpec.DeviceCardHeight, gap = MonitorLayoutSpec.DeviceCardGap;
+        double w = MonitorLayoutSpec.DevicesContentWidth(MonitorLayoutSpec.ExpandedPanelWidth); // 与 DrawDevicesPage 的可用宽度一致
+        int perRow = MonitorLayoutSpec.DevicesPerRow(MonitorLayoutSpec.ExpandedPanelWidth);
         int rows = (Devices.Count + perRow - 1) / perRow;
         if (rows == 0) return 40;                        // 空状态提示一行
         return rows * cardH + (rows - 1) * gap;

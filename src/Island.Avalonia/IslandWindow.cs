@@ -32,11 +32,13 @@ public sealed class IslandWindow : Window
     private const double WinWMax = 1200;
     /// <summary>窗口高度上限（屏幕够高才不会挡住太多内容）。</summary>
     private const double WinHMax = 1400;
-    private const double ExpandW = 560;
+    // 展开面板宽度取自 MonitorLayoutSpec（唯一真相源）——探针与门禁链同一份。
+    private const double ExpandW = MonitorLayoutSpec.ExpandedPanelWidth;
     /// <summary>展开面板高度：按当前页的内容算，不写死（原来固定 560 导致卡片被截断或大片留白）。</summary>
     private double ExpandHeight => _canvas.Page switch
     {
-        "monitor" => 42 + 181 + 12 + 156 + 30 + 34,   // 页签 + 上排(3行×44+间距) + 间距 + 下排 + 状态行 + 边距
+        // 页签 + 上排(3行×44+间距) + 间距 + 下排 + 状态行 + 边距（数值取自 MonitorLayoutSpec）
+        "monitor" => MonitorLayoutSpec.MonitorPanelHeight,
         // 剪贴板：标签行 + 按实际条数算的行高 + 边距。列表是**两列**，行数 = ceil(条数/2)。
         // 原来写死 42 + 20*30 + 30（恒按 20 条满额）→ 只有几条时下方留一大片空白
         // （1.1.0 真机截图：5 条记录撑到 695 高）。与 screens / devices 一样按内容量高。
