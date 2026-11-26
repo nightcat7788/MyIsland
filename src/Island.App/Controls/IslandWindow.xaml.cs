@@ -1155,7 +1155,13 @@ public partial class IslandWindow : Window
             }),
             new RelayCommand(_ => Services.ControlService.OpenBluetoothSettings()),
             new RelayCommand(_ => Services.ControlService.Lock()),
-            new RelayCommand(_ => Services.ControlService.Sleep()),
+            new RelayCommand(_ =>
+            {
+                // 睡眠失败/不支持都要**说清楚为什么**（原来返回值被丢掉，点了没反应也没提示）。
+                var (ok, msg) = Services.ControlService.Sleep();
+                pd.UpdateControls();
+                if (!ok) pd.SleepNote = msg;
+            }),
             new RelayCommand(p => Services.ControlService.OpenSettings(p as string ?? "")));
         // 音量 / 深色模式回调与初值
         pd.OnSetVolume = v => _volume.SetVolume((float)v);

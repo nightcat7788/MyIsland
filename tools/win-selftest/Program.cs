@@ -194,8 +194,9 @@ internal static class Program
             {
                 // 自动唤醒任务由**外层 PowerShell**布（Register-ScheduledTask -WakeToRun），
                 // 这里只负责调产品的那条路：ControlService.Sleep() → SetSuspendState。
-                ControlService.Sleep();
-                return ("已调用 ControlService.Sleep()（SetSuspendState）", true);
+                var (ok, msg) = ControlService.Sleep();
+                if (ok) return ("已调用 ControlService.Sleep()（SetSuspendState）", true);
+                return ("Sleep() 返回失败：" + msg, true);
             });
         }
 

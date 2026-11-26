@@ -146,8 +146,21 @@ public sealed class PanelData : INotifyPropertyChanged
     private bool _hasBrightness;
     public bool HasBrightness { get => _hasBrightness; set => Set(ref _hasBrightness, value); }
 
+    /// <summary>
+    /// 本机是否支持传统睡眠（S3）。不支持（新型待机 S0 机器）时**「睡眠」按钮不出现**，
+    /// 同行给出原因 —— 与亮度的处理同一口径：不留一个点了没反应的按钮。
+    /// </summary>
+    private bool _supportsSleep;
+    public bool SupportsSleep { get => _supportsSleep; set => Set(ref _supportsSleep, value); }
+
+    /// <summary>睡眠那一行的行内说明（不支持时给出原因；空则不占位）。</summary>
+    private string _sleepNote = "";
+    public string SleepNote { get => _sleepNote; set => Set(ref _sleepNote, value); }
+
     public void UpdateControls()
     {
+        SupportsSleep = Services.ControlService.SupportsClassicSleep;
+        SleepNote = SupportsSleep ? "" : "本机为新型待机（S0）：无传统睡眠，空闲后系统会自动进入待机。";
         var b = Services.ControlService.GetBrightness();
         HasBrightness = b is not null;
         Brightness = b is null ? "不支持" : $"{b}%";

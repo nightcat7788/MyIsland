@@ -382,6 +382,8 @@ public static class ControlService
     [DllImport("user32.dll")] private static extern bool LockWorkStation();
     [DllImport("powrprof.dll", SetLastError = true)]
     private static extern bool SetSuspendState(bool hibernate, bool forceCritical, bool disableWakeEvent);
+    [DllImport("powrprof.dll")]
+    private static extern bool IsPwrSuspendAllowed();
 
     /// <summary>立即锁屏。</summary>
     public static void Lock()
@@ -389,10 +391,37 @@ public static class ControlService
         try { LockWorkStation(); } catch { }
     }
 
-    /// <summary>立即睡眠。</summary>
-    public static void Sleep()
+    /// <summary>
+    /// 本机是否支持**传统睡眠**（S3）。
+    /// `IsPwrSuspendAllowed` 返回 False = 这台机器只有**新型待机（S0 / Modern Standby）**，
+    /// 而 S0 机器上 `SetSuspendState` 会被系统**记录调用却不真的睡**（Kernel-Power 事件 187 有记录、
+    /// 但没有 42/506 进入睡眠事件）—— 2026-11-26 实测：点「睡眠」等于没点。
+    /// 这种机器上只能靠系统电源策略（空闲后自动进入新型待机）。
+    /// </summary>
+    public static bool SupportsClassicSleep
     {
-        try { SetSuspendState(false, true, false); } catch { }
+        get
+        {
+            try { return IsPwrSuspendAllowed(); }
+            catch { return false; }
+        }
+    }
+
+    /// <summary>
+    /// 立即睡眠。返回**结果与原因**：不支持传统睡眠、或系统拒绝时都如实说，
+    /// 不再让"点了没反应"静默发生（2026-11-26 修复：原来 SetSuspendState 的返回值被直接丢掉）。
+    /// </summary>
+    public static (bool Ok, string Message) Sleep()
+    {
+        if (!SupportsClassicSleep)
+            return (false, "本机是新型待机（S0）系统：没有传统睡眠可用；空闲后系统会自动进入待机。");
+        try
+        {
+            return SetSuspendState(false, true, false)
+                ? (true, "")
+                : (false, "系统拒绝了睡眠请求。");
+        }
+        catch { return (false, "睡眠请求失败。"); }
     }
 
     // ---------- 系统深色模式（HKCU 个人化，免管理员） ----------

@@ -653,9 +653,14 @@
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
                                 <TextBlock Text="电源" Style="{StaticResource RowLabel}"/>
+                                <!-- 睡眠：这台机器没有传统睡眠（S0 新型待机）时按钮**不出现**，
+                                     同行说明原因 —— 与亮度同一口径，不留一个点了没反应的按钮。 -->
+                                <TextBlock Grid.Column="1" Text="{Binding SleepNote}" Style="{StaticResource RowState}"
+                                           VerticalAlignment="Center" Margin="0,0,6,0" TextWrapping="Wrap"/>
                                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
                                     <Button Content="锁屏" Style="{StaticResource QuietBtn}" Command="{Binding LockCommand}" Margin="0,0,6,0"/>
-                                    <Button Content="睡眠" Style="{StaticResource QuietBtn}" Command="{Binding SleepCommand}"/>
+                                    <Button Content="睡眠" Style="{StaticResource QuietBtn}" Command="{Binding SleepCommand}"
+                                            Visibility="{Binding SupportsSleep, Converter={StaticResource BoolVis}}"/>
                                 </StackPanel>
                             </Grid>
                         </StackPanel>

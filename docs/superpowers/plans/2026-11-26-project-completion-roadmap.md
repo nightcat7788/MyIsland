@@ -231,6 +231,20 @@
 - 命令读不到就**直接返回**，不再用 `?? 50` 编值；
 - 需要调亮度时，系统的「显示」快捷入口（ms-settings:display）就是正路。
 
+### 人工验证这 4 项，又查出**第二个真缺陷**（已修）
+
+按要求手动执行了锁屏 / 睡眠 / WLAN / 蓝牙切换（自检工具默认拒绝自动执行的那 4 项），结果：
+
+| 项 | 结论 | 证据 |
+|---|---|---|
+| 锁屏 | ✅ 生效 | Winlogon 通知事件(4)=会话锁定（20:27:31） |
+| WLAN 切换 | ⚠️ 需管理员；非管理员下**按设计拒绝** | 「需要管理员权限才能开关无线网络」，读回状态未变 |
+| 蓝牙切换 | ⚠️ 需管理员；非管理员下**按设计拒绝** | 「开关蓝牙服务失败：Cannot open 'bthserv' service」，读回状态未变 |
+| 睡眠 | ❌ **无效 ⇒ 已修** | Kernel-Power 事件 187 记录了 `SetSuspendState` 调用，却**没有** 42/506 进入睡眠；`powercfg /a` 显示本机**只有 S0 新型待机、没有 S3** ⇒ 这类机器上 `SetSuspendState` 是 no-op，而产品还**把返回值丢掉了**，用户点了没反应也没提示 |
+
+修法与亮度同一口径：`ControlService.SupportsClassicSleep`（`IsPwrSuspendAllowed`）判定 ⇒ 不支持时
+**「睡眠」按钮不出现** + 同行说明原因；`Sleep()` 改为返回 `(Ok, Message)`，失败/不支持都**说清楚为什么**。
+
 ### 自检同时**证伪**了两个我原本怀疑的点（如实记）
 
 - **夜灯不是缺陷**：注册表键存在（`default$windows.data.bluelightreduction.bluelightreductionstate`），
