@@ -1897,11 +1897,10 @@ public sealed class IslandCanvas : Control
                 var line = RenderKit.Trimmed("⚠ " + string.Join(" · ", problems), 9, pal.Warning, r.Width - 2 * pad, false);
                 dc.DrawText(line, new Point(r.X + pad, sy));
             }
-            else
-            {
-                var ok = RenderKit.Text("读数正常", 9, pal.TextTertiary);
-                dc.DrawText(ok, new Point(r.X + pad, sy));
-            }
+            // 一切正常时**不画这行**（2026-11-26）：
+            // Windows 端读不到时是**就地**标注（「需管理员」「缺驱动」），正常时没有任何多余的一行；
+            // mac 端原来常态也画一行「读数正常」⇒ 正常情况下两端底部行数不一致（mac 多一行）。
+            // 安静即正常 —— 只有真有问题时才多这一行警示，两端的常态底部就一致了。
         }
     }
 
