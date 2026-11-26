@@ -18,6 +18,7 @@ namespace Island.Tools.HidProbe;
 ///   hid-probe probe &lt;序号&gt; &lt;hex&gt;  发一帧命令（控制端点 + 中断 OUT + Feature 各试一次）并打印回包
 ///   hid-probe sweep &lt;序号&gt;      批量试一批候选命令帧
 ///   hid-probe --selftest        协议表自检（表合法性校验 + 本机外设命中报告）
+///   hid-probe unknown           未识别设备摘要（一行一设备：命中层 + VID/PID + 描述符 —— 补协议表项用）
 /// </summary>
 internal static class Program
 {
@@ -69,6 +70,9 @@ internal static class Program
             case "--selftest":
             case "selftest":
                 return await SelfTest(all);
+            case "unknown":
+                Unknown(all);
+                return 0;
             case "json":
                 JsonTry();
                 return 0;
@@ -237,25 +241,22 @@ internal static class Program
     private sealed record ToolResult(
         string DeviceKey, string Layer, string? EntryKey, int? Percent, string? ProductName);
 
-    /// <summary>
-    /// 自检模式：① 校验协议表本身是否合法 ② 报告当前连接的外设命中了表的哪一条、走的哪一层判定。
-    ///
-    /// 诚实性底线（与产品同一口径）：
-    ///   · 读不到电量一律显示"未知"，绝不输出 0% / 100% 充数；
-    ///   · L1（标准 HID usage）标"实测"，L3（协议表偏移）标"推断"，L4（兜底识别）标"未知"；
-    ///   · 表校验有错误 ⇒ 退出码非 0（脚本/CI 可以直接拿它当门禁）。
-    ///
-    /// 说明：这里的 L1/L3 读法与产品 PeripheralBatteryService 是同一套共享实现
-    /// （StandardHidBattery / PeripheralProtocols / PeripheralProtocolReader / HidChannel），
-    /// 只有"先试哪一层、命中后怎么写报告"这层编排是本工具自己的。
-    /// </summary>
-    private static async Task<int> SelfTest(List<HidInterface> all)
-    {
-        Console.WriteLine("=== 外设协议表自检（hid-probe --selftest）===");
-        Console.WriteLine("时间：" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
-        Console.WriteLine();
+    /// <summary>装载后的协议表三件套（内置表 / 用户表 / 用户表校验报告）。</summary>
+    private sealed record ProtocolTables(
+        List<PeripheralProtocol> Builtin,
+        List<PeripheralProtocol> User,
+        PeripheralProtocolTableReport UserReport,
+        string UserLoadError);
 
-        // ---------- 一、装载协议表 ----------
+    /// <summary>
+    /// 装载协议表（内置表 + 用户表），并把用户表装进生产协议表。
+    ///
+    /// 为什么抽出来：--selftest 与 unknown 两个模式都必须按**产品同一套装载路径**
+    /// （用户条目在前、同 key 覆盖内置条目）判定，否则工具算出来的命中层和产品对不上。
+    /// 抽出来一份，两边共用，不会各写各的。
+    /// </summary>
+    private static ProtocolTables LoadProtocolTables()
+    {
         // 进程刚起来时用户表是空的 ⇒ 这时的 All 就是内置表
         List<PeripheralProtocol> builtin = PeripheralProtocols.All.ToList();
         string userPath = PeripheralProtocolTable.DefaultUserFilePath;
@@ -293,13 +294,157 @@ internal static class Program
             catch (Exception ex) { userLoadError = ex.GetType().Name + ": " + ex.Message; }
         }
 
-        // 用户表按 key 去重（同 key 只保留最后一条）—— 与产品 AddUserProtocols 一致，
-        // 否则工具的"生效表"与产品的 All 会对不上（产品装载时同 key 只留最后一条）。
+        // 用户表按 key 去重（同 key 只保留最后一条）—— 与产品 AddUserProtocols 一致
         user = PeripheralProtocolTable.EffectiveUserEntries(user).ToList();
 
         // 装进生产协议表（与产品同一套装载路径：用户条目在前，同 key 覆盖内置条目）
         PeripheralProtocols.ClearUserProtocols();
         if (user.Count > 0) PeripheralProtocols.AddUserProtocols(user);
+
+        return new ProtocolTables(builtin, user, userReport, userLoadError);
+    }
+
+    /// <summary>
+    /// 未识别设备摘要（阶段 F 的 F4 需要的就是这份输入）。
+    ///
+    /// 做什么：把本机每台 HID 设备按**产品同一套判定**分层
+    ///   （L1 标准 HID 电量 → L3 厂商私有协议表 → L4 名称兜底 → 未命中），
+    ///   并把 L4（兜底 = 没被认出来）的设备连同 VID/PID + 描述符摘要打出来 ——
+    ///   这正是按 docs\peripheral-protocols.md 的模板补一条协议表项需要的输入。
+    ///
+    /// 为什么单独一个子命令而不复用 --selftest 的输出：--selftest 是给人看的自由文本报告，
+    ///   这里要的是**一行一设备、字段名稳定**的输出，脚本才能直接取字段做判据。
+    ///
+    /// 判定口径不另发明：
+    ///   · L1 —— 描述符里有标准电量 usage（StandardHidBattery.PercentUsages）；
+    ///     能不能真的读出值见 --selftest 的命中报告（这里只判"认不认识"，不做设备 I/O）；
+    ///   · L3 —— PeripheralProtocols.Match（产品自己的匹配器，用户表在前）；
+    ///   · L4 —— PeripheralClassifier.LooksWireless（名称含 2.4G / 无线 / 接收器等特征）。
+    /// </summary>
+    private static void Unknown(List<HidInterface> all)
+    {
+        ProtocolTables tables = LoadProtocolTables();
+        Console.WriteLine("# hid-probe unknown —— 未识别设备摘要（阶段 F / F4 的输入）");
+        Console.WriteLine("# 时间：" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+        Console.WriteLine("# 判定口径：产品同一套（L1 标准 HID 电量 → L3 厂商私有协议表 → L4 名称兜底 → 未命中）");
+        Console.WriteLine("# 字段：[DEVICE] layer=… vid=… pid=… name=\"…\" kind=… collections=… needsProtocolEntry=…");
+        Console.WriteLine("#       [COLLECTION] usagePage=… usage=… in=… out=… feat=… vendor=…");
+        if (tables.UserLoadError.Length > 0)
+            Console.WriteLine("# ! 用户协议表装载失败（判定退回内置表）：" + tables.UserLoadError);
+
+        List<HidGroup> groups = HidBus.GroupByDevice(all);
+        int l1 = 0, l3 = 0, l4 = 0, none = 0, needEntry = 0;
+        foreach (HidGroup group in groups)
+        {
+            HidInterface first = group.Members[0];
+            string displayName = PeripheralClassifier.DisplayName(group.Members);
+            string kind = PeripheralClassifier.KindOf(first.Product, first.DeviceDesc, first.UsagePage, first.Usage);
+
+            string layer;
+            string entryKey = "";
+
+            // L1：描述符里有标准电量 usage（只判"认不认识"，读值交给 --selftest）
+            bool hasStandardUsage = false;
+            foreach (HidInterface member in group.Members)
+            {
+                foreach ((ushort page, ushort usage) in StandardHidBattery.PercentUsages)
+                {
+                    if (StandardHidBattery.FindUsage(member, page, usage) is null) continue;
+                    hasStandardUsage = true;
+                    break;
+                }
+                if (hasStandardUsage) break;
+            }
+
+            if (hasStandardUsage)
+            {
+                layer = "L1";
+                l1++;
+            }
+            else
+            {
+                // L3：厂商私有协议表（产品自己的匹配器）
+                PeripheralProtocol? protocol = null;
+                foreach (HidInterface member in group.Members)
+                {
+                    PeripheralProtocol? hit = PeripheralProtocols.Match(group.Vid, group.Pid,
+                        member.UsagePage, member.Usage, member.OutputReportLength);
+                    if (hit is null) continue;
+                    protocol = hit;
+                    break;
+                }
+                if (protocol is not null)
+                {
+                    layer = "L3";
+                    entryKey = protocol.Key;
+                    l3++;
+                }
+                else if (PeripheralClassifier.LooksWireless(displayName))
+                {
+                    // L4：名称兜底 —— 没被认出来 ⇒ 需要按模板补一条协议表项
+                    layer = "L4";
+                    l4++;
+                    needEntry++;
+                }
+                else
+                {
+                    layer = "未命中";
+                    none++;
+                }
+            }
+
+            Console.WriteLine("[DEVICE] layer=" + layer
+                + " vid=" + group.Vid.ToString("X4")
+                + " pid=" + group.Pid.ToString("X4")
+                + " name=\"" + displayName.Replace("\"", "'") + "\""
+                + " kind=" + kind
+                + " collections=" + group.Members.Count
+                + " needsProtocolEntry=" + (layer == "L4" ? "true" : "false")
+                + (entryKey.Length > 0 ? " entry=\"" + entryKey.Replace("\"", "'") + "\"" : ""));
+            foreach (HidInterface member in group.Members)
+            {
+                Console.WriteLine("  [COLLECTION] usagePage=" + member.UsagePage.ToString("X4")
+                    + " usage=" + member.Usage.ToString("X4")
+                    + " in=" + member.InputReportLength
+                    + " out=" + member.OutputReportLength
+                    + " feat=" + member.FeatureReportLength
+                    + " vendor=" + (member.IsVendorDefined ? "true" : "false")
+                    + " product=\"" + member.Product.Replace("\"", "'") + "\""
+                    + " desc=\"" + member.DeviceDesc.Replace("\"", "'") + "\"");
+            }
+        }
+
+        Console.WriteLine("# 合计 total=" + groups.Count
+            + " L1=" + l1 + " L3=" + l3 + " L4=" + l4 + " 未命中=" + none
+            + " needsProtocolEntry=" + needEntry);
+    }
+
+    /// <summary>
+    /// 自检模式：① 校验协议表本身是否合法 ② 报告当前连接的外设命中了表的哪一条、走的哪一层判定。
+    ///
+    /// 诚实性底线（与产品同一口径）：
+    ///   · 读不到电量一律显示"未知"，绝不输出 0% / 100% 充数；
+    ///   · L1（标准 HID usage）标"实测"，L3（协议表偏移）标"推断"，L4（兜底识别）标"未知"；
+    ///   · 表校验有错误 ⇒ 退出码非 0（脚本/CI 可以直接拿它当门禁）。
+    ///
+    /// 说明：这里的 L1/L3 读法与产品 PeripheralBatteryService 是同一套共享实现
+    /// （StandardHidBattery / PeripheralProtocols / PeripheralProtocolReader / HidChannel），
+    /// 只有"先试哪一层、命中后怎么写报告"这层编排是本工具自己的。
+    /// </summary>
+    private static async Task<int> SelfTest(List<HidInterface> all)
+    {
+        Console.WriteLine("=== 外设协议表自检（hid-probe --selftest）===");
+        Console.WriteLine("时间：" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+        Console.WriteLine();
+
+        // ---------- 一、装载协议表 ----------
+        // 装载逻辑抽到 LoadProtocolTables：--selftest 与 unknown 两个模式共用同一份，
+        // 保证两个模式看到的"生效协议表"与产品一致（不会各写各的）。
+        ProtocolTables tables = LoadProtocolTables();
+        List<PeripheralProtocol> builtin = tables.Builtin;
+        List<PeripheralProtocol> user = tables.User;
+        PeripheralProtocolTableReport userReport = tables.UserReport;
+        string userLoadError = tables.UserLoadError;
 
         Console.WriteLine("---- 一、协议表校验 ----");
         var builtinReport = PeripheralProtocolTable.ValidateTable(builtin, "内置表");
@@ -792,6 +937,7 @@ internal static class Program
         Console.WriteLine("  hid-probe scanfeat <序号>");
         Console.WriteLine("  hid-probe e2e");
         Console.WriteLine("  hid-probe --selftest");
+        Console.WriteLine("  hid-probe unknown");
         Console.WriteLine("  hid-probe sweep <序号>");
     }
 
