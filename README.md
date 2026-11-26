@@ -2,7 +2,7 @@
 
 MyIsland 是一款 Windows 与 macOS 菜单栏系统监控工具，以轻量胶囊展示实时指标，并提供可切换的小形象与主题。
 
-**当前源码版本：1.1.2** · Windows WPF · macOS Avalonia · Apple Silicon 原生发布
+**当前源码版本：1.1.3** · Windows WPF · macOS Avalonia · Apple Silicon 原生发布
 
 Windows 与 macOS 各自一套原生实现（Windows WPF 自绘 + macOS Avalonia 自绘），共享
 `src/Island.Core` 的数据模型与读数语义；两边共用的约定写在 [SOURCE-README.txt](SOURCE-README.txt)。

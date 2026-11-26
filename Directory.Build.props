@@ -15,11 +15,11 @@
     另外，产物文件名（MyIsland-Setup-x.y.z.exe 等）里也带版本号。
   -->
   <PropertyGroup>
-    <!-- 语义化版本：1.1.2 —— 小形象新增弹簧式互动弹跳与待机重心转移 -->
-    <Version>1.1.2</Version>
+    <!-- 语义化版本：1.1.3 —— 跨端一致性对齐：配色可读性门槛 / 默认收起视图统一为时间胶囊 / 时钟内容对齐 -->
+    <Version>1.1.3</Version>
     <!-- 程序集版本：只取主次版本（1.1.0.0），补丁号变更时不破坏强命名/绑定引用 -->
     <AssemblyVersion>1.1.0.0</AssemblyVersion>
     <FileVersion>1.1.0.0</FileVersion>
-    <InformationalVersion>1.1.2</InformationalVersion>
+    <InformationalVersion>1.1.3</InformationalVersion>
   </PropertyGroup>
 </Project>
