@@ -49,6 +49,11 @@ Windows 与 macOS 各自一套原生实现（Windows WPF 自绘 + macOS Avalonia
 |---|---|
 | ![Windows 收起态](docs/screenshots/windows-dash.png) | ![macOS 收起态](docs/screenshots/macos-dash.png) |
 
+> 两张图是**同一套读数项结构**：温度组 │ 占用组 │ 网速。两处已知差异是平台能力导致的
+> （Windows 另有「核心柱群」、mac 另有「电池环」）—— 见 `docs/capabilities.md` §7.3。
+> **外壳轮廓**两端刻意不同：mac 是刘海融合造型（它长在系统菜单栏里），
+> Windows 是液桥 + 水滴（它是贴屏幕边缘的独立浮窗）—— 见 §7.5。
+
 ### 设备页（Windows）
 
 ![Windows 设备页](docs/screenshots/windows-devices-page.png)

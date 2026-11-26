@@ -202,6 +202,24 @@ Windows 的 GPU 显存并进 GPU 温度那一行（mac 无显存可读）；温�
 两个探针的这条门禁都**做过「改坏即红」的实测**：把某一行的绘制去掉（或让规格与绘制对不上），
 对应断言变红、探针退出码非 0。
 
+### 7.5 收起态岛体**外壳造型**：平台专属（刘海融合造型 vs 液桥+水滴）
+
+收起态的**读数项结构**两端已统一（§7.3），但**外壳轮廓**两端不同 —— 且这是**有意保留**的差异，
+与 §8 的配色身份同一性质：统一的是内容与规格，不是外壳。
+
+| | macOS | Windows |
+|---|---|---|
+| **系统底座** | 菜单栏是系统保留带，应用可在其中占位。`SystemDecorations=None` + `ExtendClientAreaChromeHints=NoChrome` + `ExtendClientAreaTitleBarHeightHint=-1` 让 NSWindow 进 full-size content view 且逐像素透明（`IslandWindow.cs:123-136`，注释直写「与 iOS 灵动岛同视觉」），再用 AppKit 提到 `NSStatusWindowLevel(25)`（`MacInterop.cs:81-83`） | **没有**「应用占位系统 UI 区」的机制，任务栏不可占用。只能 `ShowInTaskbar=False` + `Topmost=True` + 无边框做**独立置顶浮窗**贴屏幕边缘（`IslandWindow.xaml:12`） |
+| **硬件** | 笔记本有刘海 ⇒ 画**刘海融合造型**：两端上扬 + 顶部中间凹口，露出后方真刘海（`IslandCanvas.cs:440-441,497-499`） | 无刘海 ⇒ 不画凹口，改用**液桥 + 水滴**表达「贴在屏幕边缘、与屏相连」，贴边侧圆角随液桥强度收缩成「近方角」（`IslandCanvas.cs:282-283,308-310`） |
+| **观感** | 像**系统菜单栏里的灵动岛本身** | 像**一个浮在屏幕边缘的读数胶囊** |
+
+⚠️ **一处已知不一致（Windows 侧死设置，2026-11-26 记录）**：两端共用同一个 `Settings` 类，
+其中 `DecorNotch`（刘海融合造型开关，mac 端托盘菜单可切，`IslandWindow.cs:2273`）在 **Windows 端读了不生效** ——
+`src/Island.App` 里**没有任何消费方**，也没有 `DrawNotchBody` 实现（只有 Avalonia 画布有）。
+原因同上：Windows 无刘海硬件，凹口造型没有意义。
+现状是「两端共用一份设置格式，但这个字段在 Windows 上既没有 UI 也没有效果」——
+**未决**：是显式声明该装饰为 mac 专属，还是在 Windows 侧给出等价实现（会改变 Windows 的胶囊外形）。
+
 ---
 
 ## 8. 主题 token 语义口径（统一语义名，公开取值差异）
