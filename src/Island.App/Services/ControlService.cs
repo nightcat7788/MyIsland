@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
@@ -105,7 +106,42 @@ public static class ControlService
                 if (nic.Status == System.Net.NetworkInformation.OperationalStatus.Up) return nic.Name;
                 fallback ??= nic.Name;
             }
-            return fallback;
+            if (fallback is not null) return fallback;
+        }
+        catch { }
+        // 兜底：走 netsh 的接口清单（**它连被禁用的网卡也列**）。
+        // 为什么必须兜底：无线适配器被禁用后，.NET 的 NetworkInterface 枚举可能**整个看不到它**
+        // （或类型退化成 Unknown）⇒ 找不到名字就"关得掉、开不回来"，
+        // 用户在应用里把 Wi-Fi 关掉后只能跑去系统设置 —— 2026-11-26 实测踩到过。
+        return FindWirelessAdapterInNetsh();
+    }
+
+    /// <summary>从 netsh 的接口清单里找无线适配器名（按名字关键字；中文系统 netsh 输出的表头与列序随版本变化，按词定位）。</summary>
+    private static string? FindWirelessAdapterInNetsh()
+    {
+        try
+        {
+            byte[]? raw = RunNetsh("interface show interface");
+            if (raw is null) return null;
+            foreach (string outp in DecodeCandidates(raw))
+            {
+                foreach (var line in outp.Split('\n'))
+                {
+                    string t = line.Trim();
+                    if (t.Length == 0) continue;
+                    if (!t.Contains("WLAN", StringComparison.OrdinalIgnoreCase)
+                        && !t.Contains("Wi-Fi", StringComparison.OrdinalIgnoreCase)
+                        && !t.Contains("无线", StringComparison.Ordinal)) continue;
+                    // 取最后一个词：netsh 的接口名在中文表里是最后一列，英文表里也是最后一列
+                    string[] parts = t.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length == 0) continue;
+                    string name = parts[^1];
+                    if (name.Contains("WLAN", StringComparison.OrdinalIgnoreCase)
+                        || name.Contains("Wi-Fi", StringComparison.OrdinalIgnoreCase)
+                        || name.Contains("无线", StringComparison.Ordinal))
+                        return name;
+                }
+            }
         }
         catch { }
         return null;
@@ -176,8 +212,48 @@ public static class ControlService
     {
         try
         {
-            string? outp = RunNetsh("interface show interface");
-            if (outp is null) return null;
+            byte[]? raw = RunNetsh("interface show interface");
+            if (raw is null) return null;
+            // 多编码兜底：netsh 的输出编码随「有没有控制台」而变（见 RunNetsh 的说明），
+            // 逐个候选编码试解析，**第一个能解出状态列的就算数** —— 都解不出就返回「未知」，不编造。
+            foreach (string outp in DecodeCandidates(raw))
+            {
+                var snap = ParseWlanOutput(outp);
+                if (snap is not null) return snap;
+            }
+            return null;
+        }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// netsh 输出的候选解码（按可能性排序）：UTF-8 → 当前 OEM 码页（中文系统 936）→ UTF-16LE → Latin1。
+    /// 逐个去重；解析端挑「能解出状态列」的那个 ⇒ 不依赖 netsh 这次用了哪种编码。
+    /// </summary>
+    private static IEnumerable<string> DecodeCandidates(byte[] raw)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var candidates = new List<string>();
+        void Add(Encoding? enc)
+        {
+            if (enc is null) return;
+            string s;
+            try { s = enc.GetString(raw); } catch { return; }
+            if (s.Length == 0 || !seen.Add(s)) return;
+            candidates.Add(s);
+        }
+        Add(Encoding.UTF8);
+        try { Add(Encoding.GetEncoding(System.Globalization.CultureInfo.CurrentCulture.TextInfo.OEMCodePage)); } catch { }
+        Add(Encoding.Unicode);   // netsh 在无控制台时写 UTF-16LE
+        Add(Encoding.Latin1);     // 兜底：字节原样映射成字符（不抛、也不丢字节）
+        return candidates;
+    }
+
+    /// <summary>解析一份 netsh 输出（解不出无线接口行就返回 null = 未知）。</summary>
+    private static WlanSnapshot? ParseWlanOutput(string outp)
+    {
+        try
+        {
             // netsh 的列顺序随语言/版本不同（中文：接口名在最前；英文：接口名在最后），
             // 所以按"词"定位接口名，再从其余词里判状态
             string? nic = GetWirelessAdapterName();
@@ -284,9 +360,18 @@ public static class ControlService
         return conn;
     }
 
-    /// <summary>跑一条 netsh 命令并取回输出（带超时）；超时/失败返回 null。
-    /// 先启动异步读取再 WaitForExit：同步 ReadToEnd 会把超时架空，管道写满时还会互相死等。</summary>
-    private static string? RunNetsh(string args, int timeoutMs = 3000)
+    /// <summary>
+    /// 跑一条 netsh 命令并取回**原始字节**（带超时）；超时/失败返回 null。
+    /// 先启动异步读取再 WaitForExit：同步 ReadToEnd 会把超时架空，管道写满时还会互相死等。
+    ///
+    /// 为什么取**字节**而不是字符串：netsh 的输出编码**取决于它有没有控制台** ——
+    /// 有控制台时按 OEM 码页写（中文系统 = 936），**没有控制台时写 UTF-16LE**。
+    /// 而 .NET 读重定向输出默认按 UTF-8 解 ⇒ **在无控制台的进程里（提权进程、真正的 WPF 应用）
+    /// 解出来是乱码，状态列一个词都匹配不上 ⇒ 读成「未知」。
+    /// 2026-11-26 实测：提权自检里 WLAN 状态读成「未知」，而同一台机器的控制台自检读得出来。
+    /// ⇒ 解码交给 <see cref="DecodeCandidates"/> 多编码兜底。
+    /// </summary>
+    private static byte[]? RunNetsh(string args, int timeoutMs = 3000)
     {
         try
         {
@@ -299,7 +384,6 @@ public static class ControlService
             };
             using var p = System.Diagnostics.Process.Start(psi);
             if (p is null) return null;
-            var outTask = p.StandardOutput.ReadToEndAsync();
             var errTask = p.StandardError.ReadToEndAsync();
             if (!p.WaitForExit(timeoutMs))
             {
@@ -307,9 +391,18 @@ public static class ControlService
                 p.WaitForExit(1000);
                 return null;    // 超时：当作没拿到输出
             }
-            string outp = outTask.Wait(1000) ? outTask.Result : "";
+            using var ms = new MemoryStream();
+            var copyTask = p.StandardOutput.BaseStream.CopyToAsync(ms);
+            if (!p.WaitForExit(timeoutMs))
+            {
+                try { p.Kill(entireProcessTree: true); } catch { }
+                p.WaitForExit(1000);
+                return null;    // 超时：当作没拿到输出
+            }
+            try { copyTask.Wait(1000); } catch { }
             _ = errTask.Wait(500) ? errTask.Result : "";   // stderr 只为及时收干管道
-            return outp.Length == 0 ? null : outp;
+            byte[] raw = ms.ToArray();
+            return raw.Length == 0 ? null : raw;
         }
         catch { return null; }
     }

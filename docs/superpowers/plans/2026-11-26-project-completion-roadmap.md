@@ -262,6 +262,19 @@
 `powershell -ExecutionPolicy Bypass -File tools\win-selftest-admin.ps1`
 它把结果写到 `docs/verification/windows-selftest-<日期>-elevated.md`，控制器据此回填主报告。
 
+### 提权验证：✅ 已验成（2026-11-26 22:45），并又查出两个真缺陷（已修）
+
+UAC 在本机桌面确认后，提权进程跑通 20 项：**WLAN 往返通过**（关掉 → 读回禁用/未连接 → 还原 → 读回启用）、
+**蓝牙往返通过**（切到 → 读回禁用 → 还原 → 读回启用），机器状态已确认复原（无线 Up / 已连 YQHOME、bthserv Running）。
+
+**缺陷 ①：netsh 输出编码随「有没有控制台」而变** —— 有控制台按 OEM 码页（936）写、无控制台写 UTF-16LE；
+而 .NET 默认按 UTF-8 解 ⇒ **在真正的 WPF 应用里**（无控制台）WLAN 状态会读成「未知」。
+修法：`RunNetsh` 取原始字节，解析端按 UTF-8 → OEM → UTF-16LE → Latin1 逐个试（多编码兜底）。
+
+**缺陷 ②：无线适配器被禁用后「找不到它」⇒ 能关不能开** —— .NET 枚举在适配器禁用后可能整个看不到它，
+于是用户把 Wi-Fi 关掉后**再也开不回来**。修法：`GetWirelessAdapterName()` 加 netsh 兜底
+（`netsh interface show interface` 连禁用的网卡也列）。
+
 ### 自检同时**证伪**了两个我原本怀疑的点（如实记）
 
 - **夜灯不是缺陷**：注册表键存在（`default$windows.data.bluelightreduction.bluelightreductionstate`），
