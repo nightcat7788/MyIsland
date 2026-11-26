@@ -3,6 +3,7 @@ using System.Windows.Media;
 using Island.App.Animation;
 using Island.App.Services;
 using Island.App.Themes;
+using Island.Core.Capabilities;
 using Island.Core.Monitoring;
 
 namespace Island.App.Controls;
@@ -1225,20 +1226,51 @@ public sealed class IslandCanvas : FrameworkElement
         return Math.Min(CompactWidthBudget, x - r.X + (string.IsNullOrEmpty(tt) ? 0 : t.Width) + 16);
     }
 
-    /// <summary>时钟视图：左时间，中天气（已接线），右上下行网速。时间按样本 "00:00" 预留宽度。</summary>
+    /// <summary>
+    /// 时钟视图：**时间 + 秒 │ 日期 │ 天气 │ 上下行网速**。
+    ///
+    /// 2026-11-26 对齐 mac（用户拍板）：mac 的时间胶囊是 **时间 + 秒 + 日期 + 天气**，
+    /// Windows 此前只有 **时间 + 天气 + 上下行网速** ⇒ 同一个视图两端内容不同。
+    /// 补上秒与日期后，两端都有"时间 + 秒 + 日期 + 天气"；
+    /// 剩下的唯一差异是 **上下行网速只有 Windows 有**（平台专属读数，公开在能力清单里）。
+    ///
+    /// 细节：
+    ///   · 秒与时间是**一体**的（mac 同款）：秒用次级色、字号更小、**基线对齐**主时间，
+    ///     不是悬在右下角的装饰；
+    ///   · 日期格式取自两端共用的 <see cref="ClockTextSpec"/>（不各写一份，否则又会漂）；
+    ///   · 时间按样本 "00:00" 预留宽度（分针跳变不推挤后面的内容）。
+    /// </summary>
     private double DrawClock(DrawingContext dc, Palette pal, Rect r, double cy, MonitorSnapshot? snap)
     {
         double ppd = Ppd;
-        // 时间：数字等宽，并按样本 "00:00" 预留宽度（分针跳变不推挤天气）
+        var now = DateTime.Now;
+
+        // 时间 + 秒（一体）
         double tw = RenderKit.NumWidth("00:00", 15, true, ppd);
+        double sw = RenderKit.NumWidth("00", 11, true, ppd);
+        const double secGap = 3;
         var groups = new List<CompactGroup>
         {
             new CompactGroup
             {
-                Width = tw,
-                Draw = x => Num(dc, DateTime.Now.ToString("HH:mm"), x, Math.Round(cy + 15 * 0.36), 15, pal.Text, true, ppd),
+                Width = tw + secGap + sw,
+                Draw = x =>
+                {
+                    double baseline = Math.Round(cy + 15 * 0.36);
+                    Num(dc, now.ToString("HH:mm"), x, baseline, 15, pal.Text, true, ppd);
+                    // 秒：字号更小、颜色更淡，基线对齐主时间（mac 同款）
+                    Num(dc, ClockTextSpec.SecondsText(now), x + tw + secGap, baseline, 11, pal.TextDim, true, ppd);
+                },
             },
         };
+
+        // 日期："11月27日·周五"（两端共用同一份格式实现）
+        var dateText = Text(ClockTextSpec.DateText(now), 11.5, pal.TextDim, ppd: ppd);
+        groups.Add(new CompactGroup
+        {
+            Width = dateText.Width,
+            Draw = x => dc.DrawText(dateText, new Point(x, cy - dateText.Height / 2)),
+        });
         // 天气（时钟旁给环境信息）；无数据时不占位
         if (Weather is { } w)
         {

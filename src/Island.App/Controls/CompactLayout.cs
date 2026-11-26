@@ -42,7 +42,14 @@ public static class CompactLayout
     /// </summary>
     public static (double Width, double Height) Size(string view) => view switch
     {
-        "clock" => (230, 44),   // 时间 + 天气 + 网速（参考 BrimDeck compact-clock 的信息密度）
+        // 时钟胶囊：时间 + 秒 │ 日期 │ 天气 │ 上下行网速。
+        // 2026-11-26 补上秒与日期（对齐 mac 的时间胶囊）⇒ 上限从 230 抬到 360。
+        // 实测（离屏渲染，无天气）：内容宽 ≈260（时间+秒 ≈54、日期 ≈70、网速 ≈73、
+        // 组间距 12×2、内边距 16×2）；加上天气组（≈48）与网速读数变长（"999.9M" +20）≈328。
+        // ⚠️ 这个上限同时是**排版预算**（CompactWidthBudget）：给小了 DrawCompactGroups 会把
+        // 装不下的组折成 "+N" —— 日期就会整个消失（不是变窄，是没有）。
+        // 门禁：tests/Island.Tests/ClockViewTests.cs 断言上限 ≥ 320。
+        "clock" => (360, 44),
         // 信息胶囊：时间 + 占用环组(C/M/G) + 温度/硬盘环组(C/G/D) + 网速。
         // 上限 640：内容宽按实测定（宿主 CurrentCollapsedSize 用 clamp(实测内容宽, 110, 上限)），
         // 上限只决定「最坏情况还装不装得下」——两个读数同时到 100%（4 字符，比最小槽 21 宽约 7px）

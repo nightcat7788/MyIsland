@@ -2489,10 +2489,10 @@ public sealed class IslandCanvas : Control
         {
             Time = RenderKit.Text(now.ToString("HH:mm"), FontHero, pal.Text, true),
             // 日期与星期用间隔点连接："11月24日·周二"。原来用 ASCII 空格，在苹方下太宽，像断开了
-            Date = RenderKit.Text(now.ToString("M月d日") + "·" + WeekdayShort(now.DayOfWeek), FontValue, pal.TextDim),
+            Date = RenderKit.Text(ClockTextSpec.DateText(now), FontValue, pal.TextDim),
             // 秒：和主时间是一体的，用 TextDim（不是第三级灰），**基线对齐**主时间。
             // 之前是 10px + TextTertiary 悬在右下角，像个瑕疵。
-            Sec = RenderKit.Text(now.ToString("ss"), FontBody, pal.TextDim, true),
+            Sec = RenderKit.Text(ClockTextSpec.SecondsText(now), FontBody, pal.TextDim, true),
             Icon = wGlyph, IconColor = wColor,
             HasWeather = weatherText is not null && wGlyph is not null,
         };
@@ -2555,14 +2555,11 @@ public sealed class IslandCanvas : Control
         }
     }
 
-    /// <summary>星期两字缩写（周二/周三）——比"星期二"紧凑。</summary>
-    private static string WeekdayShort(DayOfWeek d) => d switch
-    {
-        DayOfWeek.Monday => "周一", DayOfWeek.Tuesday => "周二", DayOfWeek.Wednesday => "周三",
-        DayOfWeek.Thursday => "周四", DayOfWeek.Friday => "周五",
-        DayOfWeek.Saturday => "周六", DayOfWeek.Sunday => "周日",
-        _ => "",
-    };
+    /// <summary>
+    /// 星期两字缩写（周二/周三）——比"星期二"紧凑。
+    /// 2026-11-26 起改为直接用两端共用的 <see cref="ClockTextSpec.WeekdayShort"/>，
+    /// 两端不再各写一份（否则日期格式会漂）。
+    /// </summary>
 
     /// <summary>
     /// 屏幕页实际内容高度——展开面板高度按它算，不写死。

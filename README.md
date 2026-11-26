@@ -52,8 +52,8 @@ Windows 与 macOS 各自一套原生实现（Windows WPF 自绘 + macOS Avalonia
 > 2026-11-26 起两端**默认收起视图都是「时间胶囊」（clock）** —— 两端共用同一个 `Settings` 类，
 > 改一处即两端生效，两台机器首次打开观感一致。
 >
-> ⚠️ 两端 clock 的**内容还不一致**：mac 是「时间 + 秒 + 日期 + 天气」，Windows 是「时间 + 天气 + 上下行网速」。
-> 按「基准以 mac 为准」的总规，Windows 应补上秒与日期 —— 这一项待产品拍板，见 `docs/capabilities.md` §7.6。
+> 两端 clock 的**内容已对齐**：**时间 + 秒 + 日期 + 天气**（2026-11-26 Windows 补上秒与日期）。
+> 唯一差异是**上下行网速只有 Windows 有**（平台专属读数，不互相搬运）—— 见 `docs/capabilities.md` §7.6。
 
 ### 收起态 · 读数带（dash）
 
