@@ -146,7 +146,7 @@ Windows 独有的 4 个视图（`monitor` 高密度读数带 / `devices` 设备�
 
 ## 8. 主题 token 语义口径（统一语义名，公开取值差异）
 
-**真相源**：`src/Island.Core/Capabilities/ThemeTokenManifest.cs`　**门禁**：`tests/Island.Tests/ThemeTokenTests.cs`
+**真相源**：`src/Island.Core/Capabilities/ThemeTokenManifest.cs`　**门禁**：`tests/Island.Tests/ThemeTokenTests.cs`（声明层）　·　`tests/Island.Tests/ThemeTokenUsageTests.cs`（用法层）
 
 两端各有一份 Palette（Windows `src/Island.App/Themes/Theme.cs`、macOS `src/Island.Avalonia/Themes.cs`），
 其中 **12 个颜色 token 两端同名**，但**每套主题下取值都不同**。本项目的口径是：
@@ -188,6 +188,31 @@ Windows 独有的 4 个视图（`monitor` 高密度读数带 / `devices` 设备�
 `ThemeTokenTests` 断言：清单键唯一且每个 token 都有语义说明；两端 Palette 源码里**声明了的每个颜色/开关 token
 都已登记进清单**，且**清单登记的每个属性在源码里真的存在**
 ⇒ **新增或删除一个 token 而不登记 ⇒ 门禁红**（与 `CapabilityManifestTests` 同一范式）。
+
+### 8.4 界面元素 → 两端统一语义 token（渲染层用法门禁）
+
+**真相源**：`src/Island.Core/Capabilities/ThemeTokenManifest.cs` 的 `ElementTokens` 表
+· **门禁**：`tests/Island.Tests/ThemeTokenUsageTests.cs`
+
+§8.1～8.2 管的是"两端**声明**了哪些 token"（不缺项）；本表管的是"**同一个界面元素在两端用了哪个 token**"
+（不串角色）。门禁按**绘制调用点**回读两端渲染源码核对（不是数 `pal.` 出现次数 —— 计数法太脆），
+所以这一层能抓住"Windows 用 `pal.Text`、mac 用 `pal.TextDim`"这种**清单层查不出来**的漂移。
+
+| 界面元素 | 统一语义 token | Windows 绘制点（`MonitorPage.cs`） | macOS 绘制点（`IslandCanvas.cs`） |
+|---|---|---|---|
+| 卡片标题 | `text-primary`（`Text`） | `CardTitle(...)` 的 4 处调用（CPU / 内存 / 上下速度 / 进程榜卡） | `Card(...)` 局部函数 |
+| 读数行标签 | `text-secondary`（`TextDim`） | 读数行 + 速度行各 1 处 | `Row` / `Speed` 各 1 处 |
+| 底部状态行 | `text-tertiary`（`TextTertiary`） | 标签 / 等宽读数 / 普通读数 3 处 | 1 处（标签与读数合成一段） |
+| 空态 / 未采集提示 | `text-tertiary`（`TextTertiary`） | 进程榜空态 1 处 | 进程榜空态 1 处 |
+| 进程榜条目名称 | `text-primary`（`Text`） | 1 处 | 1 处 |
+| 进程榜条目数值 | `text-secondary`（`TextDim`） | 1 处 | 1 处 |
+| 排序分段控件选中段底 | `accent`（`Accent`） | 2 处分支 | 1 处 |
+| 排序分段控件选中段文字 | `surface`（`Surface`） | 1 处 | 1 处 |
+
+**本表只列"两端本来就该一致"的元素。** 两端**按设计不同**的地方不在表里（也不该硬拉成一致）：
+mac 端的读数行数值用「按资源配色」（`ResColor`），Windows 端用「一屏一主角」（CPU 用 `accent`、其余用
+`text-primary`）；mac 端卡片图标用资源色 / `accent`，Windows 端卡片图标用 `text-primary`。
+这些是 §8 已拍板的配色体系差异（Windows 暗色科技 vs mac 按资源配色），**不是漂移、不改**。
 
 ---
 
