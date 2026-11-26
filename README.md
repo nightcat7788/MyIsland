@@ -47,6 +47,10 @@ Windows 与 macOS 各自一套原生实现（Windows WPF 自绘 + macOS Avalonia
 > 除 `macos-capsule.png` 为实机截屏外，其余图片是**离屏渲染**产物 —— 由 `tools/visual-probe`（Windows）
 > 与 `tools/avalonia-probe`（macOS）直接渲染**产品源码**得到，不是设计稿，也不是另画的示意图。
 > Windows 侧的设计对照见 `branding/ref/`。
+>
+> ⚠️ **macOS 两张图的顶栏只有「监控 / 剪贴板」**：这不是漏画 —— 「设备」「屏幕」两个页签需要 macOS 专属
+> 工具链（IOKit 探针 / DDC），产品按 `OperatingSystem.IsMacOS()` 在非 macOS 环境下按逻辑隐藏，
+> 离屏渲染如实复现了这个行为；**真机 Mac 上这两个页签存在**。
 
 ## 目录结构
 
