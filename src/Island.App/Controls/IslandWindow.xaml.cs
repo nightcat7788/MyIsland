@@ -104,7 +104,11 @@ public partial class IslandWindow : Window
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
             Width = 540,
-            Height = 380,
+            // 380 -> 400（2026-11-26）：栅格下方新增底部状态行（20px）。
+            // 不加这 20px 的话，监控页实得高度 308 扣掉状态行只剩 288，
+            // 会从「让位档」掉到「紧凑档」—— CPU 走势曲线没了、进程榜卡也矮一截。
+            // 加 20px 后仍是让位档：**加功能不以牺牲既有内容为代价**。
+            Height = 400,
             Margin = new Thickness(0)
         };
         p.CloseRequested += () => SetExpanded(false);

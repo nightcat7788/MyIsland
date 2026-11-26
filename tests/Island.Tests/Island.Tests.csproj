@@ -97,6 +97,12 @@
     <!-- 协议表自检层的新测试文件：同样先移除默认项再显式登记 -->
     <Compile Remove="PeripheralProtocolTableTests.cs" />
     <Compile Include="PeripheralProtocolTableTests.cs" />
+    <!-- 底部状态行（2026-11-26 E2）：两端共享规格 + Windows 端渲染 + 「读不到⇒未知」格式化 -->
+    <Compile Remove="MonitorStatusLineTests.cs" />
+    <Compile Include="MonitorStatusLineTests.cs" />
+    <!-- 底部状态行（macOS 端）：字段位与顺序 + 格式化规则 -->
+    <Compile Remove="MonitorStatusLineMacTests.cs" />
+    <Compile Include="MonitorStatusLineMacTests.cs" />
     <!-- 能力清单漂移检查（2026-11-26 阶段 4/5）：清单改了、两端没跟着改 ⇒ 门禁红 -->
     <Compile Remove="CapabilityManifestTests.cs" />
     <Compile Include="CapabilityManifestTests.cs" />

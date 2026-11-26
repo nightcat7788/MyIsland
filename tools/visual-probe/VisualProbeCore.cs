@@ -84,11 +84,11 @@ public static class VisualProbeCore
     private const double MinInkRatio = 0.0005;
 
     /// <summary>
-    /// 真机展开面板给监控页的尺寸（宽 504 = 540 - 18×2；高 308 = 380 - 14 - 18 - 24 - 16）。
+    /// 真机展开面板给监控页的尺寸（宽 504 = 540 - 18×2；高 328 = 400 - 14 - 18 - 24 - 16）。
     /// 紧凑档就是为这个高度准备的 —— 状态行也必须在这里放得下。
     /// </summary>
     private const int CompactPanelWidth = 504;
-    private const int CompactPanelHeight = 308;
+    private const int CompactPanelHeight = 328;
 
     /// <summary>
     /// 跑一遍探针：渲染两个页面 + 判定全部不变量。
@@ -539,10 +539,26 @@ public static class VisualProbeCore
         double statusH = MonitorStatusLineSpec.TopMargin + MonitorStatusLineSpec.LineHeight;
 
         double availH = h - statusH;
-        double tightTierH = ConstOf(typeof(MonitorPage), "TightTopH") + gap + tightBotH;
-        double topH = head + 3 * tightRowH + 2 * rowGap;          // 紧凑档上排卡 146
-        double botBudget = availH - topH - gap;
-        double botH = Math.Min(tightBotH, Math.Max(minBotH, botBudget));
+        double topCardH = ConstOf(typeof(MonitorPage), "TopCardH");
+        double botCardH = ConstOf(typeof(MonitorPage), "BotCardH");
+        double tightTopH = ConstOf(typeof(MonitorPage), "TightTopH");
+        // 与 MonitorPage 的分档逻辑**逐条镜像**（断言的是产品源码，不是抄一份副本）
+        double topH, botH;
+        string tier;
+        if (availH >= topCardH + gap + botCardH)
+        {
+            tier = "完整档"; topH = topCardH; botH = botCardH;
+        }
+        else if (availH >= tightTopH + gap + tightBotH)
+        {
+            tier = "让位档"; topH = tightTopH; botH = tightBotH;
+        }
+        else
+        {
+            tier = "紧凑档"; topH = head + 3 * tightRowH + 2 * rowGap; botH = tightBotH;
+            double botBudget = availH - topH - gap;
+            if (botBudget < botH) botH = Math.Max(minBotH, botBudget);
+        }
         double gridBottom = topH + gap + botH;
         double slTop = gridBottom + MonitorStatusLineSpec.TopMargin;
         double slBottom = slTop + MonitorStatusLineSpec.LineHeight - 1;
@@ -554,12 +570,11 @@ public static class VisualProbeCore
             : 0;
 
         report.Checks.Add(new ProbeCheck(
-            "监控页（真机 504×308）：紧凑档也放得下底部状态行",
-            availH < tightTierH                       // 这一档确实是紧凑档（不是完整档）
-                && slInk >= 20                        // 状态行带里有文字
+            $"监控页（真机 {w}×{h}）：{tier}也放得下底部状态行",
+            slInk >= 20                             // 状态行带里有文字
                 && gapInk < PaintedDelta              // 栅格与状态行之间不重叠
                 && slBottom < h,                      // 不越出面板
-            $"页面 {w}×{h}：扣掉状态行 {statusH:F0} ⇒ 可用 {availH:F0}（紧凑档门槛 {tightTierH:F0}）；" +
+            $"页面 {w}×{h}：扣掉状态行 {statusH:F0} ⇒ 可用 {availH:F0} ⇒ {tier}；" +
             $"栅格 {topH:F0} + {gap:F0} + 下排卡 {botH:F0} ⇒ 底边 y={gridBottom:F0}；" +
             $"状态行带 y∈[{slTop:F0},{slBottom:F0}]，带内最大通道差 {slInk}（下限 20）；" +
             $"留白 y∈[{gapTop},{gapBottom}] 最大通道差 {gapInk}（阈值 < {PaintedDelta}）"));

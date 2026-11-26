@@ -76,7 +76,7 @@ internal static class Program
             // （它本来就不在门禁覆盖范围内 —— 门禁只覆盖两个纯绘制页面）。
             if (appDll is not null)
             {
-                var panelBitmap = VisualProbeCore.TryRenderExpandedPanel(appDll, 540, 380, palette, out string? panelError);
+                var panelBitmap = VisualProbeCore.TryRenderExpandedPanel(appDll, 540, 400, palette, out string? panelError);
                 if (panelBitmap is null)
                 {
                     Console.WriteLine("SKIP: 展开面板整体未渲染 —— " + (panelError ?? "原因未知"));

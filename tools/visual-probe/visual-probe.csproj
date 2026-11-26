@@ -27,6 +27,8 @@
     <Compile Include="..\..\src\Island.App\Themes\Theme.cs" Link="Merged\Themes\Theme.cs" />
     <!-- 动画（RenderKit 用到 Easing.Clamp） -->
     <Compile Include="..\..\src\Island.App\Animation\Spring.cs" Link="Merged\Animation\Spring.cs" />
+    <!-- 两端共享的能力清单与底部状态行规格（纯数据，无 WPF 依赖） -->
+    <Compile Include="..\..\src\Island.Core\Capabilities\*.cs" Link="Merged\Core\Capabilities\%(Filename)%(Extension)" />
     <!-- 监控快照模型（纯数据，无 WPF 依赖） -->
     <Compile Include="..\..\src\Island.Core\Monitoring\*.cs" Link="Merged\Core\Monitoring\%(Filename)%(Extension)" />
     <!-- 温度快照 / 设备读数（纯数据） -->
