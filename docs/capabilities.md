@@ -148,6 +148,28 @@ Windows 独有的 4 个视图（`monitor` 高密度读数带 / `devices` 设备�
 因此计划里的 **C3「mac 收起视图补 devices」不再需要**（mac 的设备电量在**展开页设备页**里已有）。
 两端的收起视图顺序仍以 mac 为准（`dash` / `clock` / `pet` / `combo`），Windows 的 4 个专属项排在后面。
 
+### 7.3 展开页监控页的卡片分组：**两端统一**
+
+展开页监控页的卡片分组此前是**两端各写一套**（mac「占用 / 温度 / 上下速度 / 占用最高」vs
+Windows「CPU / 内存 / 上下速度 / 占用最高」）—— 信息量接近，但同一块页面看起来像两个产品。
+**统一成 mac 的分组**，两端唯一真相源是
+`src/Island.Core/Capabilities/MonitorPageLayoutSpec.cs`（卡片槽 + 每个卡的行槽 + 行标签 + 平台可用性）。
+
+| 卡 | 标题 | 行 | Windows | macOS |
+|---|---|---|---|---|
+| 1 | 占用 | CPU / 内存 / 磁盘 | 三行全有 | 三行全有 |
+| 2 | 温度 | CPU / GPU / 存储（SSD） | **只有 CPU / GPU**（SSD 整行不出现） | 三行全有 |
+| 3 | 上下速度 | 下行 / 上行 | 两行全有 | 两行全有 |
+| 4 | 占用最高 | 进程榜 | 进程榜 | 进程榜 |
+
+**平台专属读数保留，且挂在同一类位置**：卡头右上角的附加读数（Windows 挂 CPU 频率、mac 挂 GPU 占用）；
+Windows 的 GPU 显存并进 GPU 温度那一行（mac 无显存可读）。
+**部件形态与配色身份各端保留**（Windows 进度条 + 走势曲线 / 暗色科技；mac 环表盘 / 按资源配色）—— 那是视觉身份，不是分组。
+
+**门禁**：`tools/visual-probe/VisualProbeCore.cs` 按规格算出每一行该落在哪一带，断言
+「那一带里必须有绘制」且「平台不支持的行那一带里必须没有绘制」（整行不出现，不是 0、也不是未知）；
+规格自身与平台过滤由 `tests/Island.Tests/MonitorPageLayoutTests.cs` 锁住。
+
 ---
 
 ## 8. 主题 token 语义口径（统一语义名，公开取值差异）
@@ -206,7 +228,7 @@ Windows 独有的 4 个视图（`monitor` 高密度读数带 / `devices` 设备�
 
 | 界面元素 | 统一语义 token | Windows 绘制点（`MonitorPage.cs`） | macOS 绘制点（`IslandCanvas.cs`） |
 |---|---|---|---|
-| 卡片标题 | `text-primary`（`Text`） | `CardTitle(...)` 的 4 处调用（CPU / 内存 / 上下速度 / 进程榜卡） | `Card(...)` 局部函数 |
+| 卡片标题 | `text-primary`（`Text`） | `CardTitle(...)` 的 4 处调用（占用 / 温度 / 上下速度 / 占用最高卡） | `Card(...)` 局部函数 |
 | 读数行标签 | `text-secondary`（`TextDim`） | 读数行 + 速度行各 1 处 | `Row` / `Speed` 各 1 处 |
 | 底部状态行 | `text-tertiary`（`TextTertiary`） | 标签 / 等宽读数 / 普通读数 3 处 | 1 处（标签与读数合成一段） |
 | 空态 / 未采集提示 | `text-tertiary`（`TextTertiary`） | 进程榜空态 1 处 | 进程榜空态 1 处 |

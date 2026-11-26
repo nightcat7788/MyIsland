@@ -132,6 +132,8 @@ public static class VisualProbeCore
         var monitorBitmap = Render(monitor, options.Width, options.Height, palette);
         report.Images.Add(("monitor-page", monitorBitmap));
         CheckMonitorPage(report, monitorBitmap, options);
+        // 分组门禁（两端统一的卡片分组，2026-11-26 task16）
+        CheckMonitorPageGrouping(report, monitorBitmap, options);
 
         // ---------- 监控页（真机尺寸：紧凑档） ----------
         // 完整档（420 高）放得下 ≠ 真机放得下。真机的展开面板是 540×380 ⇒ 监控页只有
@@ -150,6 +152,13 @@ public static class VisualProbeCore
         var compactBitmap = Render(compact, CompactPanelWidth, CompactPanelHeight, palette);
         report.Images.Add(("monitor-page-compact", compactBitmap));
         CheckMonitorPageCompact(report, compactBitmap);
+        // 分组门禁在真机尺寸（让位档）下同样成立
+        CheckMonitorPageGrouping(report, compactBitmap, new ProbeOptions
+        {
+            Width = CompactPanelWidth,
+            Height = CompactPanelHeight,
+            Palette = palette,
+        });
 
         // ---------- 设备页（卡片网格） ----------
         var devices = new DevicesPage { Palette = palette };
@@ -346,14 +355,12 @@ public static class VisualProbeCore
             $"内容宽 {w} ⇒ 卡片宽 (w - 2×{pad} - {gap})/2 = {cardW}"));
 
         // ---- 3. 四张卡的矩形：互不相交 + 都在内容区内 ----
+        // 卡片矩形**由产品代码按共享规格算出来**（MonitorPage.PlannedCards）——
+        // 探针不抄一份卡片清单（抄了就会与产品代码漂移，门禁变假）。
         double x1 = pad, x2 = pad + cardW + gap, y1 = 0, y2 = topH + gap;
-        var cards = new (string Name, double X, double Y, double W, double H)[]
-        {
-            ("CPU", x1, y1, cardW, topH),
-            ("内存", x2, y1, cardW, topH),
-            ("上下速度", x1, y2, cardW, botH),
-            ("进程榜", x2, y2, cardW, botH),
-        };
+        var cards = MonitorPage.PlannedCards(w, h)
+            .Select(c => (Name: c.Title, X: c.Rect.Left, Y: c.Rect.Top, W: c.Rect.Width, H: c.Rect.Height))
+            .ToArray();
 
         bool disjoint = true;
         for (int i = 0; i < cards.Length; i++)
@@ -507,9 +514,9 @@ public static class VisualProbeCore
         // ---- 6. 卡片内部确实画了东西（不是空壳） ----
         double cpuCard = pixels.PaintedRatio((int)(x1 + 6), (int)(y1 + 6), (int)(x1 + cardW - 6), (int)(y1 + topH - 6));
         report.Checks.Add(new ProbeCheck(
-            "监控页：CPU 卡内部有实际绘制",
+            "监控页：占用卡内部有实际绘制",
             cpuCard > 0.5,
-            $"CPU 卡内部非背景像素占比 = {cpuCard:P1}"));
+            $"占用卡内部非背景像素占比 = {cpuCard:P1}"));
     }
 
     // ================= 监控页不变量（真机尺寸：紧凑档） =================
@@ -578,6 +585,87 @@ public static class VisualProbeCore
             $"栅格 {topH:F0} + {gap:F0} + 下排卡 {botH:F0} ⇒ 底边 y={gridBottom:F0}；" +
             $"状态行带 y∈[{slTop:F0},{slBottom:F0}]，带内最大通道差 {slInk}（下限 20）；" +
             $"留白 y∈[{gapTop},{gapBottom}] 最大通道差 {gapInk}（阈值 < {PaintedDelta}）"));
+    }
+
+    // ================= 监控页不变量（分组：两端统一，2026-11-26 task16） =================
+
+    /// <summary>
+    /// **分组门禁**：监控页的卡片分组必须与两端共享规格 <see cref="MonitorPageLayoutSpec"/> 一致。
+    ///
+    /// 守门点是"**每个读数行真的画在它该在的那张卡里**"：
+    ///   · 规格算出每一行该落在哪一带（行带，由产品代码 <c>MonitorPage.PlannedCards</c> 给出），
+    ///     那一带里**必须有绘制**（行标签 / 图标在那儿）；
+    ///   · 平台不支持的行（Windows 的 SSD 温度）那一带里**必须没有**绘制 ——
+    ///     整行不出现，不是显示 0、也不是显示"未知"。
+    /// ⇒ 温度还留在占用卡 ⇒ 温度卡的行带是空的 ⇒ 红。
+    /// </summary>
+    private static void CheckMonitorPageGrouping(ProbeReport report, BitmapSource bitmap, ProbeOptions options)
+    {
+        var palette = options.Palette ?? Palette.Dark;
+        var pixels = new BitmapPixels(bitmap, palette.Surface);
+
+        // 卡片与行带几何**由产品代码算**（共享规格 + 产品排版），探针不另抄一份。
+        var cards = MonitorPage.PlannedCards(options.Width, options.Height);
+        var spec = MonitorPageLayoutSpec.CardsFor(macOS: false);
+
+        // ---- 1. 卡片清单与规格一致（数量 / 顺序 / 标题） ----
+        report.Checks.Add(new ProbeCheck(
+            "监控页：卡片清单与共享规格一致（四张卡，顺序与标题取自 MonitorPageLayoutSpec）",
+            cards.Count == spec.Count && spec.Count == 4
+                && cards.Select(c => c.Key).SequenceEqual(spec.Select(c => c.Key))
+                && cards.Select(c => c.Title).SequenceEqual(spec.Select(c => c.Title)),
+            $"规格：{string.Join(" / ", spec.Select(c => $"{c.Key}·{c.Title}"))}；" +
+            $"页面：{string.Join(" / ", cards.Select(c => $"{c.Key}·{c.Title}"))}"));
+
+        // ---- 2. 四张卡的矩形：与规格一致 + 互不重叠 + 都在内容区内 ----
+        bool disjoint = true;
+        for (int i = 0; i < cards.Count; i++)
+            for (int j = i + 1; j < cards.Count; j++)
+                disjoint &= !Overlaps(cards[i].Rect, cards[j].Rect);
+        bool inside = cards.All(c => c.Rect.Left >= 0 && c.Rect.Top >= 0
+            && c.Rect.Right <= options.Width && c.Rect.Bottom <= options.Height);
+        report.Checks.Add(new ProbeCheck(
+            "监控页：四张卡的矩形与规格一致、互不重叠、都在内容区内",
+            disjoint && inside,
+            string.Join("；", cards.Select(c => $"{c.Title} @ {c.Rect}")) +
+            $"（内容区 {options.Width}×{options.Height}；重叠：{(disjoint ? "无" : "有")}）"));
+
+        // ---- 3. 每个读数行：规格说它该在哪一带，那一带里必须有绘制 ----
+        var missing = new List<string>();
+        var unexpected = new List<string>();
+        foreach (var card in cards)
+        {
+            foreach (var band in card.Rows)
+            {
+                bool ink = BandHasInk(pixels, band.Rect);
+                if (band.Drawn && !ink) missing.Add($"{card.Title}/{band.Label}({band.RowKey})");
+                if (!band.Drawn && ink) unexpected.Add($"{card.Title}/{band.Label}({band.RowKey})");
+            }
+        }
+        report.Checks.Add(new ProbeCheck(
+            "监控页：规格里的每个读数行都画在它该在的那张卡里（分组门禁）",
+            missing.Count == 0,
+            string.Join("；", cards.SelectMany(c => c.Rows).Select(b =>
+                $"{b.CardKey}/{b.Label}{(b.Drawn ? (BandHasInk(pixels, b.Rect) ? " 有绘制" : " 缺绘制") : " 不该出现")}"))));
+
+        // ---- 4. 平台不支持的行：整行不出现（Windows 的 SSD 温度） ----
+        report.Checks.Add(new ProbeCheck(
+            "监控页：平台不支持的行整行不出现（Windows 不显示 SSD 温度）",
+            unexpected.Count == 0,
+            unexpected.Count == 0
+                ? "Windows 侧：温度卡只有 CPU / GPU 两行；SSD 温度那一带没有绘制（不是 0、也不是未知）"
+                : "不该出现却有绘制：" + string.Join(" / ", unexpected)));
+    }
+
+    /// <summary>行带里有没有"有内容"的像素（按该区域的常见色当底色判 —— 卡底色不算内容）。</summary>
+    private static bool BandHasInk(BitmapPixels pixels, Rect band)
+    {
+        int x0 = (int)Math.Round(band.Left), y0 = (int)Math.Round(band.Top);
+        int x1 = (int)Math.Round(band.Right) - 1, y1 = (int)Math.Round(band.Bottom) - 1;
+        if (x1 < x0 || y1 < y0) return false;
+        foreach (bool row in pixels.ContentRows(x0, y0, x1, y1, 25))
+            if (row) return true;
+        return false;
     }
 
     // ================= 设备页不变量 =================
@@ -878,6 +966,10 @@ public static class VisualProbeCore
         (string Name, double X, double Y, double W, double H) a,
         (string Name, double X, double Y, double W, double H) b)
         => a.X < b.X + b.W && b.X < a.X + a.W && a.Y < b.Y + b.H && b.Y < a.Y + a.H;
+
+    /// <summary>两个矩形是否相交（卡片带版本）。</summary>
+    private static bool Overlaps(Rect a, Rect b)
+        => a.Left < b.Right && b.Left < a.Right && a.Top < b.Bottom && b.Top < a.Bottom;
 
     /// <summary>
     /// 位图像素读取 + 判定用的统计。所有坐标都是像素坐标（DpiScale = 1 ⇒ 与 DIP 一一对应）。
