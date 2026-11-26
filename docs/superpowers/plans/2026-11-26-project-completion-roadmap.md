@@ -245,6 +245,23 @@
 修法与亮度同一口径：`ControlService.SupportsClassicSleep`（`IsPwrSuspendAllowed`）判定 ⇒ 不支持时
 **「睡眠」按钮不出现** + 同行说明原因；`Sleep()` 改为返回 `(Ok, Message)`，失败/不支持都**说清楚为什么**。
 
+### 提权验证：四次尝试均被 UAC 的 120 秒超时取消（**机制已查清，剩一条命令**）
+
+按要求在**管理员会话**里验 WLAN / 蓝牙写路径，四次尝试（`Start-Process -Verb RunAs` ×3 + 新脚本 ×1）
+**全部在 120 秒后被系统自动取消**（`The operation was canceled by the user`）—— UAC 走**安全桌面**，
+当前会话（远程 / 锁屏）没有可交互的安全桌面，弹窗没人能点。四次尝试**未产生任何状态改动**。
+
+机制已查清（读代码 + 实测）：
+- **WLAN**：产品用 `netsh` + `Verb=runas`，**它自己会弹 UAC** ⇒ 不必整个应用是管理员；
+  之前那次「失败」的真实原因是 **UAC 被取消**，不是设计缺陷。已把文案改成能区分「取消授权」与「需要管理员」。
+- **蓝牙**：产品直接控制 `bthserv` 服务（无 runas）⇒ 需要**进程本身**是管理员；
+  普通权限下必然失败，但产品**如实提示**并给出「打开蓝牙设置」的替代路径 ⇒ 属设计如此。
+- 两个命令的失败都会 `MessageBox` 说明原因 ⇒ 不会「点了没反应」。
+
+⇒ 剩一条命令待你在**本机桌面**上执行（会自动弹 UAC，点「是」）：
+`powershell -ExecutionPolicy Bypass -File tools\win-selftest-admin.ps1`
+它把结果写到 `docs/verification/windows-selftest-<日期>-elevated.md`，控制器据此回填主报告。
+
 ### 自检同时**证伪**了两个我原本怀疑的点（如实记）
 
 - **夜灯不是缺陷**：注册表键存在（`default$windows.data.bluelightreduction.bluelightreductionstate`），
