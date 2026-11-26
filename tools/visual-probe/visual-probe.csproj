@@ -23,6 +23,16 @@
     <Compile Include="..\..\src\Island.App\Controls\Glyphs.cs" Link="Merged\Controls\Glyphs.cs" />
     <Compile Include="..\..\src\Island.App\Controls\ExpandedPanelSpec.cs" Link="Merged\Controls\ExpandedPanelSpec.cs" />
     <Compile Include="..\..\src\Island.App\Controls\CompactSpec.cs" Link="Merged\Controls\CompactSpec.cs" />
+    <!-- 收起态 dash（用户 99% 时间看到的那一面）：IslandCanvas 自绘收起态，
+         连带它依赖的紧凑规格 / 液态几何 / 小形象 / 两个服务类 -->
+    <Compile Include="..\..\src\Island.App\Controls\IslandCanvas.cs" Link="Merged\Controls\IslandCanvas.cs" />
+    <Compile Include="..\..\src\Island.App\Controls\CompactLayout.cs" Link="Merged\Controls\CompactLayout.cs" />
+    <Compile Include="..\..\src\Island.App\Animation\LiquidGeometry.cs" Link="Merged\Animation\LiquidGeometry.cs" />
+    <Compile Include="..\..\src\Island.App\Animation\PetFace.cs" Link="Merged\Animation\PetFace.cs" />
+    <Compile Include="..\..\src\Island.App\Services\ClipboardService.cs" Link="Merged\Services\ClipboardService.cs" />
+    <Compile Include="..\..\src\Island.App\Services\FileTrayService.cs" Link="Merged\Services\FileTrayService.cs" />
+    <Compile Include="..\..\src\Island.App\Services\WeatherService.cs" Link="Merged\Services\WeatherService.cs" />
+    <Compile Include="..\..\src\Island.App\Services\Settings.cs" Link="Merged\Services\Settings.cs" />
     <!-- 主题色板 -->
     <Compile Include="..\..\src\Island.App\Themes\Theme.cs" Link="Merged\Themes\Theme.cs" />
     <!-- 动画（RenderKit 用到 Easing.Clamp） -->

@@ -135,6 +135,23 @@ public static class VisualProbeCore
         // 分组门禁（两端统一的卡片分组，2026-11-26 task16）
         CheckMonitorPageGrouping(report, monitorBitmap, options);
 
+        // ---------- 收起态 dash（用户 99% 时间看到的那一面） ----------
+        // 尺寸取自产品代码的紧凑规格表（CompactLayout），**不抄一份**：产品改了宽度上限这里跟着变。
+        var dashSize = CompactLayout.Size("dash");
+        var dashCanvas = new IslandCanvas
+        {
+            CompactView = "dash",
+            Palette = palette,
+            Snapshot = SyntheticSnapshot(),
+            Thermal = SyntheticThermal(),
+            // 宿主注入的本体矩形（窗口 DIP 坐标）—— 元素摆在宿主 Grid 原点 ⇒ 同样的坐标
+            BodyRect = new Rect(0, 0, dashSize.Width, dashSize.Height),
+            IsExpanded = false,
+        };
+        var dashBitmap = Render(dashCanvas, (int)dashSize.Width, (int)dashSize.Height, palette);
+        report.Images.Add(("dash", dashBitmap));
+        CheckDash(report, dashBitmap, options);
+
         // ---------- 监控页（真机尺寸：紧凑档） ----------
         // 完整档（420 高）放得下 ≠ 真机放得下。真机的展开面板是 540×380 ⇒ 监控页只有
         // 540 - 18×2 = 504 宽、380 - 14 - 18 - 24（顶栏）- 16（顶栏下留白）= 308 高。
@@ -678,6 +695,55 @@ public static class VisualProbeCore
         return false;
     }
 
+    /// <summary>
+    /// **收起态 dash 的像素不变量**（用户 99% 时间看到的那一面）。
+    ///
+    /// 此前只有 macOS 探针覆盖收起态，Windows 收起态**完全没有门禁** —— 展开页再好看，
+    /// 用户天天看的其实是这条胶囊。
+    ///
+    /// 断言：① 非全黑 ② 读数元素确有绘制 ③ 读数元素并排（≥3 段分离内容）
+    /// ④ 图标盒 / 环盒确有绘制（存在高度接近盒边长的墨迹簇）。
+    /// 底色一律取**区域众数色**（胶囊自身的底），否则整条胶囊会被算成"内容"，断言恒真。
+    /// </summary>
+    private static void CheckDash(ProbeReport report, BitmapSource bitmap, ProbeOptions options)
+    {
+        var palette = options.Palette ?? Palette.Dark;
+        var pixels = new BitmapPixels(bitmap, palette.Surface);
+        int w = bitmap.PixelWidth, h = bitmap.PixelHeight;
+
+        double painted = pixels.PaintedRatio();
+        report.Checks.Add(new ProbeCheck(
+            "收起态 dash：渲染结果非全黑（非背景像素占比 > 2%）",
+            painted > MinPaintedRatio,
+            $"非背景像素占比 {painted:P2}（下限 {MinPaintedRatio:P0}）"));
+
+        var clusters = pixels.ContentClusters(0, 0, w - 1, h - 1, minGap: 4);
+        report.Checks.Add(new ProbeCheck(
+            "收起态 dash：读数元素并排（至少 3 段分离的内容）",
+            clusters.Count >= 3,
+            $"按列聚出 {clusters.Count} 段（下限 3）"));
+
+        int boxH = (int)Math.Round(CompactSpec.IconBox);          // 图标盒 10.8
+        int ringH = (int)Math.Round(CompactSpec.DashRing);         // 环盒 16
+        var heights = clusters.Select(c => c.Y1 - c.Y0 + 1).ToList();
+        bool hasBox = clusters.Any(c =>
+        {
+            int hh = c.Y1 - c.Y0 + 1;
+            return hh >= boxH - 2 && hh <= ringH + 2;
+        });
+        report.Checks.Add(new ProbeCheck(
+            "收起态 dash：图标盒 / 环盒确有绘制（存在高度接近盒边长的墨迹簇）",
+            hasBox,
+            $"簇高 {string.Join(" / ", heights)}（图标盒 {boxH} / 环盒 {ringH}）"));
+
+        // 内容不能越出胶囊右缘（收起态在宿主窗口里居中，超出即被裁切）
+        double lastContentX = clusters.Count == 0 ? 0 : clusters.Max(c => c.X1);
+        report.Checks.Add(new ProbeCheck(
+            "收起态 dash：读数内容没有越出宿主宽度",
+            lastContentX < w,
+            $"最右内容 x={lastContentX}（宿主宽 {w}）"));
+    }
+
     // ================= 设备页不变量 =================
 
     private static void CheckDevicesPage(ProbeReport report, BitmapSource bitmap, ProbeOptions options)
@@ -1024,6 +1090,69 @@ public static class VisualProbeCore
         /// 为什么不用全局底色：卡片底色与页面底色不同，用全局底色会把整张卡判成"有内容"；
         /// 为什么不用高亮阈值：卡底那行是三级色（偏暗），按高亮阈值会整行被判漏 —— 而它正是要判的那行。
         /// </summary>
+        /// <summary>
+        /// 把区域里的"内容"像素按横向切成若干簇（相邻簇之间至少隔 <paramref name="minGap"/> 像素）。
+        /// 底色取该区域的**众数色**（胶囊自身的底）—— 与 ContentRows 同一思路：
+        /// 收起态的胶囊底色与页面底色不同，用页面底色会把整条胶囊算成"内容"，断言就恒真了。
+        /// </summary>
+        public List<(int X0, int X1, int Y0, int Y1)> ContentClusters(int x0, int y0, int x1, int y1, int minGap, int minDelta = 25)
+        {
+            x0 = Math.Max(0, x0); y0 = Math.Max(0, y0);
+            x1 = Math.Min(_width - 1, x1); y1 = Math.Min(_height - 1, y1);
+            if (x1 < x0 || y1 < y0) return new();
+
+            // 众数色 = 该区域的局部底色
+            var hist = new Dictionary<int, int>();
+            for (int y = y0; y <= y1; y++)
+                for (int x = x0; x <= x1; x++)
+                {
+                    var (b, g, r) = At(x, y);
+                    int key = (r << 16) | (g << 8) | b;
+                    hist.TryGetValue(key, out int c);
+                    hist[key] = c + 1;
+                }
+            int modal = 0, best = -1;
+            foreach (var kv in hist) if (kv.Value > best) { best = kv.Value; modal = kv.Key; }
+            int mr = (modal >> 16) & 0xFF, mg = (modal >> 8) & 0xFF, mb = modal & 0xFF;
+            bool IsContent(int x, int y)
+            {
+                var (b, g, r) = At(x, y);
+                return Math.Max(Math.Abs(r - mr), Math.Max(Math.Abs(g - mg), Math.Abs(b - mb))) >= minDelta;
+            }
+
+            int n = x1 - x0 + 1;
+            var colHas = new bool[n];
+            for (int x = x0; x <= x1; x++)
+                for (int y = y0; y <= y1; y++)
+                    if (IsContent(x, y)) { colHas[x - x0] = true; break; }
+
+            var clusters = new List<(int, int, int, int)>();
+            int i = 0;
+            while (i < colHas.Length)
+            {
+                if (!colHas[i]) { i++; continue; }
+                int start = i, end = i, gap = 0, j = i;
+                while (j + 1 < colHas.Length)
+                {
+                    if (colHas[j + 1]) { end = j + 1; gap = 0; j++; continue; }
+                    gap++;
+                    if (gap >= minGap) break;   // 空洞够宽 ⇒ 换一簇
+                    j++;
+                }
+                int top = int.MaxValue, bottom = int.MinValue;
+                for (int x = x0 + start; x <= x0 + end; x++)
+                    for (int y = y0; y <= y1; y++)
+                        if (IsContent(x, y))
+                        {
+                            if (y < top) top = y;
+                            if (y > bottom) bottom = y;
+                        }
+                if (top <= bottom) clusters.Add((x0 + start, x0 + end, top, bottom));
+                i = end + 1;
+            }
+            return clusters;
+        }
+
         public bool[] ContentRows(int x0, int y0, int x1, int y1, int minDelta)
         {
             int n = Math.Max(0, y1 - y0 + 1);
