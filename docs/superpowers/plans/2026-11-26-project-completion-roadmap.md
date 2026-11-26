@@ -111,9 +111,17 @@
 - [x] E1 收起视图集定案（2026-11-26 产品决策）：Windows 多出的 monitor/devices/clipboard/window
       **明确归为平台专属** —— 不收掉、也不给 mac 补；差异公开在 `docs/capabilities.md` §1 与能力清单里
       （它们是 `PlatformSpecific` / `WindowsOnly`）。两端收起视图顺序仍以 mac 为准。
-- [ ] E2 展开页监控的底部状态行统一（两端同结构：9px 一行）—— **进行中**（2026-11-26 产品决策：恢复）。
-      两端共享规格 `src/Island.Core/Capabilities/MonitorStatusLineSpec.cs`（字段位清单 / 顺序 / 几何 /
-      各平台是否出现，由能力清单的数据源决定）；Windows 与 macOS 两端并行实现中。
+- [x] E2 展开页监控的底部状态行统一（两端同结构：9px 一行）—— **已完成**（2026-11-26）。
+      · 两端共享规格 `src/Island.Core/Capabilities/MonitorStatusLineSpec.cs`（字段位清单 / 顺序 / 几何 /
+        各平台是否出现由能力清单的数据源决定）+ `MonitorStatusLineText.cs`（「读不到 ⇒ 未知」的格式化规则，
+        落在两端都能链到的位置）；
+      · Windows 端显示 **功耗 · 主板温度 · 运行时长 · 今日流量**；macOS 端显示 **SSD 温度 · 运行时长**；
+        平台不支持的字段位**直接不出现**（不置灰、不留空位），支持但读不到显示「未知」；
+      · **展开面板加高 20px（380 → 400）给状态行腾位**：不加的话监控页实得 308 高，扣掉状态行只剩 288，
+        会从「让位档」掉到「紧凑档」—— CPU 走势曲线没了、进程榜也矮一截。加 20px 后仍是让位档，
+        **加功能不以牺牲既有内容为代价**；
+      · 离屏渲染不变量新增 3 条（状态行存在、不与栅格重叠、真机尺寸下也放得下），已实测「先红后绿」；
+      · mac 端「读数健康状态」行下移 25px 避让状态行 —— mac 底部因此比 Windows 多一行健康提示（跨端同形待另议）。
 - [x] E3 主题 token 口径 —— **方向已定并落地：统一「语义名」，不改任何具体色值**。
       - 新增 `src/Island.Core/Capabilities/ThemeTokenManifest.cs`：12 个共享 token 的语义键 + 语义说明 +
         两端属性名映射 + 「取值是否两端同值」（一律标「按设计不同」并写明原因：Windows 暗色科技 vs mac 按资源配色）；

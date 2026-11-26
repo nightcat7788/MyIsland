@@ -48,7 +48,10 @@
 | `memory` | 内存占用 | 两端都有 | — |
 | `disk` | 磁盘活动/读写 | 两端都有 | — |
 | `network` | 网速 | 两端都有 | 口径已对齐：排除虚拟网卡（Hyper-V/WSL/容器等） |
-| `runtime` | 运行时长 | 两端都有 | 口径已对齐：PDH System Up Time（不含休眠） |
+| `runtime` | 运行时长 | 两端都有 | 口径已对齐：两端**同一实现** —— `Environment.TickCount64`（系统开机时长）。注：Windows 侧曾有一段 PDH 的 System Up Time 计数器，是**死代码**（建了从不读），已于 2026-11-26 删除 |
+| `cpu-power` | CPU 功耗 | 仅 Windows | Windows 走 LHM CPU 功耗传感器（需管理员）；mac 无对应数据源 |
+| `board-temp` | 主板温度 | 仅 Windows | Windows 走 LHM 主板传感器（需管理员）；mac 无对应数据源 |
+| `today-traffic` | 今日流量 | 仅 Windows | Windows 走 PDH 网络计数器累计（今日 ↓/↑）；mac 无每日流量口径 |
 | `battery-bt` | 蓝牙设备电量 | 两端都有（两端实现不同源） | Windows 走 BLE GATT 0x180F/0x2A19；mac 走 IOKit 电池属性 |
 | `battery-hid` | 2.4G 接收器电量 | 两端都有 | 两端共用同一份协议表与三层校验；mac 侧原生探针待实机验证；内置表只收**已实机验证**的条目（见 §9） |
 | `battery-internal` | 本机内置电池 | 两端都有（两端实现不同源） | Windows 走 WMI Win32_Battery；mac 走 AppleSmartBattery |
@@ -126,6 +129,10 @@
 
 **呈现规则**：平台不支持 ⇒ 直接不出现（不置灰、不留空位）；支持但读不到 ⇒ 显示「未知」
 （绝不用 0 或默认值充数）。
+
+**版位代价**：Windows 展开面板因此**加高 20px（380 → 400）** —— 不加的话监控页实得高度 308 扣掉状态行
+只剩 288，会从「让位档」掉到「紧凑档」（CPU 走势曲线没了、进程榜卡也矮一截）。
+加 20px 后仍是让位档：**加功能不以牺牲既有内容为代价**。
 
 ### 7.2 收起视图集：**明确归为平台专属**
 
