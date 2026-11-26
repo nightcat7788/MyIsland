@@ -134,6 +134,71 @@ internal static class Program
                 : (on.Value ? "已开启" : "已关闭", true);
         });
 
+        // ---------- 控制页：WLAN 开关往返（--mutate）----------
+        // 风险：关掉 Wi-Fi 会**真的断网**约 2–3 秒 ⇒ 必须「关 → 读回 → 开 → 读回」在同一条命令里做完，
+        // 断网窗口结束后网络自动恢复（下面的 finally 兜底再开一次）。
+        if (mutate)
+{
+            Run("控制页 · WLAN 开关（往返）", () =>
+            {
+                var (adapter0, _) = ControlService.GetWlanState();
+                bool? wasEnabled = adapter0;
+                if (wasEnabled is null) return ("读不到适配器状态，跳过", true);
+                var (ok1, msg1) = ControlService.SetWlan(!wasEnabled.Value);
+                System.Threading.Thread.Sleep(1200);
+                var (adapter1, connected1) = ControlService.GetWlanState();
+                var (ok2, msg2) = ControlService.SetWlan(wasEnabled.Value);
+                System.Threading.Thread.Sleep(1200);
+                var (adapter2, _) = ControlService.GetWlanState();
+                return ($"原状态 适配器{(wasEnabled.Value ? "启用" : "禁用")} → 关掉 {(ok1 ? "成功" : "失败: " + msg1)}，读回 {(adapter1 is null ? "未知" : adapter1.Value ? "启用" : "禁用")}/连接 {(connected1 is null ? "未知" : connected1.Value ? "已连接" : "未连接")} → 还原 {(ok2 ? "成功" : "失败: " + msg2)}，读回 {(adapter2 is null ? "未知" : adapter2.Value ? "启用" : "禁用")}",
+                    ok1 && ok2 && adapter2 == wasEnabled);
+            });
+        }
+
+        // ---------- 控制页：蓝牙开关往返（--mutate）----------
+        // 风险：会断掉正在用的蓝牙键鼠约 2–3 秒 ⇒ 同上，做完立刻还原。
+        if (mutate)
+        {
+            Run("控制页 · 蓝牙开关（往返）", () =>
+            {
+                bool wasEnabled = ControlService.BluetoothEnabled;
+                var (ok1, msg1) = ControlService.SetBluetooth(!wasEnabled);
+                System.Threading.Thread.Sleep(1200);
+                bool mid = ControlService.BluetoothEnabled;
+                var (ok2, msg2) = ControlService.SetBluetooth(wasEnabled);
+                System.Threading.Thread.Sleep(1200);
+                bool back = ControlService.BluetoothEnabled;
+                return ($"原状态 {(wasEnabled ? "启用" : "禁用")} → 切到 {(ok1 ? "成功" : "失败: " + msg1)}，读回 {(mid ? "启用" : "禁用")} → 还原 {(ok2 ? "成功" : "失败: " + msg2)}，读回 {(back ? "启用" : "禁用")}",
+                    ok1 && ok2 && back == wasEnabled);
+            });
+        }
+
+        // ---------- 控制页：锁屏（--lock，一次性）----------
+        // 锁屏不可逆（要人回来解锁）⇒ 只在显式 --lock 时执行一次，并记录事件日志取证。
+        if (args.Contains("--lock", StringComparer.OrdinalIgnoreCase))
+        {
+            Run("控制页 · 锁屏（一次性）", () =>
+            {
+                ControlService.Lock();
+                System.Threading.Thread.Sleep(800);
+                return ("已调用 ControlService.Lock()（LockWorkStation）", true);
+            });
+        }
+
+        // ---------- 控制页：睡眠（--sleep，一次性）----------
+        // 睡眠会让机器真的休眠 ⇒ 执行前先布一个「1 分钟后唤醒」的计划任务（Task Scheduler 的 WakeToRun），
+        // 醒来后用 Kernel-Power 事件（42 进入睡眠 / 107 唤醒）取证。
+        if (args.Contains("--sleep", StringComparer.OrdinalIgnoreCase))
+        {
+            Run("控制页 · 睡眠（一次性）", () =>
+            {
+                // 自动唤醒任务由**外层 PowerShell**布（Register-ScheduledTask -WakeToRun），
+                // 这里只负责调产品的那条路：ControlService.Sleep() → SetSuspendState。
+                ControlService.Sleep();
+                return ("已调用 ControlService.Sleep()（SetSuspendState）", true);
+            });
+        }
+
         // ---------- 控制页：电源计划 ----------
         string? activePlanId = null;
         Run("控制页 · 电源计划（读）", () =>
@@ -150,6 +215,7 @@ internal static class Program
             {
                 var (plans, active) = ControlService.GetPowerPlans();
                 if (active < 0 || active >= plans.Count) return ("读不到当前计划，跳过", true);
+                if (plans.Count < 2) return ($"只有 1 个电源计划（{plans[active].Name}），没有可切换的目标，跳过", true);
                 string other = plans.First(p => p.Id != plans[active].Id).Id;
                 bool set = ControlService.SetPowerPlan(other);
                 ControlService.SetPowerPlan(pid);
