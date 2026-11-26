@@ -2,10 +2,24 @@
 
 MyIsland 是一款 Windows 与 macOS 菜单栏系统监控工具，以轻量胶囊展示实时指标，并提供可切换的小形象与主题。
 
-**当前源码版本：1.1.3** · Windows WPF · macOS Avalonia · Apple Silicon 原生发布
+**当前版本：1.1.3**（源码与已发布安装包同版本）· Windows WPF · macOS Avalonia · Apple Silicon 原生发布
 
 Windows 与 macOS 各自一套原生实现（Windows WPF 自绘 + macOS Avalonia 自绘），共享
 `src/Island.Core` 的数据模型与读数语义；两边共用的约定写在 [SOURCE-README.txt](SOURCE-README.txt)。
+
+## 下载
+
+**Windows v1.1.3**：<https://github.com/nightcat7788/MyIsland/releases/tag/v1.1.3>
+
+| 产物 | 说明 |
+|---|---|
+| `MyIsland-Setup-1.1.3.exe` | 免管理员安装包（Authenticode 签名 + RFC3161 时间戳） |
+| `MyIsland-1.1.3-portable.zip` | 便携版，解压即用（签名在包内 `Island.App.exe` 上） |
+| `SHA256SUMS.txt` | 校验清单，下载后先核对 SHA256 |
+
+> ⚠️ 签名用的是**自签证书**（`CN=MyIsland`）：本机装了根证书所以显示「已签名且有效」，
+> 在**未装该根证书的机器上会显示「未知发布者」** —— 这是自签证书的固有行为，不是包被改过。
+> 换公有 CA 证书只需改 `release.ps1` 的 `-CertPfx` / `-CertThumbprint`，流程不动。
 
 ## 功能
 
@@ -160,6 +174,10 @@ Windows 安装程序需在 Windows 上使用 Inno Setup 编译。Windows 包应�
 - 温度读取走微软签名的 PawnIO 驱动：程序内嵌官方安装器，仅在以管理员运行且驱动缺失时静默安装。
   许可证全文见 `driver/COPYING-PawnIO.txt`。
 - 发布包内会排除 `inpout*.dll` 与 `*.pdb`（见 `installer/MyIsland.iss` 的 `Excludes`）。
+- **安装包的签名是自签证书**（`CN=MyIsland`）：本机把该证书装进了 `CurrentUser\Root`，所以
+  `Get-AuthenticodeSignature` 返回 `Valid`；**未装该根证书的机器上会显示「未知发布者」**。
+  时间戳由公共 CA（DigiCert）签发，签名本身密码学有效，但**发布者身份没有公共 CA 背书**。
+  校验请以 `SHA256SUMS.txt` 的哈希为准（哈希与包内签名互相独立）。
 
 ## 许可证
 

@@ -50,3 +50,7 @@ crash.log
 *.pdb
 # Avalonia transient build task files
 .avalonia-build-tasks/
+
+# 本地私有目录（此前只写在 .git/info/exclude，换机 clone 后会变成未跟踪文件）
+.worktrees/
+.superpowers/

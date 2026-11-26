@@ -11,7 +11,7 @@
     改版本号时需要同步的三处：
       1. 本文件的 <Version>
       2. packaging/macos/Info.plist 的 CFBundleShortVersionString
-      3. installer/MyIsland.iss 的 MyAppVersion
+      3. installer/MyIsland.iss 的 AppVersion
     另外，产物文件名（MyIsland-Setup-x.y.z.exe 等）里也带版本号。
   -->
   <PropertyGroup>
