@@ -1,0 +1,6 @@
+# 行尾约定（2026-11-26 补）：
+#   · 仓库里存 LF（i/lf），Windows checkout 默认会转成 CRLF（core.autocrlf=true）——
+#     但 .sh 在 macOS 上跑，**必须**是 LF，否则报 \r: not found 之类的错；
+#     所以显式声明：*.sh 永远是 LF。
+#   · .ps1 / .cs 等不写在这里 —— 保持仓库现状（索引 LF），避免一次全仓重新规范化。
+*.sh text eol=lf
