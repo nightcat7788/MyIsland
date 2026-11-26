@@ -46,7 +46,6 @@ public static class MonitorStatusLineSpec
     public static readonly IReadOnlyList<StatusLineSlot> Slots = new StatusLineSlot[]
     {
         new("cpu-power", "功耗", "Windows 走 LHM CPU 功耗传感器（需管理员）；mac 无对应数据源"),
-        new("board-temp", "主板温度", "Windows 走 LHM 主板传感器（需管理员）；mac 无对应数据源"),
         new("storage-temp", "SSD 温度", "Windows 侧 NVMe SMART IOCTL 有 0x1EA 蓝屏史 ⇒ 不出现；mac 走 IOHID NAND"),
         new("runtime", "运行时长", "两端同一实现：Environment.TickCount64（系统开机时长）"),
         new("today-traffic", "今日流量", "Windows 走 PDH 网络计数器累计（今日 ↓/↑）；mac 无每日流量口径"),

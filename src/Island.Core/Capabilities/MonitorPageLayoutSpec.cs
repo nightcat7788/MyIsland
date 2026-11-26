@@ -66,6 +66,10 @@ public static class MonitorPageLayoutSpec
             new("gpu-temp", "GPU", "GpuTemp"),
             new("storage-temp", "SSD", "SsdTemp", Windows: false, MacOS: true,
                 Note: "Windows 不支持：LHM 的 NVMe SMART IOCTL 在本机触发 0x1EA 蓝屏两次 ⇒ 该行不出现"),
+            new("board-temp", "主板", "MotherboardTemp", Windows: true, MacOS: false,
+                Note: "Windows 专属（LHM 主板传感器，需管理员；读不到显示未知）。" +
+                "补这一行是为了让两端温度卡的**行数一致**（都是 3 行），否则 Windows 卡底空一截 —— " +
+                "存储温度 Windows 不支持，就用同样平台专属的主板温度补位"),
         }, Note: "Windows 的 GPU 显存并进 GPU 那一行（mac 无显存可读）"),
 
         new("speed", "上下速度", new MonitorRowSlot[]
