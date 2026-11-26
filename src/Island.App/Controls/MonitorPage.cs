@@ -222,11 +222,17 @@ public sealed class MonitorPage : FrameworkElement
             {
                 var slot = card.Rows[ri];
                 if (slot.Label.Length == 0) continue;   // 进程榜没有行标签（榜体是清单，不是读数行）
-                // 出现的行按"已经画了几行"排位；不出现的行按规格序排位（它若出现就会落在那儿）
-                int index = slot.Windows ? drawn : ri;
+                if (!slot.Windows)
+                {
+                    // 平台不支持的行：**没有位置**（Windows 的 SSD 温度落在 mac 的存储温度那一格，
+                    // 那一格在 Windows 上归主板温度 ⇒ 给它一个位置就是画重 / 越界）。
+                    rows.Add(new MonitorRowBand(card.Key, slot.Key, slot.Label, Rect.Empty, false));
+                    continue;
+                }
+                // 出现的行按"已经画了几行"排位
                 rows.Add(new MonitorRowBand(card.Key, slot.Key, slot.Label,
-                    RowLabelBand(card.Key, index, rect, tier), slot.Windows));
-                if (slot.Windows) drawn++;
+                    RowLabelBand(card.Key, drawn, rect, tier), true));
+                drawn++;
             }
             result.Add(new MonitorCardBand(card.Key, card.Title, rect, rows));
         }
@@ -542,10 +548,12 @@ public sealed class MonitorPage : FrameworkElement
             }
         }
 
-        // ================= ② 温度卡（上排右）：CPU / GPU =================
+        // ================= ② 温度卡（上排右）：CPU / GPU / 主板 =================
+        // 两端温度卡**行数一致**（都是 3 行）：mac 的第三行是存储温度（SSD），
+        // Windows 的第三行是**主板温度**（同样平台专属，用它补位，卡底不留空）。
         // **SSD 温度在 Windows 上整行不出现**（平台不支持：NVMe SMART IOCTL 有 0x1EA 蓝屏史）——
         // 不是显示 0，也不是显示"未知"；共享规格里那一行标了 Windows: false。
-        if (Want("cpu") || Want("gpu"))
+        if (Want("cpu") || Want("gpu") || Want("power"))
         {
             Card(x2, y1, cardW, topH);
             var tempCard = SpecCard("temp");
@@ -599,6 +607,28 @@ public sealed class MonitorPage : FrameworkElement
                 MetricRow(x2, gy, cardW, GlyphKind.Grid, "", pal.TextDim, gpuColor, Neutral(0x8C),
                     RowLabel(tempCard, "gpu-temp"), "", gpuValue, gpuUnit, gpuShare, null,
                     vram.Length == 0 ? "" : "· " + vram);
+                slot++;
+            }
+            // 主板温度（**Windows 专属行**：mac 那一格是存储温度；LHM 主板传感器需管理员）
+            // 读不到显示"未知/需管理员"，**绝不用 0 充数**；中性色，不抢 CPU 的强调色。
+            if (Want("power"))
+            {
+                double by = MetricRowTop(y1, slot, rowH, firstRowH);
+                string boardValue, boardUnit;
+                Color boardColor;
+                double boardShare;
+                if (th?.MotherboardTemp is { } bt)
+                {
+                    boardValue = $"{Math.Round(bt)}"; boardUnit = "°";
+                    boardColor = TempColor(bt, pal); boardShare = bt / TempFull;
+                }
+                else
+                {
+                    boardValue = TempMissingText; boardUnit = "";
+                    boardColor = TempMissingColor(pal); boardShare = 0;
+                }
+                MetricRow(x2, by, cardW, null, "°", pal.TextDim, boardColor, Neutral(0x8C),
+                    RowLabel(tempCard, "board-temp"), "", boardValue, boardUnit, boardShare, null);
             }
         }
 
@@ -754,10 +784,10 @@ public sealed class MonitorPage : FrameworkElement
 
             foreach (var slot in MonitorStatusLineSpec.SlotsFor(macOS: false))
             {
+                // 字段位清单来自规格（主板温度已移到**温度卡**里，见 §② ⇒ 不再在状态行重复）
                 string? value = slot.Key switch
                 {
                     "cpu-power" => ExpandedPanelSpec.StatusPowerText(th?.CpuPower),
-                    "board-temp" => ExpandedPanelSpec.StatusTempText(th?.MotherboardTemp),
                     "runtime" => ExpandedPanelSpec.StatusUptimeText(s?.UptimeHours),
                     "today-traffic" => ExpandedPanelSpec.StatusTrafficText(s?.TodayDownload, s?.TodayUpload),
                     _ => null,

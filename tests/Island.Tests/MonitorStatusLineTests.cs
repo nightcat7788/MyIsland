@@ -8,11 +8,12 @@ namespace Island.Tests;
 /// <summary>
 /// 监控页**底部状态行**的规格用例（2026-11-26 task-e2）。
 ///
-/// 状态行是 2×2 卡片栅格**下方**的一行 9px 读数（Windows 侧：功耗 / 主板温度 / 运行时长 / 今日流量）。
+/// 状态行是 2×2 卡片栅格**下方**的一行 9px 读数（Windows 侧：功耗 / 运行时长 / 今日流量；
+/// 主板温度已移到**温度卡**里，2026-11-26 task16 起不再在状态行重复）。
 /// 两端共享的唯一规格是 <see cref="MonitorStatusLineSpec"/>（src\Island.Core\Capabilities），
 /// 本文件把它当契约锁住：
 ///   · 字段位清单与顺序（顺序即显示顺序）；
-///   · 平台可用性（Windows 显示功耗 / 主板温度 / 运行时长 / 今日流量；SSD 温度只在 mac 出现 ——
+///   · 平台可用性（Windows 显示功耗 / 运行时长 / 今日流量；SSD 温度只在 mac 出现 ——
 ///     Windows 侧 NVMe SMART IOCTL 有 0x1EA 蓝屏史）；
 ///   · 几何常量（字号 9 / 行高 14 / 字段位间隔 14 / 与栅格的留白 6）；
 ///   · 取值格式规则，尤其是"读不到 ⇒ 未知"（绝不用 0 / 默认值 / 换算百分比充数 —— 项目硬红线）。
@@ -32,12 +33,12 @@ internal static class MonitorStatusLineTests
     private static void CheckSlotList(Action<string, bool> check)
     {
         var keys = MonitorStatusLineSpec.Slots.Select(s => s.Key).ToList();
-        check("状态行：字段位清单与顺序（功耗 / 主板温度 / SSD 温度 / 运行时长 / 今日流量）",
-            keys.SequenceEqual(new[] { "cpu-power", "board-temp", "storage-temp", "runtime", "today-traffic" }));
+        check("状态行：字段位清单与顺序（功耗 / SSD 温度 / 运行时长 / 今日流量 —— 主板温度已移到温度卡）",
+            keys.SequenceEqual(new[] { "cpu-power", "storage-temp", "runtime", "today-traffic" }));
 
         var labels = MonitorStatusLineSpec.Slots.Select(s => s.Label).ToList();
         check("状态行：字段位标签",
-            labels.SequenceEqual(new[] { "功耗", "主板温度", "SSD 温度", "运行时长", "今日流量" }));
+            labels.SequenceEqual(new[] { "功耗", "SSD 温度", "运行时长", "今日流量" }));
 
         // 字段位的键必须都在能力清单里（CapabilityManifest.DataSources 是可用性的唯一真相源）
         var dataSourceKeys = CapabilityManifest.DataSources.Select(e => e.Key).ToHashSet();
@@ -54,8 +55,11 @@ internal static class MonitorStatusLineTests
     private static void CheckPlatformAvailability(Action<string, bool> check)
     {
         var win = MonitorStatusLineSpec.SlotsFor(macOS: false).Select(s => s.Key).ToList();
-        check("状态行：Windows 显示的字段位（功耗 / 主板温度 / 运行时长 / 今日流量）",
-            win.SequenceEqual(new[] { "cpu-power", "board-temp", "runtime", "today-traffic" }));
+        check("状态行：Windows 显示的字段位（功耗 / 运行时长 / 今日流量 —— 主板温度在温度卡里）",
+            win.SequenceEqual(new[] { "cpu-power", "runtime", "today-traffic" }));
+        // 主板温度移到温度卡（同一个读数不在同屏出现两次）
+        check("状态行：不再出现主板温度（已移到温度卡，避免同屏重复）",
+            !win.Contains("board-temp"));
 
         // SSD 温度在 Windows 侧不出现（NVMe SMART IOCTL 的 0x1EA 蓝屏史）
         check("状态行：Windows 侧不出现 SSD 温度",

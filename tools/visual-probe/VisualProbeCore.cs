@@ -630,31 +630,41 @@ public static class VisualProbeCore
             string.Join("；", cards.Select(c => $"{c.Title} @ {c.Rect}")) +
             $"（内容区 {options.Width}×{options.Height}；重叠：{(disjoint ? "无" : "有")}）"));
 
-        // ---- 3. 每个读数行：规格说它该在哪一带，那一带里必须有绘制 ----
-        var missing = new List<string>();
-        var unexpected = new List<string>();
+        // ---- 3. 每张卡画出来的行 == 规格里该平台的行（平台不支持的行不会被画） ----
+        // 平台专属行（如 Windows 的主板温度）补的是**同一格**：mac 那一格是存储温度，
+        // Windows 那一格是主板温度 —— 所以"不支持的行"在 Windows 上**没有位置**
+        // （给它一个位置就是画重 / 越界）。这里断言的是"画出来的行 == 规格里该平台的行"。
+        var specByKey = spec.ToDictionary(c => c.Key);
+        bool rowsMatch = true;
+        var rowDetail = new List<string>();
         foreach (var card in cards)
         {
-            foreach (var band in card.Rows)
+            var expected = MonitorPageLayoutSpec.RowsFor(specByKey[card.Key], macOS: false)
+                .Where(r => r.Label.Length > 0).Select(r => r.Key).ToList();
+            var actual = card.Rows.Where(r => r.Drawn).Select(r => r.RowKey).ToList();
+            rowsMatch &= expected.SequenceEqual(actual);
+            rowDetail.Add($"{card.Title}：{string.Join(" / ", actual)}");
+        }
+        report.Checks.Add(new ProbeCheck(
+            "监控页：每张卡画出来的行 == 规格里该平台的行（平台不支持的行不会被画）",
+            rowsMatch,
+            string.Join("；", rowDetail) +
+            "（Windows 不画 SSD 温度 —— 那一格在 Windows 上归主板温度；平台不支持 ⇒ 整行不出现）"));
+
+        // ---- 4. 每个读数行：规格说它该在哪一带，那一带里必须有绘制 ----
+        var missing = new List<string>();
+        foreach (var card in cards)
+        {
+            foreach (var band in card.Rows.Where(r => r.Drawn))
             {
-                bool ink = BandHasInk(pixels, band.Rect);
-                if (band.Drawn && !ink) missing.Add($"{card.Title}/{band.Label}({band.RowKey})");
-                if (!band.Drawn && ink) unexpected.Add($"{card.Title}/{band.Label}({band.RowKey})");
+                if (!BandHasInk(pixels, band.Rect)) missing.Add($"{card.Title}/{band.Label}({band.RowKey})");
             }
         }
         report.Checks.Add(new ProbeCheck(
             "监控页：规格里的每个读数行都画在它该在的那张卡里（分组门禁）",
             missing.Count == 0,
-            string.Join("；", cards.SelectMany(c => c.Rows).Select(b =>
-                $"{b.CardKey}/{b.Label}{(b.Drawn ? (BandHasInk(pixels, b.Rect) ? " 有绘制" : " 缺绘制") : " 不该出现")}"))));
-
-        // ---- 4. 平台不支持的行：整行不出现（Windows 的 SSD 温度） ----
-        report.Checks.Add(new ProbeCheck(
-            "监控页：平台不支持的行整行不出现（Windows 不显示 SSD 温度）",
-            unexpected.Count == 0,
-            unexpected.Count == 0
-                ? "Windows 侧：温度卡只有 CPU / GPU 两行；SSD 温度那一带没有绘制（不是 0、也不是未知）"
-                : "不该出现却有绘制：" + string.Join(" / ", unexpected)));
+            string.Join("；", cards.SelectMany(c => c.Rows).Where(b => b.Drawn).Select(b =>
+                $"{b.CardKey}/{b.Label}{(BandHasInk(pixels, b.Rect) ? " 有绘制" : " 缺绘制")}"))));
     }
 
     /// <summary>行带里有没有"有内容"的像素（按该区域的常见色当底色判 —— 卡底色不算内容）。</summary>
