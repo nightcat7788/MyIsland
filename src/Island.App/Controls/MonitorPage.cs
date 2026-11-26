@@ -409,8 +409,11 @@ public sealed class MonitorPage : FrameworkElement
                 double gp = s?.GpuUsage ?? 0;
                 var parts = new List<string>();
                 if (th?.GpuTemp is { } gt) parts.Add($"{Math.Round(gt)}°");
+                // 显存读数按**口径**渲染（2026-11-26 task15）：共享口径下那个"总量"是共享内存池大小
+                // （≈ 系统内存），不是显存容量 —— 显示出来会被读成"核显有十几 GB 显存"，所以不显示，只标"共享"。
+                // 专用 / 厂商显存照旧显示"已用/总量"（那就是显存容量）；口径未知则只显示已用（宁可少显示）。
                 if (th?.GpuMemoryUsedGB is { } gmu)
-                    parts.Add($"{gmu:F1}{(th.GpuMemoryTotalGB is { } gtot ? $"/{gtot:F0}" : "")} GB");
+                    parts.Add(GpuMemoryDisplay.Text(gmu, th.GpuMemoryTotalGB, th.GpuMemoryKind));
                 MetricRow(x2, cy + slot * (rowH + RowGap), cardW, GlyphKind.Grid, "", pal.TextDim,
                     RenderKit.LevelColor(gp, pal.Text, pal),
                     RenderKit.LevelColor(gp, Neutral(0x8C), pal),

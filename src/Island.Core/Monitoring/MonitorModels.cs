@@ -49,6 +49,14 @@ public sealed record MonitorSnapshot
     /// <summary>显存已用/总量 GB。</summary>
     public double? GpuMemoryUsedGB { get; init; }
     public double? GpuMemoryTotalGB { get; init; }
+    /// <summary>
+    /// 显存读数的**口径**："vendor"（厂商显存）/ "dedicated"（D3D 专用显存）/ "shared"（D3D 共享内存）/ ""（未知）。
+    ///
+    /// ⚠️ 共享口径下那个"总量"是**共享内存池大小（≈ 系统内存）**，不是显存容量 ——
+    /// 显示层必须靠它决定要不要显示"总量"，否则用户会以为核显有十几 GB 显存（误导性读数）。
+    /// 取值定义见 Island.App.Services.GpuMemoryKinds（判不出来就留空，**不猜**）。
+    /// </summary>
+    public string GpuMemoryKind { get; init; } = "";
     /// <summary>GPU 核心频率 MHz。</summary>
     public double? GpuCoreClockMHz { get; init; }
 

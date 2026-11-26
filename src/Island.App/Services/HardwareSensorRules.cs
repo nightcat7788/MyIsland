@@ -21,6 +21,71 @@ public enum HardwareSensorKind
 public sealed record HardwareSensorPick(HardwareSensorKind Kind, string SensorName, double Value);
 
 /// <summary>
+/// 显存口径的取值（2026-11-26 task15）。
+///
+/// 为什么要有它：核显的显存读数走 **D3D 共享内存**，那条路的"总量"是共享内存池大小（≈ 系统内存），
+/// **不是显存容量** —— 显示成"显存 1.5/17.9 GB"会让人以为核显有十几 GB 显存（误导性读数）。
+/// </summary>
+public static class GpuMemoryKinds
+{
+    /// <summary>厂商显存（"GPU Memory Used/Total"，NVIDIA/AMD 那条路）：总量就是显存容量。</summary>
+    public const string Vendor = "vendor";
+    /// <summary>D3D 专用显存（"D3D Dedicated Memory Used/Total"）：总量就是显存容量。</summary>
+    public const string Dedicated = "dedicated";
+    /// <summary>D3D 共享内存（"D3D Shared Memory Used/Total"）：**总量是共享内存池大小，不是显存容量**。</summary>
+    public const string Shared = "shared";
+    /// <summary>口径未知（判不出来就是未知，绝不猜）。</summary>
+    public const string Unknown = "";
+}
+
+/// <summary>
+/// 显存读数的显示文本与口径合并（纯逻辑：显示层与温度签名共用同一份规则，两端一致）。
+/// </summary>
+public static class GpuMemoryDisplay
+{
+    /// <summary>
+    /// 显存读数的显示文本。
+    ///
+    /// 口径决定形状（2026-11-26 task15 的裁决）：
+    ///   · 共享（核显）⇒ 只显示已用 + "共享"标注，**不显示"总量"** ——
+    ///     那个总量是共享内存池大小（≈ 系统内存），显示出来会被读成"显存容量"；
+    ///   · 专用 / 厂商显存 ⇒ 显示"已用/总量"（那就是显存容量），不加额外标注（不加噪音）；
+    ///   · 口径未知 ⇒ 只显示已用，既不标口径也不给总量（可能冒充显存容量的数字，宁可少显示）。
+    /// </summary>
+    public static string Text(double? usedGB, double? totalGB, string? kind)
+    {
+        if (usedGB is not { } used) return "";
+        string usedText = $"{used:F1} GB";
+        if (kind == GpuMemoryKinds.Shared) return usedText + " 共享";
+        if (kind is GpuMemoryKinds.Vendor or GpuMemoryKinds.Dedicated)
+            return totalGB is { } total ? $"{used:F1}/{total:F0} GB" : usedText;
+        return usedText;
+    }
+
+    /// <summary>
+    /// 合并"已用"与"总量"两个读数的口径：两边一致才算那个口径；
+    /// 只有一边有口径就用那一边；两边都有但不一致（或都没有）⇒ 未知（**不猜**）。
+    /// </summary>
+    public static string CombineKind(string? usedKind, string? totalKind)
+    {
+        if (!string.IsNullOrEmpty(usedKind) && !string.IsNullOrEmpty(totalKind))
+            return usedKind == totalKind ? usedKind : GpuMemoryKinds.Unknown;
+        if (!string.IsNullOrEmpty(usedKind)) return usedKind;
+        if (!string.IsNullOrEmpty(totalKind)) return totalKind;
+        return GpuMemoryKinds.Unknown;
+    }
+}
+
+/// <summary>
+/// 显存读数 **+ 口径**（一次选取同时给出两者）。
+///
+/// 口径**与数值同源**：它就是命中的那一层 —— 显存分层数组（厂商显存 → D3D 专用显存 → D3D 共享显存）
+/// 本身就是口径的定义，所以这里不再另算一套判定（2026-11-26 task15）。
+/// </summary>
+/// <param name="Kind">口径：<see cref="GpuMemoryKinds"/> 里的 vendor / dedicated / shared / 未知（""）。</param>
+public sealed record GpuMemoryPick(string SensorName, double Value, string Kind);
+
+/// <summary>
 /// 传感器类别（**本类自己的枚举**）。
 /// 为什么不直接用 LibreHardwareMonitor 的 SensorType：本类必须零硬件库依赖，
 /// 才能链进零 NuGet 包的测试工程（见 tests/Island.Tests/Island.Tests.csproj）。
@@ -225,9 +290,11 @@ public static class HardwareSensorRules
             case HardwareSensorKind.GpuFan:
                 return PickByTier(kind, candidates, GpuFanTiers, takeMax: false);
             case HardwareSensorKind.GpuMemoryUsed:
-                return PickByTier(kind, candidates, GpuMemoryUsedTiers, takeMax: true);
             case HardwareSensorKind.GpuMemoryTotal:
-                return PickByTier(kind, candidates, GpuMemoryTotalTiers, takeMax: true);
+            {
+                var gp = PickGpuMemory(kind, candidates);
+                return gp is null ? null : new HardwareSensorPick(kind, gp.SensorName, gp.Value);
+            }
             case HardwareSensorKind.GpuClock:
                 return PickByTier(kind, candidates, GpuClockTiers, takeMax: false);
             case HardwareSensorKind.StorageTemperature:
@@ -307,6 +374,22 @@ public static class HardwareSensorRules
     private static HardwareSensorPick? PickByTier(HardwareSensorKind kind, IReadOnlyList<HardwareSensor> candidates,
         Func<string, bool>[] tiers, bool takeMax)
     {
+        var usable = UsableSensors(kind, candidates);
+        if (usable.Count == 0) return null;
+
+        foreach (var tier in tiers)
+        {
+            var hit = Best(usable, tier, takeMax);
+            if (hit is not null) return new HardwareSensorPick(kind, hit.Name, hit.Value);
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// 可用候选（值合法 + 不是干扰项）—— 分层裁决与显存口径**共用这一份过滤**，不复制判定。
+    /// </summary>
+    private static List<HardwareSensor> UsableSensors(HardwareSensorKind kind, IReadOnlyList<HardwareSensor> candidates)
+    {
         bool isTemperature = kind is HardwareSensorKind.CpuTemperature
             or HardwareSensorKind.GpuTemperature
             or HardwareSensorKind.StorageTemperature
@@ -320,15 +403,51 @@ public static class HardwareSensorRules
             if (IsDistractor(c.Name, isTemperature)) continue;
             usable.Add(c);
         }
-        if (usable.Count == 0) return null;
+        return usable;
+    }
 
-        foreach (var tier in tiers)
+    /// <summary>
+    /// 显存读数 **+ 口径**（一次选取同时给出两者）。
+    ///
+    /// 口径**就是命中的那一层**：显存分层数组（厂商显存 → D3D 专用显存 → D3D 共享显存）
+    /// 本身就是口径的定义，所以这里不另算一套判定（2026-11-26 task15）。
+    /// 命中第 3 层（兜底层）时，只有名字里真写着 "shared" 才算共享口径 ——
+    /// 判不出来就写未知（""),**不猜**（那个"总量"若是共享内存池，冒充显存容量就是误导性读数）。
+    /// </summary>
+    public static GpuMemoryPick? PickGpuMemory(HardwareSensorKind kind, IReadOnlyList<HardwareSensor>? candidates)
+    {
+        if (candidates is null || candidates.Count == 0) return null;
+        Func<string, bool>[] tiers = kind switch
         {
-            var hit = Best(usable, tier, takeMax);
-            if (hit is not null) return new HardwareSensorPick(kind, hit.Name, hit.Value);
+            HardwareSensorKind.GpuMemoryUsed => GpuMemoryUsedTiers,
+            HardwareSensorKind.GpuMemoryTotal => GpuMemoryTotalTiers,
+            _ => Array.Empty<Func<string, bool>>(),
+        };
+        if (tiers.Length == 0) return null;
+
+        var usable = UsableSensors(kind, candidates);
+        for (int i = 0; i < tiers.Length; i++)
+        {
+            var hit = Best(usable, tiers[i], takeMax: true);
+            if (hit is null) continue;
+            return new GpuMemoryPick(hit.Name, hit.Value, GpuMemoryKindOfTier(i));
         }
         return null;
     }
+
+    /// <summary>
+    /// 层号 → 口径：**口径就是显存分层的层号**，不另发明一套判定。
+    /// 层序与产品既有口径完全一致：0 = 厂商显存（NVIDIA/AMD 的 "GPU Memory Used/Total"）、
+    /// 1 = D3D 专用显存、2 = D3D 共享内存（核显走这条 —— 那个"总量"是共享内存池大小，不是显存容量）。
+    /// 取值字符串与 <see cref="GpuMemoryKinds"/> 一一对应（由 GpuMemoryKindTests 守住）。
+    /// </summary>
+    private static string GpuMemoryKindOfTier(int tierIndex) => tierIndex switch
+    {
+        0 => GpuMemoryKinds.Vendor,
+        1 => GpuMemoryKinds.Dedicated,
+        2 => GpuMemoryKinds.Shared,
+        _ => GpuMemoryKinds.Unknown,
+    };
 
     /// <summary>主板温度：先按标准名字，再按"合理区间内取最大"兜底（LiteMonitor 的 MOBO.Temp 口径）。</summary>
     private static HardwareSensorPick? PickMotherboardTemperature(IReadOnlyList<HardwareSensor> candidates)
