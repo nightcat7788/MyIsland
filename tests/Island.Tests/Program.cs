@@ -74,6 +74,7 @@ try
     Suite("ThemeContrastTests", ThemeContrastTests.Run); // 2026-11-26：主题可读性门禁（macOS 端此前一条对比度断言都没有）+ 两端主题名集合一致
     Suite("ClockViewTests", ClockViewTests.Run); // 2026-11-26：时钟视图内容对齐（两端都画 秒 + 日期，格式同一份 ClockTextSpec）
     Suite("ClickThroughTests", ClickThroughTests.Run); // 2026-11-27：鼠标穿透规则（展开面板必须可交互）+ 托盘一键逃生口
+    Suite("ReleaseDocTests", ReleaseDocTests.Run); // 2026-11-27：发布文档的下载链接/产物文件名必须与版本号一致
     Suite("ResourceColorTests", ResourceColorTests.Run); // 2026-11-27：按资源配色（色值锁定 ResourceColorSpec + 两端画布必须取同一份规格 + 旧色值不得复活 + 展开面板本轮不接规格）
     Suite("VisualRenderTests", VisualRenderTests.Run); // 2026-11-26 视觉回归探针：离屏渲染 + 像素不变量（防全黑 / 栅格几何 / 文本越界）
     Suite("AvaloniaVisualTests", AvaloniaVisualTests.Run); // 2026-11-26 macOS 端离屏渲染视觉回归：跨端几何一致 + 判定逻辑有牙齿

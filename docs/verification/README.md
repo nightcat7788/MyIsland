@@ -24,8 +24,8 @@
 
 ### 本批报告对应的版本
 
-现有报告均为 **v1.1.3**（2026-11-27 发布）这一轮的验证结果；
-对应安装包见 <https://github.com/nightcat7788/MyIsland/releases/tag/v1.1.3>。
+现有报告均为 **v1.1.5**（2026-11-27 发布）这一轮的验证结果；
+对应安装包见 <https://github.com/nightcat7788/MyIsland/releases/tag/v1.1.5>。
 
 ## 怎么跑
 

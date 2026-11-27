@@ -9,12 +9,12 @@ Windows 与 macOS 各自一套原生实现（Windows WPF 自绘 + macOS Avalonia
 
 ## 下载
 
-**Windows v1.1.3**：<https://github.com/nightcat7788/MyIsland/releases/tag/v1.1.3>
+**Windows v1.1.5**：<https://github.com/nightcat7788/MyIsland/releases/tag/v1.1.5>
 
 | 产物 | 说明 |
 |---|---|
-| `MyIsland-Setup-1.1.3.exe` | 免管理员安装包（Authenticode 签名 + RFC3161 时间戳） |
-| `MyIsland-1.1.3-portable.zip` | 便携版，解压即用（签名在包内 `Island.App.exe` 上） |
+| `MyIsland-Setup-1.1.5.exe` | 免管理员安装包（Authenticode 签名 + RFC3161 时间戳） |
+| `MyIsland-1.1.5-portable.zip` | 便携版，解压即用（签名在包内 `Island.App.exe` 上） |
 | `SHA256SUMS.txt` | 校验清单，下载后先核对 SHA256 |
 
 > ⚠️ 签名用的是**自签证书**（`CN=MyIsland`）：本机装了根证书所以显示「已签名且有效」，
