@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore Island.sln
+
+      - name: Build Release (0 warnings / 0 errors)
+        run: dotnet build Island.sln -c Release --no-restore --nologo
+
+      - name: Run Unit Tests
+        run: .\tests\Island.Tests\bin\Release\net8.0-windows\Island.Tests.exe

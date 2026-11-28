@@ -1,0 +1,137 @@
+name: Release & SignPath Code Signing
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v1.1.9)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-sign:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve Version
+        id: ver
+        shell: pwsh
+        run: |
+          $tag = if ("${{ github.event_name }}" -eq "workflow_dispatch") { "${{ inputs.tag }}" } else { "${{ github.ref_name }}" }
+          $version = $tag.TrimStart('v')
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Building release $tag (version $version)"
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore, Build & Test
+        shell: pwsh
+        run: |
+          dotnet restore Island.sln
+          dotnet build Island.sln -c Release --no-restore --nologo
+          .\tests\Island.Tests\bin\Release\net8.0-windows\Island.Tests.exe
+
+      - name: Publish Windows Packages (Unsigned)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ver = "${{ steps.ver.outputs.version }}"
+          $pubDir = "publish\win-x64"
+          $stagePortable = "publish\win-portable-stage"
+          $outDir = "publish\unsigned"
+          New-Item -ItemType Directory -Force -Path $outDir, $stagePortable | Out-Null
+
+          dotnet publish src\Island.App\Island.App.csproj -c Release -r win-x64 --self-contained true --no-restore --nologo -o $pubDir
+          Get-ChildItem $pubDir -Include '*.pdb','inpout*.dll','LhmProbe*' -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force
+
+          # Portable zip
+          Copy-Item "$pubDir\*" $stagePortable -Recurse -Force
+          Copy-Item "packaging\win-portable\*" $stagePortable -Recurse -Force
+          Copy-Item "THIRD-PARTY-NOTICES.txt" $stagePortable -Force
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::CreateFromDirectory(
+            (Resolve-Path $stagePortable).Path,
+            (Join-Path (Resolve-Path $outDir).Path "MyIsland-$ver-portable.zip"),
+            [System.IO.Compression.CompressionLevel]::Optimal,
+            $false)
+
+          # Inno Setup Installer (pre-installed on GitHub windows-latest runners)
+          $iscc = Get-Command iscc -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1
+          if (-not $iscc) {
+            $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          }
+          & $iscc "/DMyAppVersion=$ver" installer\MyIsland.iss
+          Copy-Item "installer\dist\MyIsland-Setup-$ver.exe" "$outDir\MyIsland-Setup-$ver.exe" -Force
+
+      - name: Upload Unsigned Artifact for SignPath
+        id: upload-unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-windows-${{ steps.ver.outputs.version }}
+          path: publish/unsigned/
+          retention-days: 7
+
+      - name: Submit Signing Request to SignPath.io
+        id: signpath
+        if: ${{ env.HAS_SIGNPATH == 'true' }}
+        env:
+          HAS_SIGNPATH: ${{ secrets.SIGNPATH_API_TOKEN != '' && secrets.SIGNPATH_ORGANIZATION_ID != '' }}
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'myisland' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
+          github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+          output-artifact-directory: publish/signed
+          wait-for-completion: true
+
+      - name: Prepare Final Release Assets & SHA256SUMS
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ver = "${{ steps.ver.outputs.version }}"
+          $finalDir = "publish\final"
+          New-Item -ItemType Directory -Force -Path $finalDir | Out-Null
+
+          if (Test-Path "publish\signed") {
+            Write-Host "Using SignPath-signed artifacts."
+            # SignPath returns a zip or signed files inside publish/signed
+            $signedZips = Get-ChildItem "publish\signed" -Filter '*.zip' -File
+            if ($signedZips.Count -eq 1 -and $signedZips[0].Name -notlike "MyIsland-*") {
+              Expand-Archive -Path $signedZips[0].FullName -DestinationPath $finalDir -Force
+            } else {
+              Copy-Item "publish\signed\*" $finalDir -Recurse -Force
+            }
+          } else {
+            Write-Host "::notice::SIGNPATH_API_TOKEN / SIGNPATH_ORGANIZATION_ID not configured yet; using unsigned artifacts."
+            Copy-Item "publish\unsigned\*" $finalDir -Recurse -Force
+          }
+
+          $files = Get-ChildItem $finalDir -File | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } | Sort-Object Name
+          $lines = foreach ($f in $files) {
+            $hash = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($f.Name)"
+          }
+          $lines | Set-Content (Join-Path $finalDir 'SHA256SUMS.txt') -Encoding UTF8
+          Get-Content (Join-Path $finalDir 'SHA256SUMS.txt')
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: MyIsland ${{ steps.ver.outputs.tag }}
+          make_latest: true
+          files: publish/final/*

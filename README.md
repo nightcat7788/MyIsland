@@ -81,3 +81,11 @@ bash packaging/macos/make-app.sh
 - 全部监控数据本地采集，除天气功能（Open-Meteo）外零联网请求。
 - 第三方开源组件许可声明见 [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt)。
 - 本项目基于 [MIT License](LICENSE) 开源。
+
+## Code Signing Policy
+
+Free code signing provided by [SignPath.io](https://signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+
+- **Committers & Reviewers**: Repository maintainers of `nightcat7788/MyIsland`.
+- **Approvers**: Project owners approving release tags (`v*`) built reproducibly via GitHub Actions (`.github/workflows/release.yml`).
+- **Privacy**: MyIsland does not collect, transmit, or share any personal data or telemetry. All hardware monitoring and peripheral battery readings run strictly locally on the user's machine (with optional weather queries to Open-Meteo only when enabled).
