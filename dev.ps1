@@ -35,15 +35,18 @@ foreach ($v in 'https_proxy','http_proxy','all_proxy','no_proxy') {
     if (Test-Path "Env:$v") { Remove-Item "Env:$v" -ErrorAction SilentlyContinue }
 }
 
-# -- 1. stop old island host (pid comes from the last heartbeat line) --
+# -- 1. stop old island host (pid comes from the last heartbeat line; verify process name first!) --
 if (Test-Path $runLog) {
     $last = Select-String -Path $runLog -Pattern 'pid=(\d+)' | Select-Object -Last 1
     if ($last) {
         $oldPid = [int]$last.Matches[0].Groups[1].Value
-        try {
-            Stop-Process -Id $oldPid -Force -ErrorAction Stop
-            "[1/5] stopped old island host (pid $oldPid)"
-        } catch { "[1/5] old host $oldPid not running" }
+        $proc = Get-Process -Id $oldPid -ErrorAction SilentlyContinue
+        if ($proc -and $proc.ProcessName -in @('Island.App', 'pwsh')) {
+            try {
+                Stop-Process -Id $oldPid -Force -ErrorAction Stop
+                "[1/5] stopped old island host (pid $oldPid, $($proc.ProcessName))"
+            } catch { "[1/5] old host $oldPid could not be stopped" }
+        } else { "[1/5] old pid $oldPid no longer belongs to MyIsland" }
     }
 } else { "[1/5] no previous island" }
 Start-Sleep -Milliseconds 800

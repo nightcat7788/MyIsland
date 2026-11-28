@@ -44,7 +44,22 @@ xcrun swiftc -O -target arm64-apple-macos13.0 \
 xcrun swiftc -O -target arm64-apple-macosx13.0 \
     ../screen-list/screens.swift -o "$OUT/island-screens"
 
-chmod +x "$OUT/ddc-helper" "$OUT/screen-guardian" "$OUT/island-screens" "$OUT/app-icon" "$OUT/island-devices" "$OUT/island-hotkey"
-codesign --force --sign - "$OUT/ddc-helper" "$OUT/screen-guardian" "$OUT/island-screens" 2>/dev/null || true
+# island-thermal：IOHID + SMC 硬件温度探针（同目录上一级）
+xcrun clang -O2 -Wall -Wextra -target arm64-apple-macos13.0 \
+    ../thermal-probe/thermal.m \
+    -framework IOKit -framework CoreFoundation \
+    -o "$OUT/island-thermal"
 
-echo "已生成：ddc-helper / screen-guardian / island-screens / app-icon / island-devices / island-hotkey → $OUT"
+BINS=(
+    "$OUT/ddc-helper"
+    "$OUT/screen-guardian"
+    "$OUT/island-screens"
+    "$OUT/app-icon"
+    "$OUT/island-devices"
+    "$OUT/island-hotkey"
+    "$OUT/island-thermal"
+)
+chmod +x "${BINS[@]}"
+codesign --force --sign - "${BINS[@]}"
+
+echo "已生成：ddc-helper / screen-guardian / island-screens / app-icon / island-devices / island-hotkey / island-thermal → $OUT"

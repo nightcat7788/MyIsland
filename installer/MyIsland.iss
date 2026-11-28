@@ -1,86 +1,65 @@
-; MyIsland 安装包脚本（Inno Setup 7，当前用户安装免管理员）
-#define AppName "MyIsland"
-; 版本可由命令行注入：ISCC /DAppVersion=1.0.2 MyIsland.iss
-#ifndef AppVersion
-#define AppVersion "1.1.5"
-#endif
-; 发布者 = 证书 Subject 之外的展示名；用户端"发布者"那一行取自签名证书的 Subject
-#define AppPublisher "MyIsland"
-#define AppExe "Island.App.exe"
-; 路径一律相对脚本自身，目录树整体搬迁/换机后仍可重新编译。
-; ⚠️ 注意：不能写成 "{src}\..." —— Inno 的 #define 是预处理器常量，
-;    {src} 在这里不会展开（实测编译报 "系统找不到指定的路径"，还会建出名为 "{src}" 的垃圾目录）。
-;    相对路径在 [Setup]/[Files] 里按**脚本所在目录**解析，效果正是想要的。
-;    需要指定别的输出位置时用命令行覆盖：ISCC /DSrcDir=... /DOutDir=... MyIsland.iss
-#ifndef SrcDir
-#define SrcDir "..\publish\win-x64"
-#endif
-#ifndef OutDir
-#define OutDir dist
-#endif
-; ---- 签名相关（由命令行注入；不注入就不签名，普通开发构建不依赖 signtool）----
-; MyIslandSignTool = 命名签名工具的名字（由 ISCC --signtool=myisland=... 定义）
-#ifndef MyIslandSignTool
-#define MyIslandSignTool ""
-#endif
+; MyIsland Inno Setup 安装包脚本
+; ─────────────────────────────────────────────────────────────────
+; 用法（Inno Setup 7）：
+;   ISCC.exe installer\MyIsland.iss
+; 产物：installer\dist\MyIsland-Setup-<版本>.exe（当前用户安装，免管理员）
+;
+; ⚠️ 安全红线（2026-11-23 事故教训，别删）：
+;   1. [Files] 的 Excludes 必须排除 inpout*.dll —— 它一被加载就会自动安装
+;      未签名的 inpoutx64.sys 内核驱动并映射 PCIe 物理内存，当天三次蓝屏 0x1EA。
+;      源码树 tools\inpout\ 里的 dll 只供本机调试，绝不允许进任何分发物。
+;   2. 同理排除 *.pdb（调试符号，用户机器不需要）与 LhmProbe*（探针工具）。
+; ─────────────────────────────────────────────────────────────────
+
+#define MyAppName "MyIsland"
+#define MyAppVersion "1.1.8"
+#define MyAppPublisher "MyIsland"
+#define MyAppExeName "Island.App.exe"
 
 [Setup]
-AppId={{7E4A2C1D-9F3B-4E8A-B5D2-1A6C8E0F2B44}
-AppName={#AppName}
-AppVersion={#AppVersion}
-AppPublisher={#AppPublisher}
-DefaultDirName={localappdata}\Programs\MyIsland
-DefaultGroupName={#AppName}
+AppId={{7B1E6C4A-52D8-4E7F-9A63-C5E09FB4D210}
+AppName={#MyAppName}
+AppVersion={#MyAppVersion}
+AppPublisher={#MyAppPublisher}
+; 程序装在 %LOCALAPPDATA%\Programs\MyIsland，与用户配置目录 %LOCALAPPDATA%\MyIsland 分离
+DefaultDirName={localappdata}\Programs\{#MyAppName}
+DefaultGroupName={#MyAppName}
+; 当前用户安装：不写 Program Files、不需要管理员（UAC 弹窗也不出）
 PrivilegesRequired=lowest
-OutputDir="{#OutDir}"
-OutputBaseFilename=MyIsland-Setup-{#AppVersion}
-Compression=lzma2/ultra64
+OutputDir=dist
+OutputBaseFilename=MyIsland-Setup-{#MyAppVersion}
+Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
-; 运行中的实例自动关闭（互斥体识别）
-; 必须与 Island.App 的 MutexName 完全一致（App.xaml.cs: Local\MyIsland.Instance），
-; 否则升级安装时关不掉正在运行的旧实例
+ArchitecturesInstallIn64BitMode=x64compatible
+; 运行中的实例自动关闭（与 App.xaml.cs MutexName 一致，升级时关掉旧实例）
 AppMutex=Local\MyIsland.Instance
 CloseApplications=yes
 CloseApplicationsFilter=*.exe
 RestartApplications=no
-UninstallDisplayIcon={app}\{#AppExe}
-SetupIconFile=..\src\Island.App\app.ico
-; 安装包在编译期签名。
-; ⚠️ Inno 7 的 SignTool= 必须引用一个"已命名"的签名工具：名字要在 ISCC 命令行
-;    用 --signtool=<名字>=<完整命令> 定义（名字里不能有空格或等号）。
-;    这里只写名字；实际命令由 release.ps1 通过 /DMyIslandSignTool=myisland 注入。
-#ifdef MyIslandSignTool
-SignTool ={#MyIslandSignTool}
-#endif
-
-[Languages]
-Name: "chs"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+; 卸载时把设置/日志留在 %LOCALAPPDATA%\MyIsland（用户数据不随卸载销毁）
+Uninstallable=yes
 
 [Files]
-; 剔掉开发期探针与调试符号：它们不是运行所需，随包发给用户只是噪音
-; （lhmprobe*.dll 是当年的硬件探测工具，inpoutx64.dll 一律不得进包 —— 它一被加载就会装未签名内核驱动）
-Source: "{#SrcDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs; Excludes: "lhmprobe*.dll,lhmprobe*.runtimeconfig.json,Island.App.pdb,inpout*.dll,*.pfx,*.p12,cs\*,de\*,es\*,fr\*,it\*,ja\*,ko\*,pl\*,pt-BR\*,ru\*,tr\*,zh-Hant\*"
+; 发布目录整体拷入；排除危险与调试文件（见文件头安全红线）
+Source: "..\publish\win-x64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "inpout*.dll,*.pdb,LhmProbe*.exe,LhmProbe*.dll"
+Source: "..\THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\MyIsland"; Filename: "{app}\{#AppExe}"
-Name: "{group}\卸载 MyIsland"; Filename: "{uninstallexe}"
-Name: "{userdesktop}\MyIsland"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Tasks]
-Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加："
-Name: "autostart"; Description: "开机自动启动"; GroupDescription: "附加："; Flags: unchecked
-
-[Registry]
-; 选了"开机自动启动"才写 Run 键（应用内设置中心也可随时开关，二者同源）
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "MyIsland"; \
-  ValueData: """{app}\{#AppExe}"""; Flags: uninsdeletevalue; Tasks: autostart
+Name: "desktopicon"; Description: "创建桌面快捷方式(&D)"; GroupDescription: "附加任务："
 
 [Run]
-Filename: "{app}\{#AppExe}"; Description: "启动 MyIsland"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "立即启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
-; 卸载时清掉"应用自己在设置中心写的"开机自启项。
-; 安装器写的那个值由 uninsdeletevalue 负责，但设置中心写的那次不受它管 ——
-; 不清会留下指向已删路径的自启项，登录时静默失败。
+; 卸载时清掉应用在设置中心写入的开机自启项与计划任务，避免留下指向已删路径的失效自启项
 Filename: "reg.exe"; Parameters: "delete HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v MyIsland /f"; Flags: runhidden; RunOnceId: "RemoveMyIslandRun"
+Filename: "schtasks.exe"; Parameters: "/Delete /TN ""MyIsland-AutoStart"" /F"; Flags: runhidden; RunOnceId: "RemoveMyIslandTask"
+
+[UninstallDelete]
+; 只清程序安装目录本身残留的空目录结构，不递归误删用户文件且不碰 %LOCALAPPDATA%\MyIsland 用户配置
+Type: dirifempty; Name: "{app}"

@@ -1,511 +1,557 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
-using System.Windows;
+using System.Threading.Tasks;
 
 namespace Island.App.Services;
 
+/// <summary>一台设备的电量读数（本机电池或蓝牙/BLE/无线外设）。</summary>
+public sealed record DeviceInfo(string Name, string Kind, int Percent, bool Charging, string? Subtitle = null, bool PluggedIn = false);
+
 /// <summary>
-/// 无线设备电量（鼠标/键盘/耳机/手柄）+ 笔记本电池。
-/// 数据源（零驱动）：
-///  ① WMI root\CIMV2 Win32_Battery —— 笔记本内置电池（多电池聚合成一条）
-///  ② WMI root\WMI MSBatteryClass —— Windows 主动上报电量的蓝牙设备
-///  ③ BLE GATT 直读（Services/BleBatteryService.cs，2026-11-25）—— MSBatteryClass 不上报的
-///     蓝牙设备（如本机的联想 BLE HID 设备）；缓存最多 6 分钟，读取失败即失效，不伪装
-///  ④ XInput 手柄档位（Services/XInputService.cs，2026-11-25）—— 空/低/中/满，不换算百分比
-///  ⑤ HID 外设（Services/Peripheral/，2026-11-26）—— 2.4G 接收器 / 无线键鼠：
-///     SetupAPI 枚举 + 独占集合 0 权限打开 + 分层探测（L1 标准 HID 电量 / L3 厂商协议表 /
-///     L4 通用识别兜底）。读不到就是"未知"，不换算、不充数。
-/// ⚠️ 仍然没有的数据源：罗技 HID++ / ROG / 雷蛇等厂商私有协议 ——
-///     每条都要按 VID/PID+集合+报文适配并实机回包验证，
-///     没有对应硬件前不写（协议表见 Services/Peripheral/PeripheralProtocol.cs）。
-///     标准 HID 电池 usage（0x85:0x0065 等）本机没有设备暴露，但**规则已实现**：
-///     Services/Peripheral/StandardHidBattery.cs 按 Usage 表白名单读，读不到就是「未知」。
-/// 采样线程 30s 一轮（低电量提醒开着且没人看设备页时 5 分钟一轮，见 BackgroundWatch），
-/// 失败静默（列表为空 UI 显示"未检测到"），失败原因写 thermal-diag.log。
-/// Win32_Battery 查询失败后冷却 5 分钟（冷却期里沿用最近的读数），见 SampleWmiBattery。
-///
-/// ⚠️ 宿主接线（留给主代理，本文件不碰 IslandWindow.xaml.cs）：
-///  · 窗口关闭时调用 <see cref="Stop"/>：否则静态轮询会一直跑到进程退出，
-///    每 30 秒两次 WMI 搜索（实测 13ms + 19ms）持续唤醒 WMI provider host。
-///  · 需要设备视图时调用 <see cref="SetWanted"/>(true)、不需要时调用 (false)，
-///    做到"按需启停"：没消费者就别轮询。
+/// 本机与无线外设电量监控服务（零驱动、免管理员）：
+///  ① Win32 GetSystemPowerStatus + WMI Win32_Battery（修正 DeviceID 字段）—— 笔记本内置电池百分比、充电/接电状态与剩余续航；
+///  ② Win32 CfgMgr32 PnP 统一设备属性（DEVPKEY_Bluetooth_Battery {104EA319-6EE2-4701-BD47-8DDBF425BBE5},2）
+///     —— Windows 10/11 原生蓝牙 HFP 耳机与 BLE GATT 0x180F 无线鼠标/键盘/耳塞/手柄真实电量（与系统设置同源）；
+///  ③ XInput1_4 XInputGetBatteryInformation —— Xbox / XInput 2.4GHz 无线手柄电量兜底。
 /// </summary>
 public static class DeviceService
 {
     private static readonly object _gate = new();
+    internal static readonly object DiagLogGate = new();
     private static List<DeviceInfo> _devices = new();
-    private static List<DeviceInfo> _nonBleDevices = new();
-
-    static DeviceService()
-    {
-        BleBatteryService.Updated += PublishBleSnapshot;
-        Peripheral.PeripheralBatteryService.Updated += PublishPeripheralSnapshot;
-    }
-
-    private static void PublishBleSnapshot()
-    {
-        lock (_gate) _devices = MergeSources(_nonBleDevices);
-    }
-
-    /// <summary>2.4G 接收器 / 无线键鼠的外设电量（Services/Peripheral/，2026-11-26）。</summary>
-    private static void PublishPeripheralSnapshot()
-    {
-        lock (_gate) _devices = MergeSources(_nonBleDevices);
-    }
-
-    /// <summary>
-    /// 合并各数据源并去重。
-    ///
-    /// 去重条件是"**显示名相同 且 来源族不同**"：前者表示多半是同一台设备被两个数据源报上来
-    /// （例如蓝牙路径与 MSBatteryClass 路径），后者保证**两台同型号的真设备不会被吃掉一台**
-    /// —— 只按名字去重会让同名的第二台静默消失（审查发现）。
-    /// 来源族未知（空串）的一律不折叠，宁可多列一行也不隐藏设备。
-    /// </summary>
-    private static List<DeviceInfo> MergeSources(List<DeviceInfo> nonBle)
-    {
-        var all = nonBle
-            .Concat(BleBatteryService.Snapshot().Select(d => d with { Source = "ble" }))
-            .Concat(Peripheral.PeripheralBatteryService.Snapshot().Select(d => d with { Source = "hid" }));
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        var result = new List<DeviceInfo>();
-        foreach (var d in all)
-        {
-            string key = NormalizeName(d.Name);
-            bool collapsible = key.Length > 0 && d.Source.Length > 0;
-            if (collapsible && !seen.Add(key)) continue;   // 同名且同族 = 两台真设备，都留着
-            result.Add(d);
-        }
-        return result;
-    }
-
-    /// <summary>名字归一化（去空白、转小写）后用于去重比较。</summary>
-    private static string NormalizeName(string name)
-    {
-        var sb = new StringBuilder(name.Length);
-        foreach (char c in name)
-            if (char.IsLetterOrDigit(c)) sb.Append(char.ToLowerInvariant(c));
-        return sb.ToString();
-    }
     private static Timer? _timer;
     private static bool _wanted;
+    private static int _sampling;
 
-    /// <summary>
-    /// 低电量提醒的后台慢轮询（2026-11-25）：设备视图没人看时也按 5 分钟一轮采样，
-    /// 否则提醒功能永远没有新数据可看（本来是"谁要看才跑"的纯按需模型）。
-    /// 与 SetWanted(true) 并存：视图在看就用正常的 30s 节拍，这个标志只是兜底。
-    /// 由宿主按设置同步（IslandWindow 每次监控快照时写一次，值没变是空操作）。
-    /// </summary>
-    private static bool _backgroundWatch;
+    /// <summary>每次后台采样刷新完成后触发（供 UI 立即重绘设备页、监控页与收起胶囊）。</summary>
+    public static event Action? Updated;
 
-    public static bool BackgroundWatch
-    {
-        get { lock (_gate) return _backgroundWatch; }
-        set
-        {
-            lock (_gate)
-            {
-                if (_backgroundWatch == value) return;
-                _backgroundWatch = value;
-                RetuneTimer();
-            }
-        }
-    }
+    private static List<DeviceInfo>? _snapCache;
+    private static DateTime _snapCacheAt = DateTime.MinValue;
+    private static readonly TimeSpan SnapCacheTtl = TimeSpan.FromSeconds(2);
 
-    /// <summary>当前设备电量快照（UI 线程直接读）。</summary>
+    /// <summary>当前设备电量快照（UI 线程直接读，2 秒缓存，调用方只读）。</summary>
     public static List<DeviceInfo> Snapshot
     {
         get
         {
-            lock (_gate) return _devices.Where(d => d.ObservedAt is not { } at
-                || DateTime.Now - at < BleBatteryService.FreshFor).ToList();
+            lock (_gate)
+            {
+                if (_snapCache is not null && DateTime.Now - _snapCacheAt < SnapCacheTtl)
+                    return _snapCache;
+                _snapCache = _devices.ToList();
+                _snapCacheAt = DateTime.Now;
+                return _snapCache;
+            }
         }
     }
 
-    /// <summary>是否正在轮询（诊断用）。</summary>
     public static bool Running { get { lock (_gate) return _timer is not null; } }
 
-    /// <summary>
-    /// 定时器节拍：视图要看 → 30s；只剩低电量提醒兜底 → 300s；谁都不要 → 停表。
-    /// 以前 Start/SetWanted 里各写一份"建表 / 拆表"，现在收拢到这一处。
-    /// </summary>
-    private static void RetuneTimer()
+    /// <summary>启动时立即后台预采一次，确保首次打开面板即有电池与无线外设数据。</summary>
+    public static void PrimeOnce() => Task.Run(Sample);
+
+    private static void EnsureTimer()
     {
-        if (!_wanted && !_backgroundWatch)
+        lock (_gate)
         {
-            _timer?.Dispose();
-            _timer = null;
-            return;
+            if (_timer is not null) return;
+            _timer = new Timer(_ => Sample(), null, 0, 15_000);
         }
-        int period = _wanted ? 30_000 : 300_000;
-        if (_timer is null) _timer = new Timer(_ => Sample(), null, 0, period);
-        else _timer.Change(0, period);
     }
 
-    /// <summary>
-    /// 启动轮询（幂等）。
-    /// 顺带把 _wanted 置 true：否则宿主先 Start()、后 SetWanted(false) 时，
-    /// SetWanted 会因"_wanted 没变"提前返回 → 定时器停不掉。
-    /// </summary>
     public static void Start()
     {
-        lock (_gate) { _wanted = true; RetuneTimer(); }
+        lock (_gate) { _wanted = true; }
+        EnsureTimer();
     }
 
-    /// <summary>
-    /// 停止轮询（视图消费者消失）。低电量提醒开着时退到 5 分钟慢轮询而不是全停。
-    /// 停止后 <see cref="Start"/> 仍可重新拉起。
-    /// </summary>
     public static void Stop()
     {
         lock (_gate)
         {
             _wanted = false;
-            RetuneTimer();
+            _timer?.Dispose();
+            _timer = null;
         }
     }
 
-    /// <summary>
-    /// 按需启停：有消费者（设备视图可见）时 true，不需要时 false。
-    /// 宿主接线建议（IslandWindow.xaml.cs，由主代理接）：
-    ///   展开面板切到"设备"页 → SetWanted(true)；
-    ///   离开设备页 / 窗口关闭   → SetWanted(false)。
-    /// </summary>
     public static void SetWanted(bool wanted)
     {
         lock (_gate)
         {
             if (_wanted == wanted) return;
             _wanted = wanted;
-            RetuneTimer();   // 节拍随消费者变化；两个消费者都消失时在 RetuneTimer 里停表
+            if (!wanted)
+            {
+                _timer?.Dispose();
+                _timer = null;
+                return;
+            }
         }
+        EnsureTimer();
     }
 
-    /// <summary>
-    /// 手动补一拍（托盘菜单打开时调用）：定时器停着的时候也能拿到一次新鲜读数；
-    /// 定时器在跑就直接返回（等下一拍即可）。采样在后台线程，菜单先显示缓存值。
-    /// </summary>
-    private static bool _poking;
-
-    public static void Poke()
-    {
-        lock (_gate)
-        {
-            if (_timer is not null || _poking) return;
-            _poking = true;
-        }
-        System.Threading.Tasks.Task.Run(() =>
-        {
-            try { Sample(); }
-            finally { lock (_gate) _poking = false; }
-        });
-    }
-
-    /// <summary>设备类型单字图标（省空间）。"ble" = GATT 直读、类型没认出来的蓝牙设备。</summary>
     public static string Glyph(string kind) => kind switch
     {
         "mouse" => "鼠",
         "keyboard" => "键",
-        "headset" => "耳",
+        "headset" or "earbuds" => "耳",
         "gamepad" => "柄",
         "battery" => "电",
-        "ble" => "电",
-        _ => "?",
+        _ => "电",
     };
 
     private static void Sample()
     {
-        var list = new List<DeviceInfo>();
-        try { list.AddRange(SampleWmiBattery()); } catch { }
-        try { list.AddRange(SampleBluetoothBattery()); } catch { }
-        // BLE GATT 直读（2026-11-25）：补 MSBatteryClass 不上报的蓝牙设备。扫描在后台异步跑，
-        // 这里只触发并取缓存里已验证的读数（读不到的设备不进列表，不伪装）。
-        try { BleBatteryService.Warm(); } catch { }
-        // XInput 手柄档位（空/低/中/满）：没有手柄 / 没有 xinput dll 时是空列表，UI 自然不显示。
-        try { list.AddRange(XInputService.Snapshot()); } catch { }
-        // 2.4G 接收器 / 无线键鼠（Services/Peripheral/，2026-11-26）：HID 访问层 + 分层探测。
-        // 扫描在后台异步跑，这里只触发并取缓存里已验证的读数（读不到就不显示，不伪装）。
-        try { Peripheral.PeripheralBatteryService.Warm(); } catch { }
-        lock (_gate)
+        if (Interlocked.CompareExchange(ref _sampling, 1, 0) != 0) return;
+        bool changed = false;
+        try
         {
-            _nonBleDevices = list;
-            _devices = MergeSources(list);
-        }
-    }
-
-    /// <summary>
-    /// 笔记本电池（WMI Win32_Battery，无额外依赖）。
-    /// 多电池聚合成一条：取最低电量（最保守），充电态取"任一在充电"，
-    /// 免得界面上出现两条同名的"笔记本电池"。
-    ///
-    /// 2026-11-24 修复：查询里原先 SELECT 了 InstanceName —— Win32_Battery 根本没有这个属性
-    /// （那是 root\WMI MSBatteryClass 的属性），整条查询在本机恒报 "无效查询"：
-    /// 每 30 秒往 thermal-diag.log 刷一行（已刷 70 多行），笔记本电池永远不显示。
-    /// 去重键改成 Win32_Battery 真有的 DeviceID（每块电池唯一）。
-    ///
-    /// 加失败冷却（同 ThermalService.ReadWmiThermal）：查询抛异常后 5 分钟内不再碰 WMI，
-    /// 失败日志一个冷却期只留一条 —— 否则持久失败的查询会每 30 秒唤醒一次 WMI provider host 并刷屏。
-    /// 冷却期间沿用上一次成功的读数（同 WeatherService 失败保留上次数据的做法），但最多沿用一个冷却时长：
-    /// 收起态「设备」视图按设备列表排版，读数一消失列表就少一项、岛体宽度会跳一下；太旧的读数则宁可不显示。
-    /// （dash 视图已无电池组 —— 电池读数在「设备」视图里，2026-11-25 修复轮 2 裁决。）
-    /// 查询成功但 0 行（台式机没电池）不算失败：不进冷却、不记日志，行为同以前。
-    /// </summary>
-    private static IEnumerable<DeviceInfo> SampleWmiBattery()
-    {
-        DeviceInfo? battery;
-        string? error = null;
-        lock (_batteryGate)
-        {
-            if (DateTime.Now >= _batteryNextTry)                          // 冷却中：直接跳过，不再碰 WMI
+            var list = new List<DeviceInfo>();
+            try
             {
-                try
-                {
-                    _lastBattery = ReadWmiBattery();
-                    _lastBatteryAt = DateTime.Now;
-                    _batteryNextTry = DateTime.MinValue;                  // 成功：清掉冷却
-                }
-                catch (Exception ex)
-                {
-                    _batteryNextTry = DateTime.Now + BatteryCooldown;      // 失败：进入冷却
-                    error = $"{ex.GetType().Name}: {ex.Message}";
-                }
+                if (SampleBuiltinBattery() is { } bat)
+                    list.Add(bat);
             }
-            battery = _lastBattery is not null && DateTime.Now - _lastBatteryAt < BatteryCooldown
-                ? _lastBattery : null;
+            catch (Exception ex) { Log($"BuiltinBattery 异常：{ex.GetType().Name}: {ex.Message}"); }
+
+            try { list.AddRange(SamplePnpBluetoothBatteries()); }
+            catch (Exception ex) { Log($"PnP 蓝牙电量读取异常：{ex.GetType().Name}: {ex.Message}"); }
+
+            try
+            {
+                bool hasGamepad = list.Any(d => d.Kind == "gamepad");
+                if (!hasGamepad)
+                    list.AddRange(SampleXInputGamepads());
+            }
+            catch { }
+
+            lock (_gate)
+            {
+                changed = !SequenceEqual(_devices, list);
+                _devices = list;
+                _snapCache = null;
+            }
         }
-        if (error is not null)
-            Log($"Win32_Battery 查询失败（{(int)BatteryCooldown.TotalMinutes} 分钟内不再重试）：{error}");
-        return battery is null ? Enumerable.Empty<DeviceInfo>() : new[] { battery };
+        finally
+        {
+            Volatile.Write(ref _sampling, 0);
+        }
+        if (changed)
+        {
+            try { Updated?.Invoke(); } catch { }
+        }
     }
 
-    /// <summary>
-    /// Win32_Battery 查询失败的冷却时长。
-    /// 本机旧查询恒报 "无效查询"，不冷却就是每 30 秒失败一次，反复唤醒 WMI provider host。
-    /// </summary>
-    private static readonly TimeSpan BatteryCooldown = TimeSpan.FromMinutes(5);
-
-    /// <summary>
-    /// 电池查询冷却状态的锁：轮询在线程池线程上，冷却时间戳要线程安全地读写。
-    /// 单独一把锁、不复用 _gate：WMI 查询要十几毫秒，而 _gate 还护着 UI 线程每次渲染都要读的 Snapshot。
-    /// </summary>
-    private static readonly object _batteryGate = new();
-
-    /// <summary>下次允许再查 Win32_Battery 的时间；DateTime.MinValue = 不在冷却期。</summary>
-    private static DateTime _batteryNextTry = DateTime.MinValue;
-
-    /// <summary>上一次成功查询得到的电池读数（null = 没电池/固件报未知）及其时刻；冷却期间沿用。</summary>
-    private static DeviceInfo? _lastBattery;
-    private static DateTime _lastBatteryAt = DateTime.MinValue;
-
-    /// <summary>
-    /// 执行 Win32_Battery 查询并聚合成一条。没有可用电池（台式机 / 固件报未知）返回 null；查询失败抛异常。
-    /// </summary>
-    private static DeviceInfo? ReadWmiBattery()
+    private static bool SequenceEqual(List<DeviceInfo> a, List<DeviceInfo> b)
     {
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (a.Count != b.Count) return false;
+        for (int i = 0; i < a.Count; i++)
+            if (a[i] != b[i]) return false;
+        return true;
+    }
+
+    // ==================== 1. 本机内置电池（Win32 GetSystemPowerStatus 主通道 + WMI 兜底） ====================
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SYSTEM_POWER_STATUS
+    {
+        public byte ACLineStatus;        // 0=Offline, 1=Online, 255=Unknown
+        public byte BatteryFlag;         // 8=Charging, 128=NoSystemBattery, 255=Unknown
+        public byte BatteryLifePercent;  // 0..100, 255=Unknown
+        public byte SystemStatusFlag;
+        public int BatteryLifeTime;      // 剩余放电秒数，-1=未知
+        public int BatteryFullLifeTime;
+    }
+
+    [DllImport("kernel32.dll")]
+    private static extern bool GetSystemPowerStatus(out SYSTEM_POWER_STATUS lpSystemPowerStatus);
+
+    private static DeviceInfo? SampleBuiltinBattery()
+    {
+        if (GetSystemPowerStatus(out var sps))
+        {
+            // BatteryFlag 含 128 代表台式机无系统电池
+            if (sps.BatteryFlag != 255 && (sps.BatteryFlag & 128) != 0)
+                return null;
+
+            if (sps.BatteryLifePercent <= 100)
+            {
+                int pct = sps.BatteryLifePercent;
+                bool online = sps.ACLineStatus == 1;
+                bool charging = (sps.BatteryFlag & 8) != 0 || (online && pct < 99);
+                string? sub = charging ? "充电中"
+                    : online ? (pct >= 99 ? "已充满 · 电源供电" : "已接通电源")
+                    : sps.BatteryLifeTime > 60
+                        ? $"剩余 {sps.BatteryLifeTime / 3600}h {(sps.BatteryLifeTime % 3600) / 60:D2}m"
+                        : null;
+                return new DeviceInfo("本机电池", "battery", pct, charging, sub, online);
+            }
+        }
+
+        // WMI 兜底（注意 Win32_Battery 主键列名为 DeviceID 而非 InstanceName）
         int? lowest = null;
         bool anyCharging = false;
-        using var searcher = new System.Management.ManagementObjectSearcher(
-            "root\\CIMV2", "SELECT DeviceID, EstimatedChargeRemaining, BatteryStatus FROM Win32_Battery");
-        foreach (var o in searcher.Get())
-        {
-            // 按设备标识去重：同一块电池在 WMI 里可能有多条记录（DeviceID 每块电池唯一）
-            string id = GetProp(o, "DeviceID")?.ToString() ?? "";
-            if (id.Length > 0 && !seen.Add(id)) continue;
-
-            int? pct = ReadPercent(o, "EstimatedChargeRemaining");
-            if (pct is null) continue;      // 255 = 固件报"未知"，不显示
-            lowest = lowest is null ? pct : Math.Min(lowest.Value, pct.Value);
-
-            if (IsChargingStatus(ToInt(GetProp(o, "BatteryStatus")))) anyCharging = true;
-        }
-        return lowest is null
-            ? null
-            : new DeviceInfo("笔记本电池", "battery", lowest.Value, anyCharging) { Source = "wmi" };
-    }
-
-    /// <summary>
-    /// Win32_Battery.BatteryStatus 判定"是否正在充电"：
-    /// 6=Charging、7=Charging and High、8=Charging and Low、9=Charging and Critical。
-    /// 2 = "系统接着交流电所以电池不在放电"——只是接了电，不一定在充电。
-    /// 以前按 status == 2 判充电，结果插着电源却没在充电反而显示"充电中"。
-    /// </summary>
-    private static bool IsChargingStatus(int status) => status is 6 or 7 or 8 or 9;
-
-    /// <summary>
-    /// 蓝牙/BLE 设备电量。数据源只有一条：WMI root\WMI 的 MSBatteryClass。
-    /// ⚠️ 事实（别被旧注释误导）：本工程没有 Windows.Devices.Power / BLE GATT / HID 电量特性这些数据源；
-    /// MSBatteryClass 的实例在 Win11 上多半是内部电池（ACPI\PNP0C0A\0_0），
-    /// 而且不是每个实例都有 EstimatedChargePercent 属性 —— 固定 SELECT 那个属性会直接报 "Invalid query"。
-    /// 所以这里 SELECT * 再按属性存在性过滤；查询失败写诊断日志，不再静默吞异常。
-    /// </summary>
-    private static IEnumerable<DeviceInfo> SampleBluetoothBattery()
-    {
-        var list = new List<DeviceInfo>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        bool anyOnline = false;
         try
         {
             using var searcher = new System.Management.ManagementObjectSearcher(
-                "root\\WMI", "SELECT * FROM MSBatteryClass");
-            foreach (var o in searcher.Get())
+                "root\\CIMV2", "SELECT DeviceID, EstimatedChargeRemaining, BatteryStatus FROM Win32_Battery");
+            using var results = searcher.Get();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (System.Management.ManagementBaseObject o in results)
             {
-                string instance = GetProp(o, "InstanceName")?.ToString() ?? "";
-                if (instance.Length == 0) continue;
-                if (!seen.Add(instance)) continue;                      // 按设备标识去重
-                if (IsInternalBattery(instance)) continue;             // 内部电池：与 Win32_Battery 重复
-                if (!HasProp(o, "EstimatedChargePercent")) continue;    // 该实例没有电量属性
-                int? pct = ReadPercent(o, "EstimatedChargePercent");
-                if (pct is null) continue;
-                string kind = Classify(instance);
-                list.Add(new DeviceInfo(PrettyName(instance, kind), kind, pct.Value, false) { Source = "msbattery" });
+                using (o)
+                {
+                    string id = GetProp(o, "DeviceID")?.ToString() ?? "";
+                    if (id.Length > 0 && !seen.Add(id)) continue;
+                    int? p = ReadPercent(o, "EstimatedChargeRemaining");
+                    if (p is null) continue;
+                    lowest = lowest is null ? p : Math.Min(lowest.Value, p.Value);
+                    int st = ToInt(GetProp(o, "BatteryStatus"));
+                    if (st is 6 or 7 or 8 or 9) anyCharging = true;
+                    if (st == 2) anyOnline = true;
+                }
             }
         }
         catch (Exception ex)
         {
-            // 以前 catch { } 一句带过：这个查询在 Win11 上必然失败，失败原因永远查不到
-            Log($"MSBatteryClass 查询失败：{ex.GetType().Name}: {ex.Message}");
+            Log($"Win32_Battery 兜底查询失败：{ex.GetType().Name}: {ex.Message}");
         }
-        foreach (var d in list) yield return d;
+        if (lowest is null) return null;
+        string? wmiSub = anyCharging ? "充电中" : anyOnline ? "已接通电源" : null;
+        return new DeviceInfo("本机电池", "battery", lowest.Value, anyCharging, wmiSub, anyOnline);
     }
 
-    /// <summary>读 WMI 属性（属性不存在/读取失败时返回 null，不抛）。</summary>
+    // ==================== 2. PnP 统一设备属性：蓝牙 HFP + BLE GATT 0x180F 无线外设 ====================
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct DEVPROPKEY
+    {
+        public Guid fmtid;
+        public uint pid;
+        public DEVPROPKEY(Guid fmtid, uint pid) { this.fmtid = fmtid; this.pid = pid; }
+    }
+
+    private const uint CR_SUCCESS = 0;
+    private const uint CM_GETIDLIST_FILTER_PRESENT = 0x00000100;
+    private const uint DEVPROP_TYPE_BYTE = 0x00000003;
+    private const uint DEVPROP_TYPE_GUID = 0x0000000D;
+    private const uint DEVPROP_TYPE_BOOLEAN = 0x00000011;
+    private const uint DEVPROP_TYPE_STRING = 0x00000012;
+
+    // Windows 10/11 系统「蓝牙和其他设备」页面读取无线电量的核心属性键
+    private static readonly DEVPROPKEY PKEY_Bluetooth_Battery =
+        new(new Guid(0x104EA319, 0x6EE2, 0x4701, 0xBD, 0x47, 0x8D, 0xDB, 0xF4, 0x25, 0xBB, 0xE5), 2);
+    private static readonly DEVPROPKEY PKEY_Device_FriendlyName =
+        new(new Guid(0xA45C254E, 0xDF1C, 0x4EFD, 0x80, 0x20, 0x67, 0xD1, 0x46, 0xA8, 0x50, 0xE0), 14);
+    private static readonly DEVPROPKEY PKEY_Device_DeviceDesc =
+        new(new Guid(0xA45C254E, 0xDF1C, 0x4EFD, 0x80, 0x20, 0x67, 0xD1, 0x46, 0xA8, 0x50, 0xE0), 2);
+    private static readonly DEVPROPKEY PKEY_Device_Class =
+        new(new Guid(0xA45C254E, 0xDF1C, 0x4EFD, 0x80, 0x20, 0x67, 0xD1, 0x46, 0xA8, 0x50, 0xE0), 9);
+    private static readonly DEVPROPKEY PKEY_Device_ContainerId =
+        new(new Guid(0x8C7ED206, 0x3F8A, 0x4827, 0xB3, 0xAB, 0xAE, 0x9E, 0x1F, 0xAE, 0xFC, 0x6C), 2);
+    private static readonly DEVPROPKEY PKEY_Device_IsConnected =
+        new(new Guid(0x83DA6326, 0x97A6, 0x4088, 0x94, 0x53, 0xA1, 0x92, 0x3F, 0x57, 0x3B, 0x29), 15);
+
+    [DllImport("CfgMgr32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint CM_Get_Device_ID_List_SizeW(out uint pulLen, string? pszFilter, uint ulFlags);
+
+    [DllImport("CfgMgr32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint CM_Get_Device_ID_ListW(string? pszFilter, char[] buffer, uint bufferLen, uint ulFlags);
+
+    [DllImport("CfgMgr32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint CM_Locate_DevNodeW(out uint pdnDevInst, string pDeviceID, uint ulFlags);
+
+    [DllImport("CfgMgr32.dll")]
+    private static extern uint CM_Get_Parent(out uint pdnDevInst, uint dnDevInst, uint ulFlags);
+
+    [DllImport("CfgMgr32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint CM_Get_DevNode_PropertyW(
+        uint dnDevInst, ref DEVPROPKEY propertyKey, out uint propertyType,
+        byte[]? propertyBuffer, ref uint propertyBufferSize, uint ulFlags);
+
+    private static IEnumerable<DeviceInfo> SamplePnpBluetoothBatteries()
+    {
+        var results = new List<DeviceInfo>();
+        if (CM_Get_Device_ID_List_SizeW(out uint len, null, CM_GETIDLIST_FILTER_PRESENT) != CR_SUCCESS || len <= 1)
+            return results;
+
+        var buf = new char[len];
+        if (CM_Get_Device_ID_ListW(null, buf, len, CM_GETIDLIST_FILTER_PRESENT) != CR_SUCCESS)
+            return results;
+
+        var byContainer = new Dictionary<string, DeviceInfo>(StringComparer.OrdinalIgnoreCase);
+
+        int start = 0;
+        for (int i = 0; i < buf.Length; i++)
+        {
+            if (buf[i] != '\0') continue;
+            int segLen = i - start;
+            if (segLen == 0) break;
+            string instanceId = new string(buf, start, segLen);
+            start = i + 1;
+
+            // 仅筛查蓝牙、BLE GATT 与 HID 外设节点，跳过数千个主板/PCI 系统节点
+            if (!IsWirelessCandidate(instanceId)) continue;
+            if (CM_Locate_DevNodeW(out uint devInst, instanceId, 0) != CR_SUCCESS) continue;
+
+            byte? pct = ReadDevNodeByte(devInst, PKEY_Bluetooth_Battery);
+            if (pct is null || pct.Value > 100) continue;
+
+            // 沿父节点向上回溯最多 4 层，聚合真实设备名称、连接状态、设备分类与物理容器 ID
+            string? friendly = null;
+            string? desc = null;
+            string? devClass = null;
+            Guid? containerId = null;
+            bool explicitlyDisconnected = false;
+
+            uint cur = devInst;
+            for (int depth = 0; depth < 4; depth++)
+            {
+                if (ReadDevNodeBool(cur, PKEY_Device_IsConnected) is false)
+                {
+                    explicitlyDisconnected = true;
+                    break;
+                }
+                containerId ??= ReadDevNodeGuid(cur, PKEY_Device_ContainerId);
+                string? fn = ReadDevNodeString(cur, PKEY_Device_FriendlyName);
+                if (!string.IsNullOrWhiteSpace(fn) && !IsGenericServiceName(fn))
+                    friendly ??= fn.Trim();
+                string? dc = ReadDevNodeString(cur, PKEY_Device_DeviceDesc);
+                if (!string.IsNullOrWhiteSpace(dc) && !IsGenericServiceName(dc))
+                    desc ??= dc.Trim();
+                string? cl = ReadDevNodeString(cur, PKEY_Device_Class);
+                if (!string.IsNullOrWhiteSpace(cl) && !cl.Equals("Bluetooth", StringComparison.OrdinalIgnoreCase)
+                    && !cl.Equals("System", StringComparison.OrdinalIgnoreCase))
+                    devClass ??= cl.Trim();
+
+                if (CM_Get_Parent(out uint parent, cur, 0) != CR_SUCCESS || parent == 0 || parent == cur)
+                    break;
+                cur = parent;
+            }
+
+            if (explicitlyDisconnected) continue;
+
+            string rawName = friendly ?? desc ?? "";
+            string kind = ClassifyDevice(rawName, devClass ?? "", instanceId);
+            string displayName = !string.IsNullOrWhiteSpace(rawName) ? rawName : PrettyName(instanceId, kind);
+            string dedupKey = containerId is { } cid && cid != Guid.Empty && !IsSystemContainer(cid)
+                ? cid.ToString("N")
+                : ExtractId(instanceId) is { Length: > 0 } mac ? mac : displayName;
+
+            var info = new DeviceInfo(displayName, kind, pct.Value, false, "蓝牙连接");
+            if (!byContainer.TryGetValue(dedupKey, out var existing)
+                || (existing.Kind == "battery" && info.Kind != "battery")
+                || (friendly is not null && existing.Name.StartsWith("蓝牙", StringComparison.Ordinal)))
+            {
+                byContainer[dedupKey] = info;
+            }
+        }
+
+        results.AddRange(byContainer.Values);
+        return results;
+    }
+
+    private static bool IsWirelessCandidate(string id)
+    {
+        return id.StartsWith("BTH", StringComparison.OrdinalIgnoreCase)
+            || id.StartsWith("HID\\", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsGenericServiceName(string name)
+    {
+        return name.Contains("Generic Attribute", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("通用属性", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("Generic Access", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("Battery Service", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("电池服务", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("Hands-Free", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("符合 HID 标准的供应商定义设备", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("蓝牙 LE 设备", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("Bluetooth LE Device", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsSystemContainer(Guid g)
+    {
+        // {00000000-0000-0000-FFFF-FFFFFFFFFFFF} 表示本机内部容器
+        byte[] b = g.ToByteArray();
+        for (int i = 0; i < 8; i++) if (b[i] != 0) return false;
+        return true;
+    }
+
+    private static byte? ReadDevNodeByte(uint devInst, DEVPROPKEY key)
+    {
+        uint size = 4;
+        byte[] buf = new byte[4];
+        if (CM_Get_DevNode_PropertyW(devInst, ref key, out uint type, buf, ref size, 0) == CR_SUCCESS
+            && type == DEVPROP_TYPE_BYTE && size >= 1)
+            return buf[0];
+        return null;
+    }
+
+    private static bool? ReadDevNodeBool(uint devInst, DEVPROPKEY key)
+    {
+        uint size = 4;
+        byte[] buf = new byte[4];
+        if (CM_Get_DevNode_PropertyW(devInst, ref key, out uint type, buf, ref size, 0) == CR_SUCCESS
+            && type == DEVPROP_TYPE_BOOLEAN && size >= 1)
+            return buf[0] != 0;
+        return null;
+    }
+
+    private static Guid? ReadDevNodeGuid(uint devInst, DEVPROPKEY key)
+    {
+        uint size = 16;
+        byte[] buf = new byte[16];
+        if (CM_Get_DevNode_PropertyW(devInst, ref key, out uint type, buf, ref size, 0) == CR_SUCCESS
+            && type == DEVPROP_TYPE_GUID && size == 16)
+            return new Guid(buf);
+        return null;
+    }
+
+    private static string? ReadDevNodeString(uint devInst, DEVPROPKEY key)
+    {
+        uint size = 0;
+        CM_Get_DevNode_PropertyW(devInst, ref key, out uint type, null, ref size, 0);
+        if (size < 2 || size > 1024) return null;
+        byte[] buf = new byte[size];
+        if (CM_Get_DevNode_PropertyW(devInst, ref key, out type, buf, ref size, 0) != CR_SUCCESS
+            || type != DEVPROP_TYPE_STRING)
+            return null;
+        return Encoding.Unicode.GetString(buf, 0, (int)size).TrimEnd('\0');
+    }
+
+    // ==================== 3. XInput 2.4GHz / 无线手柄兜底 ====================
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct XINPUT_BATTERY_INFORMATION
+    {
+        public byte BatteryType;
+        public byte BatteryLevel;
+    }
+
+    [DllImport("xinput1_4.dll")]
+    private static extern uint XInputGetBatteryInformation(uint dwUserIndex, byte devType, out XINPUT_BATTERY_INFORMATION pBatteryInformation);
+
+    private static IEnumerable<DeviceInfo> SampleXInputGamepads()
+    {
+        var list = new List<DeviceInfo>();
+        try
+        {
+            for (uint i = 0; i < 4; i++)
+            {
+                if (XInputGetBatteryInformation(i, 0 /* GAMEPAD */, out var info) != 0) continue;
+                // 2=Alkaline, 3=NiMH（排除 0=Disconnected 与 1=Wired）
+                if (info.BatteryType is not (2 or 3)) continue;
+                int pct = info.BatteryLevel switch
+                {
+                    0 => 10,
+                    1 => 30,
+                    2 => 65,
+                    _ => 100,
+                };
+                list.Add(new DeviceInfo(i == 0 ? "无线控制器" : $"无线控制器 #{i + 1}", "gamepad", pct, false, "无线接收器"));
+            }
+        }
+        catch { /* xinput1_4 缺失或不可用时静默跳过 */ }
+        return list;
+    }
+
+    // ==================== 辅助分类与格式化 ====================
+
+    private static string ClassifyDevice(string name, string devClass, string instance)
+    {
+        string all = $"{name} {devClass} {instance}".ToLowerInvariant();
+        if (all.Contains("airpods") || all.Contains("buds") || all.Contains("earbud") || all.Contains("wf-1000"))
+            return "earbuds";
+        if (all.Contains("headset") || all.Contains("headphone") || all.Contains("earphone")
+            || all.Contains("wh-1000") || all.Contains("arctis") || all.Contains("audioendpoint")
+            || all.Contains("0000111e") || all.Contains("0000110b") || all.Contains("耳机"))
+            return "headset";
+        if (all.Contains("mouse") || all.Contains("trackball") || all.Contains("mx master")
+            || all.Contains("mx anywhere") || all.Contains("deathadder") || all.Contains("viper")
+            || all.Contains("g pro") || all.Contains("鼠标"))
+            return "mouse";
+        if (all.Contains("keyboard") || all.Contains("keybrd") || all.Contains("keychron")
+            || all.Contains("nuphy") || all.Contains("mx keys") || all.Contains("键盘"))
+            return "keyboard";
+        if (all.Contains("gamepad") || all.Contains("xbox") || all.Contains("dualsense")
+            || all.Contains("dualshock") || all.Contains("controller") || all.Contains("手柄") || all.Contains("控制器"))
+            return "gamepad";
+        return "battery";
+    }
+
     private static object? GetProp(System.Management.ManagementBaseObject o, string name)
     {
         try { return o[name]; } catch { return null; }
     }
 
-    /// <summary>该实例是否有这个属性（MSBatteryClass 各机型属性表不同，不能假定存在）。</summary>
-    private static bool HasProp(System.Management.ManagementBaseObject o, string name)
-    {
-        try
-        {
-            foreach (var p in o.Properties)
-                if (string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase)) return true;
-        }
-        catch { }
-        return false;
-    }
-
-    /// <summary>
-    /// 读电量百分比：EstimatedChargeRemaining / EstimatedChargePercent 都是 uint16，
-    /// 固件常用 255 表示"未知"，超出 0..100 一律当未知（null = 不显示）。
-    /// </summary>
     private static int? ReadPercent(System.Management.ManagementBaseObject o, string name)
     {
-        return DeviceInfo.ParsePercent(GetProp(o, name));
+        object? raw = GetProp(o, name);
+        if (raw is null) return null;
+        int v = ToInt(raw);
+        return v is >= 0 and <= 100 ? v : null;
     }
 
-    /// <summary>安全转 int（WMI 里可能是 uint / ushort / string）。</summary>
     private static int ToInt(object? raw)
     {
         try { return raw is null ? 0 : Convert.ToInt32(raw); } catch { return 0; }
     }
 
-    /// <summary>
-    /// 内部电池识别：实例名含 Microsoft / ACPI / PNP0C0A 的都是笔记本内置电池，
-    /// 显示在设备页会和 Win32_Battery 那条重复（旧规则只认 "Microsoft"，
-    /// 本机实例名是 ACPI\PNP0C0A\0_0，漏判了）。
-    /// </summary>
-    private static bool IsInternalBattery(string instance)
-    {
-        string l = instance.ToLowerInvariant();
-        return l.Contains("microsoft") || l.Contains("acpi") || l.Contains("pnp0c0a");
-    }
-
-    /// <summary>
-    /// 按实例名关键词判设备类型。
-    /// 旧规则"BTHENUM 一律 headset"是错的：BLE 鼠标/键盘的实例名里同样有 BTHENUM，
-    /// 结果鼠标耳机全都显示成"耳"。现在只认真正的类型关键词。
-    /// </summary>
-    private static string Classify(string instance)
-    {
-        string l = instance.ToLowerInvariant();
-        if (l.Contains("headset") || l.Contains("headphone")
-            || l.Contains("earphone") || l.Contains("earbud")) return "headset";
-        if (l.Contains("mouse") || l.Contains("trackball")) return "mouse";
-        if (l.Contains("keyboard") || l.Contains("keybrd")) return "keyboard";
-        if (l.Contains("gamepad") || l.Contains("xinput") || l.Contains("xbox")
-            || l.Contains("controller")) return "gamepad";
-        return "ble";   // 未知外设不能冒充本机电池
-    }
-
-    /// <summary>
-    /// 显示名：不再直接截第一个 "_" 之前的原始实例 ID
-    /// （BTHENUM\DEV_8C:xx:xx_VID… 截出来是一串没意义的码），
-    /// 改成"类型名 + 可读标识"：从实例名里抠出 DEV_ / VID_ 段。
-    /// </summary>
     private static string PrettyName(string instance, string kind)
     {
         string label = kind switch
         {
-            "mouse" => "蓝牙鼠标",
-            "keyboard" => "蓝牙键盘",
-            "headset" => "蓝牙耳机",
-            "gamepad" => "蓝牙手柄",
+            "mouse" => "无线鼠标",
+            "keyboard" => "无线键盘",
+            "earbuds" => "无线耳塞",
+            "headset" => "无线耳机",
+            "gamepad" => "无线控制器",
             _ => "蓝牙设备",
         };
         string id = ExtractId(instance);
-        return id.Length == 0 ? label : $"{label} {id}";
+        return id.Length == 0 ? label : $"{label} ({id})";
     }
 
-    /// <summary>从实例名里取出可读标识（BTHENUM\DEV_8C:B9:EB.11_VID… → 8C-B9-EB-11）。</summary>
     private static string ExtractId(string instance)
     {
-        string s = instance;
-        int start = s.IndexOf("DEV_", StringComparison.OrdinalIgnoreCase);
-        if (start < 0) start = s.IndexOf("VID_", StringComparison.OrdinalIgnoreCase);
+        int start = instance.IndexOf("DEV_", StringComparison.OrdinalIgnoreCase);
+        if (start < 0) start = instance.IndexOf("Dev_", StringComparison.OrdinalIgnoreCase);
         if (start < 0) return "";
-        start += 4;   // 跳过 DEV_ / VID_
-        int end = s.IndexOfAny(new[] { '_', '&', '\\' }, start);
-        string id = end > start ? s.Substring(start, end - start) : s.Substring(start);
-        var sb = new System.Text.StringBuilder();
+        start += 4;
+        int end = instance.IndexOfAny(new[] { '_', '&', '\\', '#' }, start);
+        string id = end > start ? instance.Substring(start, end - start) : instance.Substring(start);
+        var sb = new StringBuilder();
         foreach (char c in id)
-            sb.Append(char.IsLetterOrDigit(c) ? c : '-');
-        string cleaned = sb.ToString().Trim('-');
-        while (cleaned.Contains("--")) cleaned = cleaned.Replace("--", "-");
-        return cleaned.Length > 24 ? cleaned.Substring(0, 24) : cleaned;
+            if (char.IsLetterOrDigit(c)) sb.Append(char.ToUpperInvariant(c));
+        string cleaned = sb.ToString();
+        return cleaned.Length > 12 ? cleaned.Substring(cleaned.Length - 4) : cleaned;
     }
 
-    /// <summary>诊断日志上限（约 1MB）：超过就删掉旧文件重开一份（同 ThermalService 的做法）。</summary>
     private const long DiagLogLimit = 1_048_576;
 
-    /// <summary>给兄弟服务（BLE GATT）用的日志入口：同一个文件，设备电量的链路问题查在一处。</summary>
-    internal static void LogLine(string text) => Log(text);
-
-    // 节流日志的状态（BLE 扫描每 25s 一轮，持续失败时同一句话会刷屏）
-    private static readonly object _throttleGate = new();
-    private static readonly Dictionary<string, DateTime> _throttledAt = new();
-
-    /// <summary>同一句话在 cooldown 内只写一次日志；超量的旧条目整表清掉（句子的总数很小）。</summary>
-    internal static void LogLineThrottled(string text, TimeSpan cooldown)
-    {
-        lock (_throttleGate)
-        {
-            if (_throttledAt.TryGetValue(text, out var at) && DateTime.Now - at < cooldown) return;
-            if (_throttledAt.Count > 64) _throttledAt.Clear();
-            _throttledAt[text] = DateTime.Now;
-        }
-        Log(text);
-    }
-
-    /// <summary>
-    /// 诊断日志（%LOCALAPPDATA%\MyIsland\thermal-diag.log）：WMI 查询失败时留痕，
-    /// 否则"这个功能永远是空的"没法自诊断。写失败只吞掉，不影响运行。
-    /// </summary>
     private static void Log(string text)
     {
         try
         {
-            string dir = System.IO.Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MyIsland");
-            System.IO.Directory.CreateDirectory(dir);
-            string path = System.IO.Path.Combine(dir, "thermal-diag.log");
-            var info = new System.IO.FileInfo(path);
-            if (info.Exists && info.Length > DiagLogLimit) System.IO.File.Delete(path);
-            System.IO.File.AppendAllText(path, $"[{DateTime.Now:HH:mm:ss}] {text}\n");
+            lock (DiagLogGate)
+            {
+                string dir = System.IO.Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MyIsland");
+                System.IO.Directory.CreateDirectory(dir);
+                string path = System.IO.Path.Combine(dir, "thermal-diag.log");
+                var info = new System.IO.FileInfo(path);
+                if (info.Exists && info.Length > DiagLogLimit) System.IO.File.Delete(path);
+                System.IO.File.AppendAllText(path, $"[{DateTime.Now:HH:mm:ss}] {text}\n");
+            }
         }
-        catch { /* 日志写失败不影响运行 */ }
+        catch { }
     }
 }

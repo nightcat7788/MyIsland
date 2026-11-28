@@ -23,12 +23,18 @@ foreach ($v in 'https_proxy','http_proxy','all_proxy','no_proxy') {
     if (Test-Path "Env:$v") { Remove-Item "Env:$v" -ErrorAction SilentlyContinue }
 }
 
-# stop old island (non-elevated or elevated host alike)
+# stop old island (non-elevated or elevated host alike; verify process identity to avoid PID reuse hazards)
 $runLog = "$env:LOCALAPPDATA\MyIsland\run.log"
+$verifiedOldPid = $null
 if (Test-Path $runLog) {
     $last = Select-String -Path $runLog -Pattern 'pid=(\d+)' | Select-Object -Last 1
     if ($last) {
-        try { Stop-Process -Id ([int]$last.Matches[0].Groups[1].Value) -Force -ErrorAction Stop } catch {}
+        $candidatePid = [int]$last.Matches[0].Groups[1].Value
+        $proc = Get-Process -Id $candidatePid -ErrorAction SilentlyContinue
+        if ($proc -and $proc.ProcessName -in @('Island.App', 'pwsh')) {
+            $verifiedOldPid = $candidatePid
+            try { Stop-Process -Id $candidatePid -Force -ErrorAction Stop } catch {}
+        }
     }
 }
 Start-Sleep -Milliseconds 800
@@ -60,8 +66,8 @@ if (-not $NoBuild) {
 # ---- 启动宿主：优先 pwsh 内存加载，拿不到 pwsh 就直跑 exe ----
 # 旧实例 PID 传给新实例：提权实例会等旧进程真正退出后再接管单实例互斥体，
 # 两个实例就不会互相把对方当成"第二实例"而一起消失（2026-11-23 审查 P1-17）。
-if ($last -and $last.Matches[0].Groups[1].Value) { $env:ISLAND_ELEVATED_RESTART = $last.Matches[0].Groups[1].Value }
-# 原实现写死了带随机后缀的 pwsh 应用别名路径（Microsoft.PowerShell_8wekyb3d8bbwepwsh.exe），
+if ($verifiedOldPid) { $env:ISLAND_ELEVATED_RESTART = "$verifiedOldPid" }
+# 原实现写死了带随机后缀的 pwsh 应用别名路径（Microsoft.PowerShell_8wekyb3d8bbwe\pwsh.exe），
 # 那是本机安装实例的私有路径，换机器必失效；而且失败后仍打印 "started ELEVATED"。
 $pubDir = "$root\publish\win-x64"
 $pwsh = (Get-Command pwsh -ErrorAction SilentlyContinue).Source

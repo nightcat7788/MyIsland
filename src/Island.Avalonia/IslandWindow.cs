@@ -6,7 +6,6 @@ using Avalonia.Platform;
 using Avalonia.Threading;
 using Island.App.Animation;
 using Island.App.Themes;
-using Island.Core.Capabilities;
 using Island.Core.Monitoring;
 
 namespace Island.Avalonia;
@@ -32,18 +31,14 @@ public sealed class IslandWindow : Window
     private const double WinWMax = 1200;
     /// <summary>窗口高度上限（屏幕够高才不会挡住太多内容）。</summary>
     private const double WinHMax = 1400;
-    // 展开面板宽度取自 MonitorLayoutSpec（唯一真相源）——探针与门禁链同一份。
-    private const double ExpandW = MonitorLayoutSpec.ExpandedPanelWidth;
+    private const double ExpandW = 560;
     /// <summary>展开面板高度：按当前页的内容算，不写死（原来固定 560 导致卡片被截断或大片留白）。</summary>
     private double ExpandHeight => _canvas.Page switch
     {
-        // 页签 + 上排(3行×44+间距) + 间距 + 下排 + 状态行 + 边距（数值取自 MonitorLayoutSpec）
-        "monitor" => MonitorLayoutSpec.MonitorPanelHeight,
-        // 剪贴板：标签行 + 按实际条数算的行高 + 边距。列表是**两列**，行数 = ceil(条数/2)。
-        // 原来写死 42 + 20*30 + 30（恒按 20 条满额）→ 只有几条时下方留一大片空白
-        // （1.1.0 真机截图：5 条记录撑到 695 高）。与 screens / devices 一样按内容量高。
-        // 但给一个最小高度：空列表 / 1~2 条时面板不至于缩成一条缝，提示文字才有地方放。
-        "clips" => Math.Max(42 + 3 * 30 + 30, 42 + Math.Ceiling(_canvas.Clips.Count / 2.0) * 30 + 30),
+        "monitor" => 42 + 181 + 12 + 156 + 30 + 34,   // 页签 + 上排(3行×44+间距) + 间距 + 下排 + 状态行 + 边距
+        "media" => 42 + 210 + 24,                     // 页签 + 媒体封面与频谱控制区 + 边距
+        "clips" => Math.Max(42 + 3 * 30 + 30, 42 + Math.Ceiling(_canvas.Clips.Count / 2.0) * 30 + 30)
+                   + (_canvas.StagedFiles.Count > 0 ? Math.Min(3, _canvas.StagedFiles.Count) * 24 + 28 : 0),
         "screens" => 42 + _canvas.MeasureScreensHeight() + 24,   // 页签 + 实际内容高度 + 边距
         "devices" => 42 + _canvas.MeasureDevicesHeight() + 24,   // 页签 + 设备卡 + 边距
         _ => 560,
@@ -114,8 +109,12 @@ public sealed class IslandWindow : Window
     private readonly DispatcherTimer _screensTimer;
     private readonly DispatcherTimer _builtinCountdownTimer;
     private AutoFollowEngine? _autoFollow;
+    private readonly Island.App.Services.Settings _settings = Island.App.Services.Settings.Load();
     private readonly Island.App.Services.WeatherService _weather = new();
     private readonly ClipboardHistory _clips = new();
+    private readonly MacMediaService _media = new();
+    private readonly MacFileTray _fileTray = new();
+    private readonly double[] _audioBars = new double[16];
     private const int PetPhaseSec = 10, ComboPhaseSec = 30;
 
     public IslandWindow()
@@ -223,12 +222,13 @@ public sealed class IslandWindow : Window
         };
         _canvas.PointerPressed += (_, e) =>
         {
+            var props = e.GetCurrentPoint(_canvas).Properties;
             var pos0 = e.GetPosition(_canvas);
             // 右键菜单开着时：先判菜单项，点到哪项执行哪项；点外面就关掉。
             if (_canvas.ClipMenuVisible)
             {
                 var hit = _canvas.HitClipMenu(pos0);
-                if (hit is not null)
+                if (hit is not null && props.IsLeftButtonPressed)
                 {
                     _canvas.CloseClipMenu();
                     _canvas.RaiseClipMenuAction(hit);
@@ -239,24 +239,34 @@ public sealed class IslandWindow : Window
                 e.Handled = true;
                 return;
             }
+            if (!props.IsLeftButtonPressed) return;
             if (_canvas.HandleTabClick(pos0))
             {
                 e.Handled = true;
-                // 采集器启停已由 PageChanged → UpdateDemand 统一处理
                 return;
             }
+            if (_canvas.HandleMediaPress(pos0)) { e.Handled = true; return; }
+            if (_canvas.HandleMonitorPress(pos0)) { e.Handled = true; return; }
             if (_canvas.HandleScreenPress(pos0)) { e.Handled = true; return; }
             if (_canvas.HandleClipPress(pos0)) { e.Handled = true; return; }
 
-            // 点击胶囊本体 = 展开/收起切换。
-            // 「仅点击展开」模式（never）必须靠它；hover 模式下也保留（点一下比悬停更明确）。
-            var pos = e.GetPosition(_canvas);
-            if (_canvas.BodyRect.Contains(pos) && !_expanded)
+            // 点击胶囊本体 = 展开；never 模式下点击展开态空白头栏也可收起
+            if (_canvas.BodyRect.Contains(pos0))
             {
-                SetExpanded(true);
-                _hoverTimer.Stop();
-                e.Handled = true;
-                return;
+                if (!_expanded)
+                {
+                    SetExpanded(true);
+                    _hoverTimer.Stop();
+                    e.Handled = true;
+                    return;
+                }
+                if (_expandMode == "never" && pos0.Y < 42)
+                {
+                    SetExpanded(false);
+                    _hoverTimer.Stop();
+                    e.Handled = true;
+                    return;
+                }
             }
             if (!_expanded && _canvas.View == "pet") _canvas.Pet.React("surprise");
         };
@@ -414,9 +424,10 @@ public sealed class IslandWindow : Window
             RunBg(() =>
             {
                 if (LunarSettings.SetRange(u, lo, hi)) DisplayControl.SetBrightnessRange(u, lo, hi);
+                var updated = LunarSettings.Read();
                 Dispatcher.UIThread.Post(() =>
                 {
-                    _canvas.ScreenSettings = LunarSettings.Read();
+                    _canvas.ScreenSettings = updated;
                     SyncSettingsToKernel(_canvas.ScreenSettings);
                     _canvas.MarkDirty();
                 });
@@ -500,6 +511,43 @@ public sealed class IslandWindow : Window
             UpdateExpandHeight();
         };
         _canvas.ClipExportAll += ExportClipsToDownloads;
+        _canvas.MediaPrevClicked += () => _media.PreviousTrack();
+        _canvas.MediaPlayPauseClicked += () => _media.TogglePlayPause();
+        _canvas.MediaNextClicked += () => _media.NextTrack();
+        _canvas.SettingsRequested += OpenSettingsWindow;
+        _canvas.FileRevealRequested += MacFileTray.Reveal;
+        _canvas.FileRemoveRequested += path => _fileTray.Remove(path);
+        _canvas.FilesClearRequested += () => _fileTray.Clear();
+        _fileTray.Changed += () => Dispatcher.UIThread.Post(() =>
+        {
+            _canvas.StagedFiles = _fileTray.Items;
+            UpdateExpandHeight();
+            _canvas.MarkDirty();
+        });
+        _media.Updated += m => Dispatcher.UIThread.Post(() =>
+        {
+            _canvas.Media = m;
+            if (!_expanded && _canvas.View == "media")
+            {
+                var s = ViewSize("media");
+                _bodyW.To(s.W);
+            }
+            _canvas.MarkDirty();
+        });
+        // 拖拽文件中转：接受外部文件拖入灵动岛（对齐 Windows 版 FileTrayService）
+        DragDrop.SetAllowDrop(this, true);
+        AddHandler(DragDrop.DropEvent, (_, de) =>
+        {
+            var files = de.Data.GetFiles();
+            if (files is null) return;
+            var paths = new List<string>();
+            foreach (var f in files)
+            {
+                string? p = f.Path?.LocalPath;
+                if (!string.IsNullOrEmpty(p)) paths.Add(p);
+            }
+            if (paths.Count > 0) _fileTray.Add(paths);
+        });
         _canvas.BuiltinKeepClicked += () => { DisplayControl.KeepBuiltinOff(); _canvas.MarkDirty(); };
 
         // 内建屏关闭后：每秒刷新倒计时（守护进程 15s 超时前需点"保持关闭"）
@@ -551,50 +599,55 @@ public sealed class IslandWindow : Window
         // 读回上次保存的主题
         try
         {
-            var saved = Island.App.Services.Settings.Load().Theme;
+            var saved = _settings.Theme;
             if (!string.IsNullOrEmpty(saved) && (saved == "IslandAuto" || Palette.ByName(saved) is not null
                     || saved is "IslandDay" or "IslandNight")) SetTheme(saved);
         }
         catch { /* 读不到用默认 Dark */ }
 
         // 收起样式：读回上次选的（dash / combo / clock / pet）。
-        // CompactViewPinned=true 表示用户手动固定过 → 恢复后不再启动 pet⇄combo 自动轮换，
-        // 否则「选了小形象，重启后又自己变回信息胶囊」（用户实测反馈）。
         try
         {
-            var st = Island.App.Services.Settings.Load();
-            var cv = st.CompactView;
-            _viewPinned = st.CompactViewPinned;
-            // 自动轮换与小形象款式也要**先**读出来：SetView 内部会 StartPetCycle，
-            // 那时 _autoCycle 必须是设置里的真值（默认 true 会让「关了循环」的用户启动就轮起来）。
-            _autoCycle = st.AutoCycleViews;
-            _canvas.Pet.Style = st.PetStyle;
-            Console.Error.WriteLine($"[startup] view={cv} pinned={_viewPinned} page={st.LastPage} cycle={_autoCycle} pet={_canvas.Pet.Style}");
-            // 上次展开页也恢复（用户希望重启后回到同一页）。
-            // 必须在 LoadAndApplySettings()（里面会按展开方式 SetExpanded(true)）**之前**恢复：
-            // 顺序反了的话，面板先按默认的 monitor 页展开，Page 后改不会触发内容切换
-            // —— 表现为「设置了常驻展开+剪贴板页，启动后却是监控页」。
-            // 恢复的页/视图必须在**本平台可用**的清单项里（清单是唯一真相源）。
-            if (CapabilityManifest.ExpandedTabsFor(macOS: true).Contains(st.LastPage)) _canvas.Page = st.LastPage;
-            if (CapabilityManifest.CollapsedViewsFor(macOS: true).Contains(cv)) SetView(cv);
+            var cv = _settings.CompactView;
+            _viewPinned = _settings.CompactViewPinned;
+            _autoCycle = _settings.AutoCycleViews;
+            _canvas.Pet.Style = _settings.PetStyle;
+            Console.Error.WriteLine($"[startup] view={cv} pinned={_viewPinned} page={_settings.LastPage} cycle={_autoCycle} pet={_canvas.Pet.Style}");
+            if (_settings.LastPage is "monitor" or "media" or "clips" or "screens" or "devices") _canvas.Page = _settings.LastPage;
+            if (cv is "dash" or "combo" or "clock" or "media" or "pet") SetView(cv);
         }
         catch { /* 读不到用默认 */ }
 
-        // 其余设置项（置顶 / 穿透 / 展开方式 / 收起样式）——Settings 里本来就有，
-        // 但 Mac 版此前从未实现，这里接上并真正生效。
+        // 其余设置项（置顶 / 穿透 / 展开方式 / 收起样式）
         LoadAndApplySettings();
 
-        // 自动跟随的启停交给 UpdateDemand 统一管（只在屏幕页可见时跑）
+        // macOS 启动时后台预读一次 LunarSettings，以便已开启「自动亮度·跟随内建屏」的外接屏在收起态也能继续跟随
+        if (OperatingSystem.IsMacOS())
+        {
+            RunBg(() =>
+            {
+                var ls = LunarSettings.Read();
+                SyncSettingsToKernel(ls);
+                Dispatcher.UIThread.Post(() =>
+                {
+                    _canvas.ScreenSettings = ls;
+                    UpdateDemand();
+                });
+            });
+        }
 
         // 天气：Open-Meteo（30 分钟刷新，内部缓存节流；城市随 settings.json 热更新）
-        _weather.Settings = Island.App.Services.Settings.Load();
+        _weather.Settings = _settings;
         _canvas.Weather = _weather.Get();   // 立即拉一次（内部后台线程）
         _weatherTimer = new DispatcherTimer(DispatcherPriority.Normal) { Interval = TimeSpan.FromMinutes(5) };
         _weatherTimer.Tick += async (_, _) =>
         {
-            // Settings.Load 读盘+解析 JSON，放后台，别占 UI 线程（哪怕 5 分钟才一次）
             var s = await System.Threading.Tasks.Task.Run(() => Island.App.Services.Settings.Load());
-            if (s.City != _weather.Settings.City) { _weather.Settings = s; _weather.Invalidate(); }
+            if (s.City != _weather.Settings.City)
+            {
+                _settings.City = s.City;
+                _weather.Invalidate();
+            }
             _canvas.Weather = _weather.Get();
         };
         _weatherTimer.Start();
@@ -726,12 +779,8 @@ public sealed class IslandWindow : Window
         //   always = 常驻展开，悬停不参与
         //   never  = 只允许点开，悬停不展开也不收起
         if (_expandMode == "always") return;
-        if (_expandMode == "never")
-        {
-            // 只在"从未展开"时阻止悬停；已展开则允许悬停收起（否则关不掉）
-            if (!open || _expanded) { if (!open) return; }
-            else return;
-        }
+        // never（仅点击展开）：禁止悬停触发自动展开；若面板已点开，则允许鼠标移出后防抖收起
+        if (_expandMode == "never" && (open || !_expanded)) return;
         // 鼠标在窗口内每移动一下都会进来；意图没变就别重排定时器（Stop+改 Interval+Start 每次都 RescheduleTimers）
         if (_hoverOpen == open && _hoverTimer.IsEnabled) return;
         _hoverOpen = open;
@@ -862,9 +911,12 @@ public sealed class IslandWindow : Window
         // 取图标要起子进程（~100ms），绝不能在 UI 线程同步等——放线程池，结果下一帧生效。
         if (expanded && page == "monitor")
         {
-            _appIconTimer ??= new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(2) };
-            _appIconTimer.Tick -= (_, _) => FlushAppIcons();
-            _appIconTimer.Tick += (_, _) => FlushAppIcons();
+            if (_appIconTimer is null)
+            {
+                _appIconTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(2) };
+                // 只在创建时订阅一次；重复进入监控页不能累积 Tick 处理器。
+                _appIconTimer.Tick += (_, _) => FlushAppIcons();
+            }
             _appIconTimer.Start();
             FlushAppIcons();
         }
@@ -886,12 +938,16 @@ public sealed class IslandWindow : Window
         _screensTimer.IsEnabled = expanded && page == "screens";
         if (expanded && page == "screens") RefreshScreens();
 
-        // 自动跟随引擎：只在屏幕页可见时跑（每 2 秒读设置 + 读 DDC）；macOS 专属
-        if (OperatingSystem.IsMacOS() && expanded && page == "screens") _autoFollow?.Start();
+        // 自动跟随引擎：屏幕页可见或任一外接屏开启了「跟随内建屏」时持续运行；macOS 专属
+        bool anyFollow = _canvas.ScreenSettings.Any(s => s.FollowBuiltin);
+        if (OperatingSystem.IsMacOS() && ((expanded && page == "screens") || anyFollow)) _autoFollow?.Start();
         else _autoFollow?.Stop();
 
         // 天气轮询：只在时钟视图时跑
         _weatherUiTimer.IsEnabled = !expanded && view == "clock";
+
+        // 媒体控制与律动频谱：展开媒体页或收起媒体胶囊时按需启用
+        _media.SetWanted((expanded && page == "media") || (!expanded && view == "media"));
     }
 
     // ---------- 小形象 ⇄ 信息胶囊轮换 ----------
@@ -1043,8 +1099,16 @@ public sealed class IslandWindow : Window
 
         bool springMoving = !_bodyW.AtRest || !_bodyH.AtRest;
         bool pet = _canvas.View == "pet";
-        // 忙 = 弹簧运动中 / pet 视图有动画 / 有脏内容待画
-        bool busy = springMoving || pet || _canvas.Dirty;
+        bool mediaLive = ((_expanded && _canvas.Page == "media") || (!_expanded && _canvas.View == "media"))
+                         && _canvas.Media.IsPlaying;
+        if (mediaLive)
+        {
+            _media.CopyBars(_audioBars);
+            _canvas.AudioBars = _audioBars;
+            _canvas.MarkDirty();
+        }
+        // 忙 = 弹簧运动中 / pet 视图 / 媒体律动播放中 / 有脏内容待画
+        bool busy = springMoving || pet || mediaLive || _canvas.Dirty;
         // 展开态本身不是重绘理由：读数 1 秒才变一次，文本/滑块变化时 OnSnapshot/事件会标脏
         // 只在 busy 翻转时改 Interval：DispatcherTimer.Interval setter 每次都会 RescheduleTimers
         if (busy != _busyLast)
@@ -1083,6 +1147,7 @@ public sealed class IslandWindow : Window
             // 时钟胶囊：时间 + 日期 + 天气。宽度按实际内容实测，避免固定宽度留大片空白
             // 第五十八轮压缩：combo 高度 44→38（内容实测：22px 环 + 17px 数字，38px 已够用）
             "clock" => (_canvas.MeasureClockWidth(), 46),
+            "media" => (_canvas.MeasureMediaWidth(), 44),
             "pet" => (110, 44),
             // 信息胶囊：时间 + 4 个表盘 + 3 个温度 + 网速。宽度实测（原来固定 440，加了读数会溢出）
             "combo" => (_canvas.MeasureComboWidth(), 38),
@@ -1099,12 +1164,7 @@ public sealed class IslandWindow : Window
         _canvas.MarkDirty();
     }
 
-    /// <summary>
-    /// 收起视图集合 —— **取自能力清单**（两端唯一真相源）。
-    /// mac 侧只有共享的那几个（dash / clock / pet / combo）；Windows 独有的四个 mac 没有。
-    /// 清单改了这里自动跟着改；漂移由 tests/Island.Tests/CapabilityManifestTests.cs 断言。
-    /// </summary>
-    private static readonly string[] Views = CapabilityManifest.CollapsedViewsFor(macOS: true).ToArray();
+    private static readonly string[] Views = { "clock", "combo", "dash", "media", "pet" };
 
     private void OnWheel(object? sender, PointerWheelEventArgs e)
     {
@@ -1150,7 +1210,7 @@ public sealed class IslandWindow : Window
     /// <summary>前台窗口最大化时缩成指示条。</summary>
     private bool _indicatorOnMaximize = true;
 
-    private readonly HotKeyClient _hotKeys = new();
+    private readonly HotKeyClient _hotKeys = new(action => Dispatcher.UIThread.Post(action));
 
     /// <summary>
     /// 注册全局快捷键（对齐 BrimDeck 的「展开或隐藏面板 / 切换收起样式 / 打开指定页面」）。
@@ -1168,15 +1228,15 @@ public sealed class IslandWindow : Window
         Add('M', () => SetExpanded(!_expanded), "展开/隐藏面板");
         Add('D', () =>
         {
-            // 收起样式轮换：仪表盘 → 信息胶囊 → 时钟 → 小形象
-            var order = new[] { "dash", "combo", "clock", "pet" };
+            // 收起样式轮换：时钟 → 信息胶囊 → 仪表盘 → 媒体律动 → 小形象
+            var order = new[] { "clock", "combo", "dash", "media", "pet" };
             int i = Array.IndexOf(order, _canvas.View);
             UserPickedView(order[(i + 1) % order.Length]);
         }, "切换收起样式");
         Add('S', () =>
         {
-            // 展开页轮换：监控 → 剪贴板 → 屏幕 → 设备
-            var pages = new[] { "monitor", "clips", "screens", "devices" };
+            // 展开页轮换：监控 → 媒体 → 剪贴板 → 屏幕 → 设备
+            var pages = new[] { "monitor", "media", "clips", "screens", "devices" };
             int i = Array.IndexOf(pages, _canvas.Page);
             UserPickedPage(pages[(i + 1) % pages.Length]);
         }, "切换展开页");
@@ -1193,20 +1253,27 @@ public sealed class IslandWindow : Window
             if (err.Length > 0)
             {
                 Console.Error.WriteLine($"[hotkey] 用户可见提示: {err}");
-                try
+            try
+            {
+                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(3));
+                var psi = new System.Diagnostics.ProcessStartInfo("osascript")
                 {
-                    var psi = new System.Diagnostics.ProcessStartInfo("osascript")
-                    { UseShellExecute = false, CreateNoWindow = true,
-                      RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true };
-                    var proc = System.Diagnostics.Process.Start(psi);
-                    if (proc is not null)
-                    {
-                        await proc.StandardInput.WriteLineAsync($"display notification \"{err}\" with title \"MyIsland 快捷键\"");
-                        proc.StandardInput.Close();
-                        await proc.WaitForExitAsync();
-                    }
+                    UseShellExecute = false, CreateNoWindow = true,
+                    RedirectStandardOutput = true, RedirectStandardError = true,
+                };
+                psi.ArgumentList.Add("-e");
+                psi.ArgumentList.Add("on run argv\ndisplay notification (item 1 of argv) with title \"MyIsland 快捷键\"\nend run");
+                psi.ArgumentList.Add(err);
+                using var proc = System.Diagnostics.Process.Start(psi);
+                if (proc is not null)
+                {
+                    var outTask = proc.StandardOutput.ReadToEndAsync();
+                    var errTask = proc.StandardError.ReadToEndAsync();
+                    await proc.WaitForExitAsync(cts.Token);
+                    await System.Threading.Tasks.Task.WhenAll(outTask, errTask);
                 }
-                catch { /* 通知失败不影响运行 */ }
+            }
+            catch { /* 通知失败不影响运行 */ }
             }
         }, DispatcherPriority.Background);
     }
@@ -1216,20 +1283,16 @@ public sealed class IslandWindow : Window
     {
         try
         {
-            var st = Island.App.Services.Settings.Load();
+            var st = _settings;
             _expandMode = st.ExpandMode;
             _alwaysOnTop = st.AlwaysOnTop;
             _clickThrough = st.ClickThrough;
             _hideFullscreen = st.HideFullscreen;
             _indicatorOnMaximize = st.IndicatorOnMaximize;
-            // 收起态装饰四开关：从设置恢复到画布（setter 自动标脏）
             _canvas.DecorNotch = st.DecorNotch;
             _canvas.DecorLetters = st.DecorLetters;
-            // 胶囊样式开关：从设置恢复到画布
             _canvas.ComboNumericHero = st.ComboNumericHero;
-            // 剪贴板保留策略
             _clipRetention = st.ClipboardRetention;
-            // 小形象款式 + 收起视图自动循环（第六十轮）
             _canvas.Pet.Style = st.PetStyle;
             _autoCycle = st.AutoCycleViews;
             ApplyAlwaysOnTop();
@@ -1239,14 +1302,13 @@ public sealed class IslandWindow : Window
         catch (Exception ex) { Console.Error.WriteLine($"[settings] load: {ex.GetType().Name}: {ex.Message}"); }
     }
 
-    /// <summary>改一项设置并落盘（托盘菜单用）。</summary>
+    /// <summary>改一项设置并防抖落盘（统一操作实例 _settings，避免并发读旧盘覆盖内存新值）。</summary>
     private void UpdateSetting(Action<Island.App.Services.Settings> mutate)
     {
         try
         {
-            var st = Island.App.Services.Settings.Load();
-            mutate(st);
-            st.RequestSave();
+            mutate(_settings);
+            _settings.RequestSave();
         }
         catch (Exception ex) { Console.Error.WriteLine($"[settings] save: {ex.GetType().Name}: {ex.Message}"); }
     }
@@ -1320,7 +1382,7 @@ public sealed class IslandWindow : Window
     {
         try
         {
-            var spec = Island.App.Services.Settings.Load().AutoColorByScreen;
+            var spec = _settings.AutoColorByScreen;
             _canvas.ScreenAutoColorState.Clear();
             foreach (var s in _canvas.Screens)
                 _canvas.ScreenAutoColorState[s.Id] = ReadAutoColor(spec, s.Uuid);
@@ -1328,22 +1390,24 @@ public sealed class IslandWindow : Window
         catch (Exception ex) { Console.Error.WriteLine($"[settings] aut color restore: {ex.Message}"); }
     }
 
-    /// <summary>
-    /// 常驻置顶。Avalonia 的 <c>Topmost</c> 在 macOS 上只到 NSFloatingWindowLevel(3)，
-    /// 压不过普通应用窗口 —— 这就是「置顶看起来没生效」的根因。
-    /// 这里额外用 AppKit 把窗口提到 NSStatusWindowLevel(25)，并设好 collectionBehavior
-    /// （所有桌面跟随 / 全屏时也在 / 不进 Cmd+Tab），对齐 Vibe Island 的做法。
-    /// </summary>
     private void ApplyAlwaysOnTop()
     {
         Topmost = _alwaysOnTop;
-        if (!OperatingSystem.IsMacOS() || !_alwaysOnTop) return;
+        if (!OperatingSystem.IsMacOS()) return;
         try
         {
             if (TryGetNativeWindowHandle(this, out var h))
             {
-                MacInterop.SetWindowLevel(h, MacInterop.NsStatusWindowLevel, MacInterop.CollectionAlwaysOnTop);
-                Console.Error.WriteLine("[mac] window level -> statusBar(25), collectionBehavior set");
+                if (_alwaysOnTop)
+                {
+                    MacInterop.SetWindowLevel(h, MacInterop.NsStatusWindowLevel, MacInterop.CollectionAlwaysOnTop);
+                    Console.Error.WriteLine("[mac] window level -> statusBar(25), collectionBehavior set");
+                }
+                else
+                {
+                    MacInterop.SetWindowLevel(h, MacInterop.NsNormalWindowLevel, 0);
+                    Console.Error.WriteLine("[mac] window level -> normal(0)");
+                }
             }
         }
         catch (Exception ex) { Console.Error.WriteLine($"[mac] alwaysOnTop: {ex.Message}"); }
@@ -1408,17 +1472,9 @@ public sealed class IslandWindow : Window
     {
         _themeName = name;
         ApplyTheme();
-        // 自动日夜模式：排程到下一个切换时刻（06:30 / 18:30）
         _islandSwitchTimer.Stop();
         if (name == "IslandAuto") ScheduleIslandSwitch();
-        // 持久化（防抖写盘）
-        try
-        {
-            var s = Island.App.Services.Settings.Load();
-            s.Theme = name;
-            s.RequestSave();
-        }
-        catch (Exception ex) { Console.Error.WriteLine($"[theme] save: {ex.Message}"); }
+        UpdateSetting(s => s.Theme = name);
     }
 
     private void ApplyTheme()
@@ -1472,13 +1528,20 @@ public sealed class IslandWindow : Window
     private void BuildLunarSettingsMenu(NativeMenu menu, List<LunarSettings.ScreenSetting> screens)
     {
         menu.Items.Clear();
-        // 屏幕清单：优先用画布上已加载的（带真实 DDC 读数），没有就即时枚举一次
-        var live = _canvas.Screens.Count > 0
-            ? _canvas.Screens
-            : DisplayControl.ListNames();
+        var live = _canvas.Screens;
         if (live.Count == 0)
         {
-            menu.Items.Add(new NativeMenuItem("未检测到屏幕（打开一次屏幕页即可）") { IsEnabled = false });
+            menu.Items.Add(new NativeMenuItem("正在检测屏幕（或打开一次屏幕页）…") { IsEnabled = false });
+            RunBg(() =>
+            {
+                var detected = DisplayControl.ListNames();
+                if (detected.Count == 0) return;
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (_canvas.Screens.Count == 0) _canvas.Screens = detected;
+                    if (menu.Parent is not null) BuildLunarSettingsMenu(menu, _lunarMenuCache);
+                });
+            });
             return;
         }
 
@@ -1554,8 +1617,18 @@ public sealed class IslandWindow : Window
                 follow.Click += (_, _) =>
                 {
                     bool next = !follow.IsChecked;
-                    System.Threading.Tasks.Task.Run(() => LunarSettings.SetFollow(uuid, next));
                     follow.IsChecked = next;
+                    RunBg(() =>
+                    {
+                        LunarSettings.SetFollow(uuid, next);
+                        var updated = LunarSettings.Read();
+                        Dispatcher.UIThread.Post(() =>
+                        {
+                            _canvas.ScreenSettings = updated;
+                            SyncSettingsToKernel(updated);
+                            UpdateDemand();
+                        });
+                    });
                 };
                 sub.Items.Add(follow);
             }
@@ -1842,6 +1915,7 @@ public sealed class IslandWindow : Window
             await System.Threading.Tasks.Task.Run(() => LunarSettings.SetFollow(uuid, next));
             _canvas.ScreenSettings = await System.Threading.Tasks.Task.Run(() => LunarSettings.Read());
             SyncSettingsToKernel(_canvas.ScreenSettings);
+            UpdateDemand();
         }
         catch (Exception ex)
         {
@@ -1877,9 +1951,9 @@ public sealed class IslandWindow : Window
         RunBg(() =>
         {
             var res = DisplayControl.SetPercentEx(uuid, sid, DisplayControl.VcpMute, muted ? 1 : 2);
+            var back = DisplayControl.ReadMuteState(uuid, sid);
             Dispatcher.UIThread.Post(() =>
             {
-                var back = DisplayControl.ReadMuteState(uuid, sid);
                 _canvas.Screens = _canvas.Screens.Select(s => s.Id == sid ? s with
                 {
                     Mute = back.Ok ? back.Level!.Value.Current : s.Mute,
@@ -1960,42 +2034,35 @@ public sealed class IslandWindow : Window
     /// 关闭内建屏并记住选择（下次启动有外接屏时自动关）。返回错误信息，null=成功。
     /// 阻塞操作，调用方须在后台线程。
     /// </summary>
-    private static string? CloseBuiltinAndRemember(uint id, string uuid, bool hasExternal)
+    private string? CloseBuiltinAndRemember(uint id, string uuid, bool hasExternal)
     {
         string? err = DisplayControl.TurnOffBuiltin(id, uuid, hasExternal);
         if (err is null)
-            UpdateSettingStatic(s => s.AutoCloseBuiltin = true);
+            SaveSettingImmediate(s => s.AutoCloseBuiltin = true);
         return err;
     }
 
-    /// <summary>恢复内建屏并清掉「自动关闭」选择（用户主动恢复 = 不想再自动关）。</summary>
-    private static void RestoreBuiltinAndForget()
+    private void RestoreBuiltinAndForget()
     {
         DisplayControl.RestoreBuiltin();
-        UpdateSettingStatic(s => s.AutoCloseBuiltin = false);
+        SaveSettingImmediate(s => s.AutoCloseBuiltin = false);
     }
 
-    /// <summary>静态版设置落盘（供上面的静态 helper 用；与实例版 UpdateSetting 同一语义）。</summary>
-    private static void UpdateSettingStatic(Action<Island.App.Services.Settings> mutate)
+    private void SaveSettingImmediate(Action<Island.App.Services.Settings> mutate)
     {
         try
         {
-            var st = Island.App.Services.Settings.Load();
-            mutate(st);
-            st.Save();   // 立即写：关屏是低频关键操作，不等防抖
+            mutate(_settings);
+            _settings.Save();
         }
         catch (Exception ex) { Console.Error.WriteLine($"[settings] builtin save: {ex.Message}"); }
     }
 
-    /// <summary>
-    /// 启动时自动关闭内建屏：仅当用户上次选过「关闭」、当前有外接屏、且内建屏在线时执行。
-    /// 无外接屏 → 安全跳过（避免整机黑屏）。延迟到窗口起来后跑（枚举屏幕需要平台就绪）。
-    /// </summary>
     private void TryAutoCloseBuiltin()
     {
         try
         {
-            if (!Island.App.Services.Settings.Load().AutoCloseBuiltin) return;
+            if (!_settings.AutoCloseBuiltin) return;
             if (DisplayControl.IsBuiltinOff) return;   // 已经在关闭态（守护进程还活着）
             var (b, ext) = DisplayControl.FindBuiltinFast();
             if (b.id == 0 || !ext)
@@ -2104,6 +2171,50 @@ public sealed class IslandWindow : Window
         _canvas.MarkDirty();
     }
 
+    /// <summary>打开独立设置中心窗口（对齐 Windows 版 SettingsWindow）。</summary>
+    private void OpenSettingsWindow()
+    {
+        try
+        {
+            var win = new MacSettingsWindow(_settings, _canvas.Palette, new MacSettingsWindow.Host
+            {
+                SetTheme = SetTheme,
+                SetView = UserPickedView,
+                SetExpandMode = m => { _expandMode = m; ApplyExpandMode(); UpdateSetting(s => s.ExpandMode = m); },
+                SetPetStyle = st => { _canvas.Pet.Style = st; _canvas.MarkDirty(); UpdateSetting(s => s.PetStyle = st); },
+                SetAutoCycle = on =>
+                {
+                    _autoCycle = on;
+                    UpdateSetting(s => s.AutoCycleViews = on);
+                    if (on) StartPetCycle(); else _cycleTimer.Stop();
+                },
+                SetDecorNotch = on => { _canvas.DecorNotch = on; UpdateSetting(s => s.DecorNotch = on); RefreshCollapsedWidth(); },
+                SetDecorLetters = on => { _canvas.DecorLetters = on; UpdateSetting(s => s.DecorLetters = on); },
+                SetComboNumericHero = on => { _canvas.ComboNumericHero = on; UpdateSetting(s => s.ComboNumericHero = on); RefreshCollapsedWidth(); },
+                SetClipRetention = r =>
+                {
+                    _clipRetention = r;
+                    UpdateSetting(s => s.ClipboardRetention = r);
+                    if (ClipboardHistory.RetentionDays(r) <= 0) _clips.Save(r);
+                    else { _clips.ApplyRetention(r); _clips.Save(r); }
+                    _canvas.Clips = _clips.Items;
+                },
+                SetWeatherCity = city =>
+                {
+                    UpdateSetting(s => s.City = city);
+                    _weather.Settings = _settings;
+                    _weather.Invalidate();
+                    _canvas.Weather = _weather.Get();
+                },
+                SetAlwaysOnTop = on => { _alwaysOnTop = on; ApplyAlwaysOnTop(); UpdateSetting(s => s.AlwaysOnTop = on); },
+                SetClickThrough = on => { _clickThrough = on; ApplyClickThrough(); UpdateSetting(s => s.ClickThrough = on); },
+                SetAutoCloseBuiltin = on => { UpdateSetting(s => s.AutoCloseBuiltin = on); },
+            });
+            win.Show(this);
+        }
+        catch (Exception ex) { Console.Error.WriteLine($"[settings] window open: {ex.Message}"); }
+    }
+
     // ---------- 菜单栏托盘（macOS 菜单栏 / Windows 通知区） ----------
     private void SetupTray()
     {
@@ -2120,10 +2231,13 @@ public sealed class IslandWindow : Window
                 return mi;
             }
             var menu = new NativeMenu();
-            menu.Items.Add(Item("仪表盘", () => UserPickedView("dash")));
-            menu.Items.Add(Item("时钟", () => UserPickedView("clock")));
-            menu.Items.Add(Item("小形象", () => UserPickedView("pet")));
+            menu.Items.Add(Item("设置中心…", OpenSettingsWindow));
+            menu.Items.Add(new NativeMenuItemSeparator());
+            menu.Items.Add(Item("时间胶囊", () => UserPickedView("clock")));
             menu.Items.Add(Item("信息胶囊", () => UserPickedView("combo")));
+            menu.Items.Add(Item("仪表盘", () => UserPickedView("dash")));
+            menu.Items.Add(Item("媒体律动", () => UserPickedView("media")));
+            menu.Items.Add(Item("小形象", () => UserPickedView("pet")));
             // Mac 功能开关：显示器控制（内置月光功能，无需另装/另启动）
             if (OperatingSystem.IsMacOS())
             {
@@ -2139,31 +2253,50 @@ public sealed class IslandWindow : Window
                 // 这里按当前状态二选一：有内建屏且未关 → "关闭"；已关 → "恢复"。
                 // 只有真的存在内建屏时才给"关闭"入口（台式机没有可关的内建屏，
                 // 摆一个必然报错的菜单项反而添乱）。探测走 ListNames（58ms，不读 DDC）。
-                bool hasBuiltin = false;
-                try { hasBuiltin = DisplayControl.ListNames().Any(s => s.Builtin); } catch { /* 失败降级：保留默认值/上次值 */ }
-                if (DisplayControl.IsBuiltinOff)
+                var builtinActionItem = new NativeMenuItem("关闭内建屏");
+                bool? hasBuiltinKnown = null;
+                RunBg(() =>
                 {
-                    // 和面板的"恢复内建屏"按钮走同一个处理函数：恢复完成后才刷 UI（原来 fire-and-forget，
-                    // 恢复还没完成菜单/面板就显示已恢复）
-                    lunarMenu.Items.Add(Item("恢复内建屏", async () => await System.Threading.Tasks.Task.Run(RestoreBuiltinAndForget)));
-                }
-                else if (hasBuiltin)
+                    bool hb = DisplayControl.ListNames().Any(s => s.Builtin);
+                    Dispatcher.UIThread.Post(() => hasBuiltinKnown = hb);
+                });
+                builtinActionItem.Click += (_, _) =>
                 {
-                    lunarMenu.Items.Add(Item("关闭内建屏", () =>
+                    if (DisplayControl.IsBuiltinOff)
+                    {
+                        RunBg(() =>
+                        {
+                            RestoreBuiltinAndForget();
+                            Dispatcher.UIThread.Post(() =>
+                            {
+                                _canvas.BuiltinOff = false;
+                                _canvas.BuiltinOffCountdown = null;
+                                _canvas.MarkDirty();
+                                RefreshScreens();
+                            });
+                        });
+                    }
+                    else
                     {
                         _ = System.Threading.Tasks.Task.Run(async () =>
                         {
                             try
                             {
-                                var (b, ext) = await System.Threading.Tasks.Task.Run(() => DisplayControl.FindBuiltinFast());
-                                string? err = await System.Threading.Tasks.Task.Run(() => CloseBuiltinAndRemember(b.id, b.uuid, ext));
+                                var (b, ext) = DisplayControl.FindBuiltinFast();
+                                string? err = CloseBuiltinAndRemember(b.id, b.uuid, ext);
                                 await Dispatcher.UIThread.InvokeAsync(() =>
                                 {
                                     _canvas.BuiltinOff = DisplayControl.IsBuiltinOff;
                                     _canvas.BuiltinOffCountdown = DisplayControl.BuiltinOffCountdown;
-                                    if (err is not null) _canvas.AutoFollowStatus = "关闭失败：" + err;
-                                    else _canvas.Screens = _canvas.Screens.Where(s => !s.Builtin).ToList();
-                                    _builtinCountdownTimer.Start();
+                                    if (err is not null)
+                                    {
+                                        _canvas.AutoFollowStatus = "关闭失败：" + err;
+                                    }
+                                    else
+                                    {
+                                        _canvas.Screens = _canvas.Screens.Where(s => !s.Builtin).ToList();
+                                        if (_canvas.BuiltinOff) _builtinCountdownTimer.Start();
+                                    }
                                     _canvas.MarkDirty();
                                 });
                             }
@@ -2176,9 +2309,17 @@ public sealed class IslandWindow : Window
                                 });
                             }
                         });
-                    }));
-                }
-                lunarMenu.Opening += (_, _) => RebuildLunarSettingsMenu(settingsHost.Menu!);
+                    }
+                };
+                lunarMenu.Items.Add(builtinActionItem);
+                lunarMenu.Opening += (_, _) =>
+                {
+                    RebuildLunarSettingsMenu(settingsHost.Menu!);
+                    bool off = DisplayControl.IsBuiltinOff;
+                    bool hb = off || _canvas.Screens.Any(s => s.Builtin) || (hasBuiltinKnown ?? true);
+                    builtinActionItem.Header = off ? "恢复内建屏" : "关闭内建屏";
+                    builtinActionItem.IsVisible = hb;
+                };
                 menu.Items.Add(new NativeMenuItem("显示器控制") { Menu = lunarMenu });
             }
             // 主题子菜单（9 套，与 Windows 版同名；海岛假日拆成日/夜/自动三项）
@@ -2206,7 +2347,7 @@ public sealed class IslandWindow : Window
             // 三种收起视图本来就有，但此前用户无法切换 —— 这里给出入口。
             var styleMenu = new NativeMenu();
             var styleItems = new List<(string Name, string Label, NativeMenuItem Item)>();
-            foreach (var (n, label) in new[] { ("dash", "仪表盘"), ("combo", "信息胶囊"), ("clock", "时钟"), ("pet", "小形象") })
+            foreach (var (n, label) in new[] { ("clock", "时间胶囊"), ("combo", "信息胶囊"), ("dash", "仪表盘"), ("media", "媒体律动"), ("pet", "小形象") })
             {
                 var mi = new NativeMenuItem(label) { ToggleType = NativeMenuItemToggleType.Radio, IsChecked = _canvas.View == n };
                 mi.Click += (_, _) => UserPickedView(n);   // 落盘 + 记录手选
@@ -2384,14 +2525,10 @@ public sealed class IslandWindow : Window
             // 但诱因关联无法排除。此前这个功能只有「用户在屏幕页主动关/恢复过」这一条
             // 隐式设置路径，用户既不知道它存在、也没有总开关。现在给一个显式开关：
             // 复发 dual_pipe panic 时可一键停用观察（参见 app.log 里的 [panic] 侦测输出）。
-            bool autoClose = false;
-            try { autoClose = Island.App.Services.Settings.Load().AutoCloseBuiltin; } catch { }
+            bool autoClose = _settings.AutoCloseBuiltin;
             var autoCloseItem = new NativeMenuItem("启动时关闭内建屏") { ToggleType = NativeMenuItemToggleType.CheckBox, IsChecked = autoClose };
             autoCloseItem.Click += (_, _) =>
             {
-                // 开关语义：
-                // - 开→关：若内建屏当前处于本应用禁用的状态，立即恢复（否则开关与实态不符）。
-                // - 关→开：不立即关（启动时才执行 —— 关屏需要外接屏在线等前提，启动路径已含全部判断）。
                 bool next = !autoCloseItem.IsChecked;
                 if (!next && DisplayControl.IsBuiltinOff)
                     RunBg(() => DisplayControl.RestoreBuiltin());
@@ -2400,6 +2537,12 @@ public sealed class IslandWindow : Window
                 Console.Error.WriteLine($"[display] 启动自动关内建屏开关 → {next}");
             };
             behMenu.Items.Add(autoCloseItem);
+            behMenu.Opening += (_, _) =>
+            {
+                topItem.IsChecked = _alwaysOnTop;
+                thruItem.IsChecked = _clickThrough;
+                autoCloseItem.IsChecked = _settings.AutoCloseBuiltin;
+            };
 
             menu.Items.Add(new NativeMenuItem("行为") { Menu = behMenu });
 
@@ -2409,19 +2552,16 @@ public sealed class IslandWindow : Window
         }
         catch (Exception ex)
         {
-            // 托盘不可用的环境：降级，但把原因写出来（之前静默吞掉，菜单栏图标消失无从排查）
             Console.Error.WriteLine($"[tray] init failed: {ex}");
         }
     }
 
     protected override void OnClosed(EventArgs e)
     {
-        // 退出前保存剪贴板历史（仅在「保留 N 天」策略下；session 策略 = 退出即清，
-        // Save 会把旧档目录删掉，正好实现「退出时清除」）
         try { _clips.Save(_clipRetention); }
         catch (Exception ex) { Console.Error.WriteLine($"[clipboard] save on exit: {ex.Message}"); }
-        // 全部计时器必须停：_cycleTimer 若处于 pet/combo 轮换中漏停，
-        // 其 Tick 闭包捕获 this → Dispatcher 根引用整个窗口无法 GC，且退出后仍在渲染。
+        try { _settings.Save(); _settings.Dispose(); }
+        catch (Exception ex) { Console.Error.WriteLine($"[settings] save on exit: {ex.Message}"); }
         _frame.Stop();
         _tick.Stop();
         _hoverTimer.Stop();
@@ -2434,7 +2574,11 @@ public sealed class IslandWindow : Window
         _screensTimer.Stop();
         _builtinCountdownTimer.Stop();
         _islandSwitchTimer.Stop();
+        _appIconTimer?.Stop();
+        _deviceTimer?.Stop();
+        _flushTimer?.Stop();
         _clips.Dispose();
+        _media.Dispose();
         _hotKeys.Dispose();   // 热键探针：发 quit → 等待 → 兜底 Kill（确定性退出，不靠 stdin EOF 偶然生效）
         // 退出前必须恢复内建屏：否则用户会面对一块黑掉的笔记本屏。
         // 同步等最多 3 秒（进程要退出了，不能 fire-and-forget）；超时则守护进程靠 stdin 断开兜底。

@@ -1,10 +1,17 @@
 @echo off
 chcp 65001 >nul
-rem MyIsland 启动器：双击运行（需要 PowerShell 7 / pwsh，Windows 11 一般自带）
-rem 如提示找不到 pwsh，请先安装：winget install Microsoft.PowerShell
+rem MyIsland 便携版启动器：优先使用 pwsh 内存加载，未安装 pwsh 时回退直接启动 Island.App.exe
 where pwsh >nul 2>nul
-if %errorlevel% neq 0 (
-    echo [MyIsland] 未找到 pwsh，正在尝试用 winget 安装 PowerShell 7...
-    winget install Microsoft.PowerShell --accept-source-agreements --accept-package-agreements
+if %errorlevel% equ 0 (
+    pwsh -NoProfile -ExecutionPolicy Bypass -File "%~dp0run.ps1" -Dir "%~dp0" %*
+    exit /b %errorlevel%
 )
-pwsh -NoProfile -ExecutionPolicy Bypass -File "%~dp0run.ps1" %*
+if exist "%~dp0Island.App.exe" (
+    start "" "%~dp0Island.App.exe" %*
+    exit /b 0
+)
+echo [MyIsland] 未找到 PowerShell 7 (pwsh) 或 Island.App.exe。
+choice /C YN /M "是否使用 winget 安装 Microsoft.PowerShell"
+if errorlevel 2 exit /b 1
+winget install Microsoft.PowerShell
+pwsh -NoProfile -ExecutionPolicy Bypass -File "%~dp0run.ps1" -Dir "%~dp0" %*

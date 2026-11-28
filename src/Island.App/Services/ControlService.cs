@@ -1,5 +1,4 @@
 using System;
-using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
@@ -13,7 +12,7 @@ namespace Island.App.Services;
 /// </summary>
 public static class ControlService
 {
-    // ---------- 亮度 ----------
+    // ---------- 亮度与多显示器 DDC/CI 控制（对齐 LunarCN 串行总线与防抖管线） ----------
     [DllImport("dxva2.dll", SetLastError = true)]
     private static extern bool GetNumberOfPhysicalMonitorsFromHMONITOR(IntPtr hMonitor, ref uint count);
     [DllImport("dxva2.dll", SetLastError = true)]
@@ -23,9 +22,426 @@ public static class ControlService
     [DllImport("dxva2.dll", SetLastError = true)]
     private static extern bool SetMonitorBrightness(IntPtr monitor, uint value);
     [DllImport("dxva2.dll", SetLastError = true)]
+    private static extern bool GetMonitorContrast(IntPtr monitor, ref uint min, ref uint cur, ref uint max);
+    [DllImport("dxva2.dll", SetLastError = true)]
+    private static extern bool SetMonitorContrast(IntPtr monitor, uint value);
+    [DllImport("dxva2.dll", SetLastError = true)]
+    private static extern bool GetVCPFeatureAndVCPFeatureReply(IntPtr monitor, byte bVCPCode, IntPtr pvct, out uint pdwCurrentValue, out uint pdwMaximumValue);
+    [DllImport("dxva2.dll", SetLastError = true)]
+    private static extern bool SetVCPFeature(IntPtr monitor, byte bVCPCode, uint dwNewValue);
+    [DllImport("dxva2.dll", SetLastError = true)]
     private static extern bool DestroyPhysicalMonitors(uint count, [Out] PHYSICAL_MONITOR[] monitors);
     [DllImport("user32.dll")]
     private static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr clip, MonitorEnumProc cb, IntPtr data);
+
+    private const byte VcpColorTempPreset = 0x14;
+    private const byte VcpRedGain = 0x16;
+    private const byte VcpGreenGain = 0x18;
+    private const byte VcpBlueGain = 0x1A;
+    private const byte VcpAudioSpeakerVolume = 0x62;
+    private const byte VcpAudioMute = 0x8D;
+
+    public enum DisplayControlKind { Brightness, Contrast, Volume, Mute, Red, Green, Blue, ColorTempPreset }
+
+    public sealed record DisplayScreenInfo
+    {
+        public string Key { get; init; } = "";
+        public string Name { get; init; } = "";
+        public bool Builtin { get; init; }
+        public int? Brightness { get; init; }
+        public int? Contrast { get; init; }
+        public int? Volume { get; init; }
+        public int? Mute { get; init; }
+        public int? Red { get; init; }
+        public int? Green { get; init; }
+        public int? Blue { get; init; }
+        public int? ColorTempPreset { get; init; }
+    }
+
+    public sealed record DisplayPref
+    {
+        public int Min { get; init; } = 0;
+        public int Max { get; init; } = 100;
+        public bool FollowBuiltin { get; init; }
+        public int? PresetBrightness { get; init; }
+        public int? PresetContrast { get; init; }
+        public int? PresetVolume { get; init; }
+    }
+
+    private static readonly Dictionary<string, (int Min, int Max)> _brightnessRanges = new(StringComparer.Ordinal);
+    private static int _lastAutoFollowBuiltin = -1;
+
+    public static Dictionary<string, DisplayPref> ParseDisplayPrefs(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return new(StringComparer.Ordinal);
+        try
+        {
+            var dict = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, DisplayPref>>(json);
+            return dict is not null
+                ? new Dictionary<string, DisplayPref>(dict, StringComparer.Ordinal)
+                : new Dictionary<string, DisplayPref>(StringComparer.Ordinal);
+        }
+        catch { return new(StringComparer.Ordinal); }
+    }
+
+    public static string SerializeDisplayPrefs(IReadOnlyDictionary<string, DisplayPref> prefs)
+    {
+        try { return System.Text.Json.JsonSerializer.Serialize(prefs); }
+        catch { return ""; }
+    }
+
+    public static void SetBrightnessRange(string screenKey, int min, int max)
+    {
+        min = Math.Clamp(min, 0, 90);
+        max = Math.Clamp(max, min + 10, 100);
+        lock (_writeGate) _brightnessRanges[screenKey] = (min, max);
+    }
+
+    public static (int Min, int Max) GetBrightnessRange(string screenKey)
+    {
+        lock (_writeGate)
+            return _brightnessRanges.TryGetValue(screenKey, out var r) ? r : (0, 100);
+    }
+
+    public static void SyncDisplayRanges(IReadOnlyDictionary<string, DisplayPref> prefs)
+    {
+        lock (_writeGate)
+        {
+            _brightnessRanges.Clear();
+            foreach (var (k, v) in prefs)
+                _brightnessRanges[k] = (Math.Clamp(v.Min, 0, 90), Math.Clamp(v.Max, Math.Clamp(v.Min, 0, 90) + 10, 100));
+        }
+    }
+
+    /// <summary>外接屏自动跟随内建屏亮度（按每屏设定的亮度范围线性映射并去重写入）。</summary>
+    public static void SyncExternalFollowBrightness(IReadOnlyDictionary<string, DisplayPref> prefs, bool force = false)
+    {
+        var targets = prefs.Where(kv => kv.Value.FollowBuiltin && kv.Key.StartsWith("ddc:", StringComparison.Ordinal)).ToList();
+        if (targets.Count == 0) return;
+        if (!TryGetWmiBrightness(out uint builtinPct)) return;
+        int cur = (int)builtinPct;
+        if (!force && cur == _lastAutoFollowBuiltin) return;
+        _lastAutoFollowBuiltin = cur;
+        foreach (var (key, pref) in targets)
+        {
+            int min = Math.Clamp(pref.Min, 0, 90);
+            int max = Math.Clamp(pref.Max, min + 10, 100);
+            int mapped = (int)Math.Round(min + (max - min) * (cur / 100.0));
+            QueueDisplayWrite(key, DisplayControlKind.Brightness, mapped);
+        }
+    }
+
+    /// <summary>重置外接屏 RGB 三通道增益为 100/100/100（对齐 macOS 屏幕页重置颜色）。</summary>
+    public static void ResetDisplayColor(string screenKey)
+    {
+        QueueDisplayWrite(screenKey, DisplayControlKind.Red, 100);
+        QueueDisplayWrite(screenKey, DisplayControlKind.Green, 100);
+        QueueDisplayWrite(screenKey, DisplayControlKind.Blue, 100);
+    }
+
+    /// <summary>安全切换内置笔记本屏幕开关（仅在检测到外接屏时允许关闭，调用系统 DisplaySwitch.exe）。</summary>
+    public static bool SwitchBuiltinDisplay(bool turnOff)
+    {
+        try
+        {
+            string sys32 = Environment.GetFolderPath(Environment.SpecialFolder.System);
+            string tool = System.IO.Path.Combine(sys32, "DisplaySwitch.exe");
+            if (!System.IO.File.Exists(tool)) tool = "DisplaySwitch.exe";
+            var psi = new System.Diagnostics.ProcessStartInfo(tool, turnOff ? "/external" : "/extend")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            using var p = System.Diagnostics.Process.Start(psi);
+            return p is not null;
+        }
+        catch { return false; }
+    }
+
+    // I2C / DDC 总线串行锁 + 最新目标合并队列（拖动滑杆零阻塞，后台串行写入硬件）
+    private static readonly System.Threading.SemaphoreSlim _ddcGate = new(1, 1);
+    private static readonly object _writeGate = new();
+    private static readonly Dictionary<(string Key, DisplayControlKind Kind), int> _pendingWrites = new();
+    private static bool _writeDraining;
+
+    /// <summary>枚举全部可控显示器（笔记本内建屏 WMI + 外接屏 DDC/CI 亮度/对比度/音量）。</summary>
+    public static List<DisplayScreenInfo> ListDisplays()
+    {
+        var result = new List<DisplayScreenInfo>();
+        _ddcGate.Wait();
+        try
+        {
+            bool hasBuiltin = TryGetWmiBrightness(out uint wmiPct);
+            if (hasBuiltin)
+            {
+                result.Add(new DisplayScreenInfo
+                {
+                    Key = "wmi:builtin",
+                    Name = "内置显示器（系统调光）",
+                    Builtin = true,
+                    Brightness = (int)wmiPct,
+                });
+            }
+
+            var hMonitors = new List<IntPtr>();
+            EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero,
+                (IntPtr hMon, IntPtr hdcMon, ref RECT rectMon, IntPtr dataMon) =>
+                {
+                    hMonitors.Add(hMon);
+                    return true;
+                }, IntPtr.Zero);
+
+            int extIdx = 0;
+            for (int m = 0; m < hMonitors.Count; m++)
+            {
+                uint count = 0;
+                if (!GetNumberOfPhysicalMonitorsFromHMONITOR(hMonitors[m], ref count) || count == 0)
+                    continue;
+                var mons = new PHYSICAL_MONITOR[count];
+                if (!GetPhysicalMonitorsFromHMONITOR(hMonitors[m], count, mons))
+                    continue;
+                try
+                {
+                    for (uint i = 0; i < count; i++)
+                    {
+                        IntPtr hp = mons[i].hPhysicalMonitor;
+                        string desc = string.IsNullOrWhiteSpace(mons[i].desc) ? $"显示器 {extIdx + 1}" : mons[i].desc.Trim();
+                        // 若已有 WMI 内建屏且该物理句柄不支持任何 DDC 项，跳过重复内建屏条目
+                        int? bri = ReadDdcBrightness(hp);
+                        int? con = ReadDdcContrast(hp);
+                        int? vol = ReadDdcVolume(hp);
+                        if (hasBuiltin && bri is null && con is null && vol is null)
+                            continue;
+
+                        int? mute = ReadDdcRaw(hp, VcpAudioMute);
+                        int? red = ReadDdcPercent(hp, VcpRedGain);
+                        int? green = ReadDdcPercent(hp, VcpGreenGain);
+                        int? blue = ReadDdcPercent(hp, VcpBlueGain);
+                        int? colorPreset = ReadDdcRaw(hp, VcpColorTempPreset);
+
+                        extIdx++;
+                        result.Add(new DisplayScreenInfo
+                        {
+                            Key = $"ddc:{m}:{i}",
+                            Name = desc,
+                            Builtin = false,
+                            Brightness = bri,
+                            Contrast = con,
+                            Volume = vol,
+                            Mute = mute,
+                            Red = red,
+                            Green = green,
+                            Blue = blue,
+                            ColorTempPreset = colorPreset,
+                        });
+                    }
+                }
+                finally
+                {
+                    DestroyPhysicalMonitors(count, mons);
+                }
+            }
+        }
+        catch { }
+        finally
+        {
+            _ddcGate.Release();
+        }
+        return result;
+    }
+
+    /// <summary>无级滑杆实时合并写入：UI 线程立即返回，后台按最新目标值串行写硬件（亮度自动受范围钳制）。</summary>
+    public static void QueueDisplayWrite(string screenKey, DisplayControlKind kind, int value)
+    {
+        int clamped = kind switch
+        {
+            DisplayControlKind.Brightness => ClampBrightnessToRange(screenKey, value),
+            DisplayControlKind.Mute or DisplayControlKind.ColorTempPreset => Math.Clamp(value, 0, 255),
+            _ => Math.Clamp(value, 0, 100),
+        };
+        lock (_writeGate)
+        {
+            _pendingWrites[(screenKey, kind)] = clamped;
+            if (_writeDraining) return;
+            _writeDraining = true;
+        }
+        _ = Task.Run(DrainDisplayWritesAsync);
+    }
+
+    private static int ClampBrightnessToRange(string screenKey, int value)
+    {
+        var (min, max) = GetBrightnessRange(screenKey);
+        return Math.Clamp(value, min, max);
+    }
+
+    private static async Task DrainDisplayWritesAsync()
+    {
+        while (true)
+        {
+            KeyValuePair<(string Key, DisplayControlKind Kind), int> next;
+            lock (_writeGate)
+            {
+                if (_pendingWrites.Count == 0)
+                {
+                    _writeDraining = false;
+                    return;
+                }
+                next = _pendingWrites.First();
+                _pendingWrites.Remove(next.Key);
+            }
+
+            await _ddcGate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                ApplyDisplayWriteCore(next.Key.Key, next.Key.Kind, (uint)next.Value);
+                // DDC/CI 规范要求两次写指令之间至少留 40ms 总线恢复窗口
+                await Task.Delay(45).ConfigureAwait(false);
+            }
+            catch { }
+            finally
+            {
+                _ddcGate.Release();
+            }
+        }
+    }
+
+    private static void ApplyDisplayWriteCore(string screenKey, DisplayControlKind kind, uint pct)
+    {
+        if (screenKey == "wmi:builtin")
+        {
+            if (kind == DisplayControlKind.Brightness) TrySetWmiBrightness(pct);
+            return;
+        }
+        if (!screenKey.StartsWith("ddc:", StringComparison.Ordinal)) return;
+        string[] parts = screenKey.Split(':');
+        if (parts.Length != 3 || !int.TryParse(parts[1], out int monIdx) || !uint.TryParse(parts[2], out uint subIdx))
+            return;
+
+        var hMonitors = new List<IntPtr>();
+        EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero,
+            (IntPtr hMon, IntPtr hdcMon, ref RECT rectMon, IntPtr dataMon) =>
+            {
+                hMonitors.Add(hMon);
+                return true;
+            }, IntPtr.Zero);
+        if (monIdx < 0 || monIdx >= hMonitors.Count) return;
+
+        uint count = 0;
+        if (!GetNumberOfPhysicalMonitorsFromHMONITOR(hMonitors[monIdx], ref count) || subIdx >= count)
+            return;
+        var mons = new PHYSICAL_MONITOR[count];
+        if (!GetPhysicalMonitorsFromHMONITOR(hMonitors[monIdx], count, mons))
+            return;
+        try
+        {
+            IntPtr hp = mons[subIdx].hPhysicalMonitor;
+            switch (kind)
+            {
+                case DisplayControlKind.Brightness:
+                {
+                    uint min = 0, cur = 0, max = 100;
+                    if (GetMonitorBrightness(hp, ref min, ref cur, ref max) && max > min)
+                        SetMonitorBrightness(hp, min + (max - min) * pct / 100);
+                    break;
+                }
+                case DisplayControlKind.Contrast:
+                {
+                    uint min = 0, cur = 0, max = 100;
+                    if (GetMonitorContrast(hp, ref min, ref cur, ref max) && max > min)
+                        SetMonitorContrast(hp, min + (max - min) * pct / 100);
+                    break;
+                }
+                case DisplayControlKind.Volume:
+                {
+                    if (GetVCPFeatureAndVCPFeatureReply(hp, VcpAudioSpeakerVolume, IntPtr.Zero, out _, out uint max) && max > 0)
+                        SetVCPFeature(hp, VcpAudioSpeakerVolume, max * pct / 100);
+                    break;
+                }
+                case DisplayControlKind.Mute:
+                    SetVCPFeature(hp, VcpAudioMute, pct);
+                    break;
+                case DisplayControlKind.Red:
+                    WriteDdcPercent(hp, VcpRedGain, pct);
+                    break;
+                case DisplayControlKind.Green:
+                    WriteDdcPercent(hp, VcpGreenGain, pct);
+                    break;
+                case DisplayControlKind.Blue:
+                    WriteDdcPercent(hp, VcpBlueGain, pct);
+                    break;
+                case DisplayControlKind.ColorTempPreset:
+                    SetVCPFeature(hp, VcpColorTempPreset, pct);
+                    break;
+            }
+        }
+        finally
+        {
+            DestroyPhysicalMonitors(count, mons);
+        }
+    }
+
+    private static void WriteDdcPercent(IntPtr hp, byte vcp, uint pct)
+    {
+        if (GetVCPFeatureAndVCPFeatureReply(hp, vcp, IntPtr.Zero, out _, out uint max) && max > 0)
+            SetVCPFeature(hp, vcp, max * pct / 100);
+        else
+            SetVCPFeature(hp, vcp, pct);
+    }
+
+    private static int? ReadDdcPercent(IntPtr hp, byte vcp)
+    {
+        try
+        {
+            if (!GetVCPFeatureAndVCPFeatureReply(hp, vcp, IntPtr.Zero, out uint cur, out uint max) || max == 0)
+                return null;
+            return (int)Math.Min(100u, cur * 100 / max);
+        }
+        catch { return null; }
+    }
+
+    private static int? ReadDdcRaw(IntPtr hp, byte vcp)
+    {
+        try
+        {
+            if (!GetVCPFeatureAndVCPFeatureReply(hp, vcp, IntPtr.Zero, out uint cur, out _))
+                return null;
+            return (int)cur;
+        }
+        catch { return null; }
+    }
+
+    private static int? ReadDdcBrightness(IntPtr hp)
+    {
+        try
+        {
+            uint min = 0, cur = 0, max = 0;
+            if (!GetMonitorBrightness(hp, ref min, ref cur, ref max) || max <= min || cur < min) return null;
+            return (int)Math.Min(100u, (cur - min) * 100 / (max - min));
+        }
+        catch { return null; }
+    }
+
+    private static int? ReadDdcContrast(IntPtr hp)
+    {
+        try
+        {
+            uint min = 0, cur = 0, max = 0;
+            if (!GetMonitorContrast(hp, ref min, ref cur, ref max) || max <= min || cur < min) return null;
+            return (int)Math.Min(100u, (cur - min) * 100 / (max - min));
+        }
+        catch { return null; }
+    }
+
+    private static int? ReadDdcVolume(IntPtr hp)
+    {
+        try
+        {
+            if (!GetVCPFeatureAndVCPFeatureReply(hp, VcpAudioSpeakerVolume, IntPtr.Zero, out uint cur, out uint max) || max == 0)
+                return null;
+            return (int)Math.Min(100u, cur * 100 / max);
+        }
+        catch { return null; }
+    }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct PHYSICAL_MONITOR { public IntPtr hPhysicalMonitor; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string desc; }
@@ -34,57 +450,115 @@ public static class ControlService
     [StructLayout(LayoutKind.Sequential)]
     private struct RECT { public int L, T, R, B; }
 
-    private static IntPtr _firstMonitor = IntPtr.Zero;
-
-    private static void EnsureMonitor()
+    private static IntPtr GetPrimaryMonitorHandle()
     {
-        if (_firstMonitor != IntPtr.Zero) return;
+        IntPtr found = IntPtr.Zero;
         EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero,
             (IntPtr hMon, IntPtr hdcMon, ref RECT rectMon, IntPtr dataMon) =>
             {
-                _firstMonitor = hMon;
+                found = hMon;
                 return false;
             }, IntPtr.Zero);
+        return found;
     }
 
-    /// <summary>当前亮度 0..100（外接显示器/驱动不支持返回 null）。</summary>
+    /// <summary>当前亮度 0..100（优先笔记本内建屏 WMI，再退外接屏 DDC/CI；均不支持返回 null）。</summary>
     public static uint? GetBrightness()
     {
+        if (TryGetWmiBrightness(out uint wmiPct)) return wmiPct;
         try
         {
-            EnsureMonitor();
-            if (_firstMonitor == IntPtr.Zero) return null;
+            IntPtr mon = GetPrimaryMonitorHandle();
+            if (mon == IntPtr.Zero) return null;
             uint count = 0;
-            if (!GetNumberOfPhysicalMonitorsFromHMONITOR(_firstMonitor, ref count) || count == 0) return null;
+            if (!GetNumberOfPhysicalMonitorsFromHMONITOR(mon, ref count) || count == 0) return null;
             var mons = new PHYSICAL_MONITOR[count];
-            if (!GetPhysicalMonitorsFromHMONITOR(_firstMonitor, count, mons)) return null;
-            uint min = 0, cur = 0, max = 0;
-            bool ok = GetMonitorBrightness(mons[0].hPhysicalMonitor, ref min, ref cur, ref max);
-            DestroyPhysicalMonitors(count, mons);
-            if (!ok || max == min) return null;
-            return (cur - min) * 100 / (max - min);
+            if (!GetPhysicalMonitorsFromHMONITOR(mon, count, mons)) return null;
+            try
+            {
+                uint min = 0, cur = 0, max = 0;
+                bool ok = GetMonitorBrightness(mons[0].hPhysicalMonitor, ref min, ref cur, ref max);
+                if (!ok || max <= min || cur < min) return null;
+                return Math.Min(100u, (cur - min) * 100 / (max - min));
+            }
+            finally
+            {
+                DestroyPhysicalMonitors(count, mons);
+            }
         }
         catch { return null; }
     }
 
     public static bool SetBrightness(uint percent)
     {
+        percent = Math.Min(100u, percent);
+        if (TrySetWmiBrightness(percent)) return true;
         try
         {
-            EnsureMonitor();
-            if (_firstMonitor == IntPtr.Zero) return false;
+            IntPtr mon = GetPrimaryMonitorHandle();
+            if (mon == IntPtr.Zero) return false;
             uint count = 0;
-            if (!GetNumberOfPhysicalMonitorsFromHMONITOR(_firstMonitor, ref count)) return false;
+            if (!GetNumberOfPhysicalMonitorsFromHMONITOR(mon, ref count) || count == 0) return false;
             var mons = new PHYSICAL_MONITOR[count];
-            if (!GetPhysicalMonitorsFromHMONITOR(_firstMonitor, count, mons)) return false;
-            uint min = 0, cur = 0, max = 0;
-            bool ok = GetMonitorBrightness(mons[0].hPhysicalMonitor, ref min, ref cur, ref max);
-            if (ok && max > min)
-                ok = SetMonitorBrightness(mons[0].hPhysicalMonitor, min + (max - min) * percent / 100);
-            DestroyPhysicalMonitors(count, mons);
-            return ok;
+            if (!GetPhysicalMonitorsFromHMONITOR(mon, count, mons)) return false;
+            try
+            {
+                uint min = 0, cur = 0, max = 0;
+                bool ok = GetMonitorBrightness(mons[0].hPhysicalMonitor, ref min, ref cur, ref max);
+                if (ok && max > min)
+                    return SetMonitorBrightness(mons[0].hPhysicalMonitor, min + (max - min) * percent / 100);
+                return false;
+            }
+            finally
+            {
+                DestroyPhysicalMonitors(count, mons);
+            }
         }
         catch { return false; }
+    }
+
+    private static bool TryGetWmiBrightness(out uint percent)
+    {
+        percent = 0;
+        try
+        {
+            using var searcher = new System.Management.ManagementObjectSearcher(
+                "root\\WMI", "SELECT CurrentBrightness FROM WmiMonitorBrightness");
+            using var results = searcher.Get();
+            foreach (System.Management.ManagementBaseObject obj in results)
+            {
+                using (obj)
+                {
+                    if (obj["CurrentBrightness"] is not null)
+                    {
+                        uint v = Convert.ToUInt32(obj["CurrentBrightness"]);
+                        if (v <= 100) { percent = v; return true; }
+                    }
+                }
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    private static bool TrySetWmiBrightness(uint percent)
+    {
+        try
+        {
+            using var searcher = new System.Management.ManagementObjectSearcher(
+                "root\\WMI", "SELECT * FROM WmiMonitorBrightnessMethods");
+            using var results = searcher.Get();
+            foreach (System.Management.ManagementObject obj in results)
+            {
+                using (obj)
+                {
+                    obj.InvokeMethod("WmiSetBrightness", new object[] { 1u, (byte)Math.Min(100u, percent) });
+                    return true;
+                }
+            }
+        }
+        catch { }
+        return false;
     }
 
     // ---------- WLAN 开关（netsh，仅开关不读名称） ----------
@@ -106,42 +580,7 @@ public static class ControlService
                 if (nic.Status == System.Net.NetworkInformation.OperationalStatus.Up) return nic.Name;
                 fallback ??= nic.Name;
             }
-            if (fallback is not null) return fallback;
-        }
-        catch { }
-        // 兜底：走 netsh 的接口清单（**它连被禁用的网卡也列**）。
-        // 为什么必须兜底：无线适配器被禁用后，.NET 的 NetworkInterface 枚举可能**整个看不到它**
-        // （或类型退化成 Unknown）⇒ 找不到名字就"关得掉、开不回来"，
-        // 用户在应用里把 Wi-Fi 关掉后只能跑去系统设置 —— 2026-11-26 实测踩到过。
-        return FindWirelessAdapterInNetsh();
-    }
-
-    /// <summary>从 netsh 的接口清单里找无线适配器名（按名字关键字；中文系统 netsh 输出的表头与列序随版本变化，按词定位）。</summary>
-    private static string? FindWirelessAdapterInNetsh()
-    {
-        try
-        {
-            byte[]? raw = RunNetsh("interface show interface");
-            if (raw is null) return null;
-            foreach (string outp in DecodeCandidates(raw))
-            {
-                foreach (var line in outp.Split('\n'))
-                {
-                    string t = line.Trim();
-                    if (t.Length == 0) continue;
-                    if (!t.Contains("WLAN", StringComparison.OrdinalIgnoreCase)
-                        && !t.Contains("Wi-Fi", StringComparison.OrdinalIgnoreCase)
-                        && !t.Contains("无线", StringComparison.Ordinal)) continue;
-                    // 取最后一个词：netsh 的接口名在中文表里是最后一列，英文表里也是最后一列
-                    string[] parts = t.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-                    if (parts.Length == 0) continue;
-                    string name = parts[^1];
-                    if (name.Contains("WLAN", StringComparison.OrdinalIgnoreCase)
-                        || name.Contains("Wi-Fi", StringComparison.OrdinalIgnoreCase)
-                        || name.Contains("无线", StringComparison.Ordinal))
-                        return name;
-                }
-            }
+            return fallback;
         }
         catch { }
         return null;
@@ -212,48 +651,8 @@ public static class ControlService
     {
         try
         {
-            byte[]? raw = RunNetsh("interface show interface");
-            if (raw is null) return null;
-            // 多编码兜底：netsh 的输出编码随「有没有控制台」而变（见 RunNetsh 的说明），
-            // 逐个候选编码试解析，**第一个能解出状态列的就算数** —— 都解不出就返回「未知」，不编造。
-            foreach (string outp in DecodeCandidates(raw))
-            {
-                var snap = ParseWlanOutput(outp);
-                if (snap is not null) return snap;
-            }
-            return null;
-        }
-        catch { return null; }
-    }
-
-    /// <summary>
-    /// netsh 输出的候选解码（按可能性排序）：UTF-8 → 当前 OEM 码页（中文系统 936）→ UTF-16LE → Latin1。
-    /// 逐个去重；解析端挑「能解出状态列」的那个 ⇒ 不依赖 netsh 这次用了哪种编码。
-    /// </summary>
-    private static IEnumerable<string> DecodeCandidates(byte[] raw)
-    {
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        var candidates = new List<string>();
-        void Add(Encoding? enc)
-        {
-            if (enc is null) return;
-            string s;
-            try { s = enc.GetString(raw); } catch { return; }
-            if (s.Length == 0 || !seen.Add(s)) return;
-            candidates.Add(s);
-        }
-        Add(Encoding.UTF8);
-        try { Add(Encoding.GetEncoding(System.Globalization.CultureInfo.CurrentCulture.TextInfo.OEMCodePage)); } catch { }
-        Add(Encoding.Unicode);   // netsh 在无控制台时写 UTF-16LE
-        Add(Encoding.Latin1);     // 兜底：字节原样映射成字符（不抛、也不丢字节）
-        return candidates;
-    }
-
-    /// <summary>解析一份 netsh 输出（解不出无线接口行就返回 null = 未知）。</summary>
-    private static WlanSnapshot? ParseWlanOutput(string outp)
-    {
-        try
-        {
+            string? outp = RunNetsh("interface show interface");
+            if (outp is null) return null;
             // netsh 的列顺序随语言/版本不同（中文：接口名在最前；英文：接口名在最后），
             // 所以按"词"定位接口名，再从其余词里判状态
             string? nic = GetWirelessAdapterName();
@@ -304,16 +703,14 @@ public static class ControlService
             var psi = new System.Diagnostics.ProcessStartInfo("netsh",
                 $"interface set interface name=\"{nic}\" {(enable ? "enable" : "disable")}")
             { UseShellExecute = true, Verb = "runas", CreateNoWindow = true };   // 需管理员
-            System.Diagnostics.Process.Start(psi);
+            using var p = System.Diagnostics.Process.Start(psi);
+            p?.WaitForExit(4000);
+            lock (_wlanGate) { _wlanCache = null; _wlanCacheAt = DateTime.MinValue; }
             return (true, enable ? $"已请求开启无线网络（{nic}）" : $"已请求关闭无线网络（{nic}）");
         }
-        catch (System.ComponentModel.Win32Exception ex)
+        catch (System.ComponentModel.Win32Exception)
         {
-            // 1223 = ERROR_CANCELLED：**用户取消了 UAC 弹窗**（不是权限不够）。
-            // 两者都说成"需要管理员权限"会误导人 —— 取消授权重试一次就好，不必换权限。
-            return (false, ex.NativeErrorCode == 1223
-                ? "已取消授权，未改动无线网络（UAC 弹窗点『否』或超时）。"
-                : "需要管理员权限才能开关无线网络。");
+            return (false, "需要管理员权限才能开关无线网络");   // 用户取消了 UAC
         }
         catch { return (false, "开关无线网络失败"); }
     }
@@ -360,18 +757,9 @@ public static class ControlService
         return conn;
     }
 
-    /// <summary>
-    /// 跑一条 netsh 命令并取回**原始字节**（带超时）；超时/失败返回 null。
-    /// 先启动异步读取再 WaitForExit：同步 ReadToEnd 会把超时架空，管道写满时还会互相死等。
-    ///
-    /// 为什么取**字节**而不是字符串：netsh 的输出编码**取决于它有没有控制台** ——
-    /// 有控制台时按 OEM 码页写（中文系统 = 936），**没有控制台时写 UTF-16LE**。
-    /// 而 .NET 读重定向输出默认按 UTF-8 解 ⇒ **在无控制台的进程里（提权进程、真正的 WPF 应用）
-    /// 解出来是乱码，状态列一个词都匹配不上 ⇒ 读成「未知」。
-    /// 2026-11-26 实测：提权自检里 WLAN 状态读成「未知」，而同一台机器的控制台自检读得出来。
-    /// ⇒ 解码交给 <see cref="DecodeCandidates"/> 多编码兜底。
-    /// </summary>
-    private static byte[]? RunNetsh(string args, int timeoutMs = 3000)
+    /// <summary>跑一条 netsh 命令并取回输出（带超时）；超时/失败返回 null。
+    /// 先启动异步读取再 WaitForExit：同步 ReadToEnd 会把超时架空，管道写满时还会互相死等。</summary>
+    private static string? RunNetsh(string args, int timeoutMs = 3000)
     {
         try
         {
@@ -380,10 +768,13 @@ public static class ControlService
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
+                StandardOutputEncoding = ConsoleEncoding,
+                StandardErrorEncoding = ConsoleEncoding,
                 CreateNoWindow = true,
             };
             using var p = System.Diagnostics.Process.Start(psi);
             if (p is null) return null;
+            var outTask = p.StandardOutput.ReadToEndAsync();
             var errTask = p.StandardError.ReadToEndAsync();
             if (!p.WaitForExit(timeoutMs))
             {
@@ -391,18 +782,9 @@ public static class ControlService
                 p.WaitForExit(1000);
                 return null;    // 超时：当作没拿到输出
             }
-            using var ms = new MemoryStream();
-            var copyTask = p.StandardOutput.BaseStream.CopyToAsync(ms);
-            if (!p.WaitForExit(timeoutMs))
-            {
-                try { p.Kill(entireProcessTree: true); } catch { }
-                p.WaitForExit(1000);
-                return null;    // 超时：当作没拿到输出
-            }
-            try { copyTask.Wait(1000); } catch { }
+            string outp = outTask.Wait(1000) ? outTask.Result : "";
             _ = errTask.Wait(500) ? errTask.Result : "";   // stderr 只为及时收干管道
-            byte[] raw = ms.ToArray();
-            return raw.Length == 0 ? null : raw;
+            return outp.Length == 0 ? null : outp;
         }
         catch { return null; }
     }
@@ -442,11 +824,13 @@ public static class ControlService
             if (enable && !running)
             {
                 svc.Start();
+                try { svc.WaitForStatus(System.ServiceProcess.ServiceControllerStatus.Running, TimeSpan.FromSeconds(3)); } catch { }
                 return (true, "蓝牙服务已启动");
             }
             if (!enable && running)
             {
                 svc.Stop();
+                try { svc.WaitForStatus(System.ServiceProcess.ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(3)); } catch { }
                 return (true, "蓝牙服务已停止");
             }
             return (true, enable ? "蓝牙服务已在运行" : "蓝牙服务已停止");
@@ -479,8 +863,6 @@ public static class ControlService
     [DllImport("user32.dll")] private static extern bool LockWorkStation();
     [DllImport("powrprof.dll", SetLastError = true)]
     private static extern bool SetSuspendState(bool hibernate, bool forceCritical, bool disableWakeEvent);
-    [DllImport("powrprof.dll")]
-    private static extern bool IsPwrSuspendAllowed();
 
     /// <summary>立即锁屏。</summary>
     public static void Lock()
@@ -488,41 +870,18 @@ public static class ControlService
         try { LockWorkStation(); } catch { }
     }
 
-    /// <summary>
-    /// 本机是否支持**传统睡眠**（S3）。
-    /// `IsPwrSuspendAllowed` 返回 False = 这台机器只有**新型待机（S0 / Modern Standby）**，
-    /// 而 S0 机器上 `SetSuspendState` 会被系统**记录调用却不真的睡**（Kernel-Power 事件 187 有记录、
-    /// 但没有 42/506 进入睡眠事件）—— 2026-11-26 实测：点「睡眠」等于没点。
-    /// 这种机器上只能靠系统电源策略（空闲后自动进入新型待机）。
-    /// </summary>
-    public static bool SupportsClassicSleep
+    /// <summary>立即睡眠（非强制临界挂起，允许应用正常处理挂起通知）。</summary>
+    public static void Sleep()
     {
-        get
-        {
-            try { return IsPwrSuspendAllowed(); }
-            catch { return false; }
-        }
-    }
-
-    /// <summary>
-    /// 立即睡眠。返回**结果与原因**：不支持传统睡眠、或系统拒绝时都如实说，
-    /// 不再让"点了没反应"静默发生（2026-11-26 修复：原来 SetSuspendState 的返回值被直接丢掉）。
-    /// </summary>
-    public static (bool Ok, string Message) Sleep()
-    {
-        if (!SupportsClassicSleep)
-            return (false, "本机是新型待机（S0）系统：没有传统睡眠可用；空闲后系统会自动进入待机。");
-        try
-        {
-            return SetSuspendState(false, true, false)
-                ? (true, "")
-                : (false, "系统拒绝了睡眠请求。");
-        }
-        catch { return (false, "睡眠请求失败。"); }
+        try { SetSuspendState(false, false, false); } catch { }
     }
 
     // ---------- 系统深色模式（HKCU 个人化，免管理员） ----------
     private const string PersonalizeKey = @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr SendMessageTimeoutW(
+        IntPtr hWnd, uint Msg, IntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out IntPtr lpdwResult);
 
     /// <summary>系统应用是否为浅色模式。</summary>
     public static bool IsSystemLightTheme()
@@ -535,21 +894,25 @@ public static class ControlService
         catch { return false; }
     }
 
-    /// <summary>设置系统应用深/浅色模式（即时生效，无需重启）。</summary>
+    /// <summary>设置系统深/浅色模式并广播主题切换消息（即时生效，无需重启）。</summary>
     public static void SetSystemLightTheme(bool light)
     {
         try
         {
             using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(PersonalizeKey, true);
-            key?.SetValue("AppsUseLightTheme", light ? 1 : 0, Microsoft.Win32.RegistryValueKind.DWord);
+            if (key is null) return;
+            int val = light ? 1 : 0;
+            key.SetValue("AppsUseLightTheme", val, Microsoft.Win32.RegistryValueKind.DWord);
+            key.SetValue("SystemUsesLightTheme", val, Microsoft.Win32.RegistryValueKind.DWord);
+            SendMessageTimeoutW(new IntPtr(0xFFFF), 0x001A /*WM_SETTINGCHANGE*/,
+                IntPtr.Zero, "ImmersiveColorSet", 0x0002 /*SMTO_ABORTIFHUNG*/, 200, out _);
         }
         catch { }
     }
 
-    // ---------- 夜灯（夜间模式）：CloudStore 二进制状态位，免管理员 ----------
-    // 社区验证布局：REG_BINARY "Data"，偏移 18 = 开关（1 开 / 0 关）
+    // ---------- 夜灯（夜间模式）：CloudStore Bond CompactBinary 记录，免管理员 ----------
     private const string NightLightKeyPath =
-        @"Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Current\default$windows.data.bluelightreduction.bluelightreductionstate";
+        @"Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Current\default$windows.data.bluelightreduction.bluelightreductionstate\windows.data.bluelightreduction.bluelightreductionstate";
 
     /// <summary>夜灯当前状态（null = 读不到/不支持）。</summary>
     public static bool? GetNightLightOn()
@@ -557,32 +920,59 @@ public static class ControlService
         try
         {
             using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(NightLightKeyPath, false);
-            if (key?.GetValue("Data") is byte[] data && data.Length > 18)
-                return data[18] != 0;
+            if (key?.GetValue("Data") is byte[] data && data.Length >= 23)
+            {
+                if (data[18] == 0x15 && data.Length >= 25 && data[23] == 0x10 && data[24] == 0x00)
+                    return true;
+                if (data[18] == 0x13)
+                    return false;
+            }
         }
         catch { }
         return null;
     }
 
-    /// <summary>设置夜灯开关；返回是否写入成功（不支持返回 false）。</summary>
+    /// <summary>设置夜灯开关（遵循 CloudStore Bond 变长结构：开=0x15 含 0x10 0x00，关=0x13）。</summary>
     public static bool SetNightLight(bool on)
     {
         try
         {
             using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(NightLightKeyPath, true);
-            if (key?.GetValue("Data") is byte[] data && data.Length > 18)
+            if (key?.GetValue("Data") is not byte[] data || data.Length < 23) return false;
+            bool? cur = data[18] == 0x15 ? true : data[18] == 0x13 ? false : null;
+            if (cur is null) return false;
+            if (cur.Value == on) return true;
+
+            byte[] updated;
+            if (on)
             {
-                byte want = (byte)(on ? 1 : 0);
-                if (data[18] != want)
-                {
-                    data[18] = want;
-                    key.SetValue("Data", data, Microsoft.Win32.RegistryValueKind.Binary);
-                }
-                return true;
+                // OFF(41B, 0x13) -> ON(43B, 0x15): 在偏移 23 插入 { 0x10, 0x00 }
+                updated = new byte[data.Length + 2];
+                Array.Copy(data, 0, updated, 0, 23);
+                updated[18] = 0x15;
+                updated[23] = 0x10;
+                updated[24] = 0x00;
+                Array.Copy(data, 23, updated, 25, data.Length - 23);
             }
+            else
+            {
+                if (data.Length < 25 || data[23] != 0x10 || data[24] != 0x00) return false;
+                // ON(43B, 0x15) -> OFF(41B, 0x13): 移除偏移 23..24 的 { 0x10, 0x00 }
+                updated = new byte[data.Length - 2];
+                Array.Copy(data, 0, updated, 0, 23);
+                updated[18] = 0x13;
+                Array.Copy(data, 25, updated, 23, data.Length - 25);
+            }
+
+            // 递增偏移 10..14 的 CloudStore 版本戳，通知 Shell Experience Host 立即应用
+            for (int i = 10; i < 15; i++)
+            {
+                if (updated[i] != 0xFF) { updated[i]++; break; }
+            }
+            key.SetValue("Data", updated, Microsoft.Win32.RegistryValueKind.Binary);
+            return true;
         }
-        catch { }
-        return false;
+        catch { return false; }
     }
 
     // ---------- 系统设置快捷链接 ----------
@@ -598,7 +988,7 @@ public static class ControlService
     /// .NET 8 不内置 GBK：Encoding.GetEncoding(936) 会抛 ArgumentException，
     /// 必须先注册 CodePagesEncodingProvider（见 csproj 里的 System.Text.Encoding.CodePages）。
     /// </summary>
-    private static readonly Encoding ConsoleEncoding = ResolveConsoleEncoding();
+    internal static readonly Encoding ConsoleEncoding = ResolveConsoleEncoding();
 
     /// <summary>取本机 ANSI 代码页：注册表 ACP → 当前 UI 语言的 ANSICodePage → Encoding.Default。</summary>
     private static Encoding ResolveConsoleEncoding()

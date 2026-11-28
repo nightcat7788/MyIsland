@@ -28,17 +28,25 @@ func isPhysical(_ id: UInt32) -> Bool {
     return true
 }
 
+func sanitizeName(_ raw: String) -> String {
+    raw.replacingOccurrences(of: "|", with: "/")
+       .replacingOccurrences(of: "\r", with: " ")
+       .replacingOccurrences(of: "\n", with: " ")
+       .trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
 func emit(_ id: UInt32, _ name: String, _ builtin: Bool) {
     guard let u = CGDisplayCreateUUIDFromDisplayID(id)?.takeRetainedValue() else { return }
     let uuid = CFUUIDCreateString(nil, u) as String
     let kind = isPhysical(id) ? "physical" : "virtual"
-    print("\(id)|\(uuid)|\(name)|\(builtin ? "builtin" : "external")|\(kind)")
+    let clean = sanitizeName(name)
+    print("\(id)|\(uuid)|\(clean.isEmpty ? "Display" : clean)|\(builtin ? "builtin" : "external")|\(kind)")
 }
 
 if onlineOnly {
-    var ids = [UInt32](repeating: 0, count: 16)
+    var ids = [UInt32](repeating: 0, count: 32)
     var count: UInt32 = 0
-    guard CGGetOnlineDisplayList(16, &ids, &count) == .success else { exit(1) }
+    guard CGGetOnlineDisplayList(32, &ids, &count) == .success else { exit(1) }
     for id in ids.prefix(Int(count)) {
         let name = CGDisplayIsBuiltin(id) != 0 ? "Built-in Display" : "External Display"
         emit(id, name, CGDisplayIsBuiltin(id) != 0)

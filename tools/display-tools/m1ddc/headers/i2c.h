@@ -25,6 +25,7 @@
 # define DDC_ITERATIONS		2		// Depending on display this must be set higher
 # define DDC_READ_WAIT		50000	// 10 ms returned empty replies on Dell and MCDP29xx transports.
 # define DDC_BUFFER_SIZE	256
+# define DDC_UNSUPPORTED_VALUE (-2)
 
 
 typedef struct {

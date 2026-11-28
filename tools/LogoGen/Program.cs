@@ -9,19 +9,9 @@ using System.Windows.Media.Imaging;
 
 internal static class Program
 {
-    /// <summary>输出目录 = 仓库根下的 branding/：从本 exe 往上找到含 branding/ 的那一层（tools/LogoGen/bin/... -> 仓库根）。旧写死的是别人机器上的绝对路径，换机即失效。</summary>
-    private static string ResolveBrandingDir()
-    {
-        for (var up = new DirectoryInfo(AppContext.BaseDirectory); up != null; up = up.Parent)
-        {
-            if (Directory.Exists(Path.Combine(up.FullName, "branding"))) return Path.Combine(up.FullName, "branding");
-        }
-        return Path.Combine(AppContext.BaseDirectory, "branding");
-    }
-
     private static void Main()
     {
-        string outDir = ResolveBrandingDir();
+        string outDir = @"C:\Users\fengl\WorkBuddy\2026-11-21-13-46-35\MyIsland\branding";
         Directory.CreateDirectory(outDir);
 
         int[] sizes = { 16, 24, 32, 48, 64, 128, 256, 512, 1024 };

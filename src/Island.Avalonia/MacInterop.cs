@@ -10,16 +10,18 @@ namespace Island.Avalonia;
 /// </summary>
 internal static class MacInterop
 {
-    [DllImport("/System/Library/Frameworks/AppKit.framework/AppKit", EntryPoint = "objc_getClass")]
-    private static extern IntPtr objc_getClass(string name);
+    private const string ObjcLib = "/usr/lib/libobjc.A.dylib";
 
-    [DllImport("/System/Library/Frameworks/AppKit.framework/AppKit", EntryPoint = "sel_registerName")]
-    private static extern IntPtr sel_registerName(string name);
+    [DllImport(ObjcLib, EntryPoint = "objc_getClass")]
+    private static extern IntPtr objc_getClass([MarshalAs(UnmanagedType.LPUTF8Str)] string name);
 
-    [DllImport("/System/Library/Frameworks/AppKit.framework/AppKit", EntryPoint = "objc_msgSend")]
-    private static extern void objc_msgSend_Bool(IntPtr obj, IntPtr sel, bool value);
+    [DllImport(ObjcLib, EntryPoint = "sel_registerName")]
+    private static extern IntPtr sel_registerName([MarshalAs(UnmanagedType.LPUTF8Str)] string name);
 
-    [DllImport("/System/Library/Frameworks/AppKit.framework/AppKit", EntryPoint = "objc_msgSend")]
+    [DllImport(ObjcLib, EntryPoint = "objc_msgSend")]
+    private static extern void objc_msgSend_Bool(IntPtr obj, IntPtr sel, [MarshalAs(UnmanagedType.I1)] bool value);
+
+    [DllImport(ObjcLib, EntryPoint = "objc_msgSend")]
     private static extern IntPtr objc_msgSend_IntPtr(IntPtr obj, IntPtr sel);
 
     /// <summary>
@@ -29,7 +31,7 @@ internal static class MacInterop
     /// </summary>
     public static void SetIgnoresMouseEvents(IntPtr window, bool ignore)
     {
-        if (window == IntPtr.Zero) return;
+        if (!OperatingSystem.IsMacOS() || window == IntPtr.Zero) return;
         try
         {
             IntPtr sel = sel_registerName("setIgnoresMouseEvents:");
@@ -39,11 +41,10 @@ internal static class MacInterop
     }
 
     // ---- NSWindow 改尺寸（窗口宽度要跟得上胶囊宽度）----
-    [DllImport("/System/Library/Frameworks/AppKit.framework/AppKit", EntryPoint = "objc_msgSend")]
-    private static extern void objc_msgSend_Struct(IntPtr obj, IntPtr sel, CGRect rect);
-
-    [DllImport("/System/Library/Frameworks/AppKit.framework/AppKit", EntryPoint = "objc_msgSend")]
-    private static extern void objc_msgSend_Bool_Int(IntPtr obj, IntPtr sel, bool value, IntPtr extra);
+    // setFrame:display: 有两个参数（NSRect, BOOL），ARM64 下必须完整声明 display 参数（1 字节 BOOL），
+    // 否则寄存器里残留随机值会导致窗口不重绘或异常。
+    [DllImport(ObjcLib, EntryPoint = "objc_msgSend")]
+    private static extern void objc_msgSend_Rect_Bool(IntPtr obj, IntPtr sel, CGRect rect, [MarshalAs(UnmanagedType.I1)] bool display);
 
     /// <summary>NSRect（AppKit 里是 CGFloat 双精度）。</summary>
     [StructLayout(LayoutKind.Sequential)]
@@ -55,11 +56,11 @@ internal static class MacInterop
     /// </summary>
     public static void SetWindowSize(IntPtr window, double x, double y, double w, double h)
     {
-        if (window == IntPtr.Zero) return;
+        if (!OperatingSystem.IsMacOS() || window == IntPtr.Zero) return;
         try
         {
             IntPtr sel = sel_registerName("setFrame:display:");
-            objc_msgSend_Struct(window, sel, new CGRect { X = x, Y = y, Width = w, Height = h });
+            objc_msgSend_Rect_Bool(window, sel, new CGRect { X = x, Y = y, Width = w, Height = h }, true);
         }
         catch (Exception ex) { Console.Error.WriteLine($"[mac] setFrame: {ex.Message}"); }
     }
@@ -67,6 +68,7 @@ internal static class MacInterop
     /// <summary>取 NSApp（应用对象）。</summary>
     public static IntPtr NSApp()
     {
+        if (!OperatingSystem.IsMacOS()) return IntPtr.Zero;
         IntPtr cls = objc_getClass("NSApplication");
         if (cls == IntPtr.Zero) return IntPtr.Zero;
         IntPtr sel = sel_registerName("sharedApplication");
@@ -74,15 +76,6 @@ internal static class MacInterop
     }
 
     // ============ 窗口层级（为什么 Avalonia 的 Topmost 不够高）============
-    // Avalonia 的 Window.Topmost 在 macOS 上只映射到 NSWindowLevel = NSFloatingWindowLevel(3)，
-    // 而普通应用窗口是 NSNormalWindowLevel(0)、菜单栏是 NSStatusWindowLevel(25)、
-    // 屏幕保护是 1000。3 这个层级**压不过普通应用窗口** —— 所以置顶「看起来没生效」。
-    //
-    // Vibe Island（开源的灵动岛实现）能稳稳压在最上面，靠的是：
-    //   1) window.level = .statusBar        → NSStatusWindowLevel = 25
-    //   2) window.collectionBehavior = ...  → 所有桌面都跟随、全屏时也在、不参与 Cmd+Tab
-    // 这里照搬这套：直接用 AppKit 设 level + collectionBehavior。
-    //
     // NSWindowLevel（NSInteger，64 位）
     public const long NsNormalWindowLevel = 0;
     public const long NsFloatingWindowLevel = 3;
@@ -98,10 +91,10 @@ internal static class MacInterop
     public const ulong CollectionAlwaysOnTop =
         CollectionCanJoinAllSpaces | CollectionStationary | CollectionIgnoresCycle | CollectionFullScreenAuxiliary;
 
-    [DllImport("/System/Library/Frameworks/AppKit.framework/AppKit", EntryPoint = "objc_msgSend")]
+    [DllImport(ObjcLib, EntryPoint = "objc_msgSend")]
     private static extern void objc_msgSend_Long(IntPtr obj, IntPtr sel, long value);
 
-    [DllImport("/System/Library/Frameworks/AppKit.framework/AppKit", EntryPoint = "objc_msgSend")]
+    [DllImport(ObjcLib, EntryPoint = "objc_msgSend")]
     private static extern void objc_msgSend_ULong(IntPtr obj, IntPtr sel, ulong value);
 
     /// <summary>
@@ -110,12 +103,10 @@ internal static class MacInterop
     /// </summary>
     public static void SetWindowLevel(IntPtr window, long level, ulong collectionBehavior)
     {
-        if (window == IntPtr.Zero) return;
+        if (!OperatingSystem.IsMacOS() || window == IntPtr.Zero) return;
         try
         {
-            // setLevel: （NSInteger）
             objc_msgSend_Long(window, sel_registerName("setLevel:"), level);
-            // setCollectionBehavior: （NSUInteger）
             objc_msgSend_ULong(window, sel_registerName("setCollectionBehavior:"), collectionBehavior);
         }
         catch (Exception ex) { Console.Error.WriteLine($"[mac] setLevel: {ex.Message}"); }

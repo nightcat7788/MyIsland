@@ -27,6 +27,9 @@ private final class Commands {
 enum ScreenGuardian {
     static func main() {
         signal(SIGPIPE, SIG_IGN)
+        signal(SIGTERM, SIG_IGN)
+        signal(SIGINT, SIG_IGN)
+        signal(SIGHUP, SIG_IGN)
         setbuf(stdout, nil)
         let arguments = CommandLine.arguments
         guard arguments.count == 3, let id = UInt32(arguments[1]),
@@ -36,23 +39,48 @@ enum ScreenGuardian {
             exit(1)
         }
         let commands = Commands()
+        let sigQueue = DispatchQueue(label: "island.guardian.signals")
+        var signalSources: [DispatchSourceSignal] = []
+        for sig in [SIGTERM, SIGINT, SIGHUP] {
+            let src = DispatchSource.makeSignalSource(signal: sig, queue: sigQueue)
+            src.setEventHandler { commands.accept("restore") }
+            src.resume()
+            signalSources.append(src)
+        }
+        let parentPid = getppid()
+        var procSource: DispatchSourceProcess?
+        if parentPid > 1 {
+            let ps = DispatchSource.makeProcessSource(identifier: parentPid, eventMask: .exit, queue: sigQueue)
+            ps.setEventHandler { commands.accept(nil) }
+            ps.resume()
+            procSource = ps
+            if getppid() != parentPid { commands.accept(nil) }
+        } else {
+            commands.accept(nil)
+        }
         DispatchQueue.global().async {
             while let line = readLine() { commands.accept(line) }
             commands.accept(nil)
         }
+        var didDisable = false
         do {
             try BuiltinDisplayEngine.setEnabled(false, id: id)
+            didDisable = true
             print("READY")
             let deadline = DispatchTime.now() + 15
             while CGDisplayIsOnline(id) == 0 {
-                if commands.shouldRestore(externalAvailable: !BuiltinDisplayEngine.onlineExternalIDs().isEmpty,
+                if commands.shouldRestore(externalAvailable: !BuiltinDisplayEngine.visibleExternalIDs().isEmpty,
                                           expired: DispatchTime.now() >= deadline) { break }
                 Thread.sleep(forTimeInterval: 0.25)
             }
         } catch {
             print("ERROR:\(error.localizedDescription)")
         }
-        // The guardian outlives the UI process so an app crash still triggers recovery.
+        withExtendedLifetime((signalSources, procSource)) {}
+        guard didDisable || CGDisplayIsOnline(id) == 0 else {
+            exit(1)
+        }
+        // The guardian outlives the UI process so an app crash or termination signal still triggers recovery.
         for _ in 0..<3 {
             do {
                 try BuiltinDisplayEngine.setEnabled(true, id: id)

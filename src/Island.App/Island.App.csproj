@@ -1,5 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
+    <!-- 允许在 macOS/Linux 上编译 Windows 目标：否则 NETSDK1100，Windows 版回归无法在 Mac 上验证 -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <UseWPF>true</UseWPF>
@@ -49,8 +51,6 @@
   <!-- 以源文件链接方式并入 Core 与 Native（不再 ProjectReference 出 DLL） -->
   <ItemGroup>
     <Compile Include="..\Island.Core\Monitoring\*.cs" Link="Merged\Core\%(Filename)%(Extension)" />
-    <!-- 能力清单（两端唯一真相源）：直接链源文件，两端拿同一份实现 -->
-    <Compile Include="..\Island.Core\Capabilities\*.cs" Link="Merged\Core\Capabilities\%(Filename)%(Extension)" />
     <Compile Include="..\Island.Native\*.cs" Link="Merged\Native\%(Filename)%(Extension)" />
   </ItemGroup>
 
@@ -66,22 +66,8 @@
     <PackageReference Include="System.Text.Encoding.CodePages" Version="8.0.0" />
   </ItemGroup>
 
-  <!-- inpoutx64.dll 故意不随包发布：它一被加载就会把未签名的 inpoutx64.sys 内核驱动装进系统，
-       配合 ECAM 物理内存映射会导致 0x1EA 蓝屏（2026-11-23 实机三次）。
-       需要 AMD SMN 直读的高级用户请自行放入 dll 并在设置里开启 EnableSmnDirectRead。 -->
-
-  <!-- 温度驱动（PawnIO，2026-11-24）：LibreHardwareMonitorLib 只会打开驱动设备、不会装驱动，
-       干净的机器上即使以管理员运行也读不到 CPU 温度。这里把官方 2.2.0 签名安装器原样内嵌
-       （PawnIoInstaller 负责释放、校验 SHA-256、静默安装）。
-       许可证（GPL-2.0）要求随二进制分发许可证文本：落到 licenses\ 下。
-       installer\MyIsland.iss 与便携 zip 都是把 publish 输出整目录拷走，不需要另外登记。 -->
-  <ItemGroup>
-    <EmbeddedResource Include="..\..\driver\PawnIO_setup.exe" LogicalName="Island.App.Resources.PawnIO_setup.exe" />
-    <Content Include="..\..\driver\COPYING-PawnIO.txt">
-      <Link>licenses\PawnIO-COPYING.txt</Link>
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
-  </ItemGroup>
+  <!-- CPU/GPU 温度统一通过 LibreHardwareMonitorLib 0.9.6 + 微软签名 PawnIO 驱动读取，
+       已彻底移除旧的未签名 inpoutx64.dll 物理内存直读路径，安全红线仍保留在打包排除项中。 -->
 
   <!-- 产品 logo：托盘图标 + 可执行文件图标 -->
   <ItemGroup>

@@ -15,6 +15,7 @@ internal static class GpuPdhTests
     // 真实实例名（来自本机 \\GPU Engine(*) 计数器）：
     // pid_<pid>_luid_<LUID高位>_<LUID低位=适配器标识>_phys_<n>_eng_<n>_engtype_<类型>
     private const string GpuA = "pid_1128_luid_0x00000000_0x00010c47_phys_0_eng_0_engtype_3D";
+    private const string GpuASameEngOtherPid = "pid_20340_luid_0x00000000_0x00010c47_phys_0_eng_0_engtype_3D";
     private const string GpuAOtherPid = "pid_20340_luid_0x00000000_0x00010c47_phys_0_eng_1_engtype_3D";
     private const string GpuB = "pid_4180_luid_0x00000000_0x00011076_phys_0_eng_0_engtype_3D";
     private const string CopyEngine = "pid_1128_luid_0x00000000_0x00010c47_phys_0_eng_0_engtype_Copy";
@@ -33,17 +34,23 @@ internal static class GpuPdhTests
         check("没有 luid 段的实例名取不到键（返回空串而不是抛异常）",
             PdhWildcardQuery.AdapterKeyOf("some_other_counter") == "");
 
-        check("同一张卡的多个引擎取 max 而不是求和",
+        check("同一张卡的多个不同引擎取 max 而不是求和",
             Near(PdhWildcardQuery.AggregateForTest(
                 new[] { GpuA, GpuAOtherPid }, new[] { 30.0, 40.0 }, "engtype_3D"), 40.0));
+
+        check("同一张卡同一引擎号（eng_0）上多个进程的份额按微软口径求和",
+            Near(PdhWildcardQuery.AggregateForTest(
+                new[] { GpuA, GpuASameEngOtherPid }, new[] { 30.0, 40.0 }, "engtype_3D"), 70.0));
 
         check("多张卡之间取最大值（任务管理器口径）",
             Near(PdhWildcardQuery.AggregateForTest(
                 new[] { GpuA, GpuB }, new[] { 30.0, 25.0 }, "engtype_3D"), 30.0));
 
-        check("非 3D 引擎不参与聚合",
+        check("非 3D 引擎不参与聚合（无论排在后还是排在前，验证宽字符 NUL 终止）",
             Near(PdhWildcardQuery.AggregateForTest(
-                new[] { GpuA, CopyEngine }, new[] { 10.0, 90.0 }, "engtype_3D"), 10.0));
+                new[] { GpuA, CopyEngine }, new[] { 10.0, 90.0 }, "engtype_3D"), 10.0)
+            && Near(PdhWildcardQuery.AggregateForTest(
+                new[] { CopyEngine, GpuA }, new[] { 90.0, 15.0 }, "engtype_3D"), 15.0));
 
         var rounds = PdhWildcardQuery.AggregateRoundsForTest(
             new[] { GpuA, GpuAOtherPid }, new[] { 30.0, 40.0 }, "engtype_3D", 3);

@@ -34,10 +34,28 @@ internal static class MonitorModelTests
             && MonitorSnapshot.FormatBytes(2048) == "2.0 KB"
             && MonitorSnapshot.FormatBytes(5 * 1024 * 1024) == "5.0 MB"
             && MonitorSnapshot.FormatBytes(3.0 * 1024 * 1024 * 1024) == "3.0 GB");
-        check("CompactSpeed 输出紧凑网速",
-            MonitorSnapshot.CompactSpeed(3.4 * 1024 * 1024) == "3.40M"
-            && MonitorSnapshot.CompactSpeed(420 * 1024) == "420K"
-            && MonitorSnapshot.CompactSpeed(999) == "999B");
+        check("FormatBytes 边界四舍五入进位与异常值防护",
+            MonitorSnapshot.FormatBytes(double.NaN) == "0 B"
+            && MonitorSnapshot.FormatBytes(double.PositiveInfinity) == "0 B"
+            && MonitorSnapshot.FormatBytes(-5) == "0 B"
+            && MonitorSnapshot.FormatBytes(1048575.9) == "1.0 MB");
+        // 胶囊实际在用的是 FormatSpeedFixed（恒 6 字符、防排版抖动）。
+        check("FormatSpeedFixed 输出定宽网速（数值 5 字符 + 单位 1 字符）",
+            MonitorSnapshot.FormatSpeedFixed(3.4 * 1024 * 1024) == "  3.4M"
+            && MonitorSnapshot.FormatSpeedFixed(420 * 1024) == "420.0K"
+            && MonitorSnapshot.FormatSpeedFixed(999) == "999.0B"
+            && MonitorSnapshot.FormatSpeedFixed(1024) == "  1.0K");
+        check("FormatSpeedFixed 四舍五入跨越位数边界仍严格保持 6 字符",
+            MonitorSnapshot.FormatSpeedFixed(9.96) == " 10.0B"
+            && MonitorSnapshot.FormatSpeedFixed(99.96 * 1024) == "100.0K"
+            && MonitorSnapshot.FormatSpeedFixed(1023.96) == "  1.0K");
+        check("FormatSpeedFixed 宽度恒定（防排版抖动的核心契约）",
+            new[] { 0.5, 9.96, 99.96, 999.0, 1023.96, 1024.0, 999.9 * 1024, 999.96 * 1024, 1024 * 1024.0, 999.9 * 1024 * 1024, 1073741824.0 }
+                .Select(MonitorSnapshot.FormatSpeedFixed).All(s => s.Length == 6));
+        check("FormatSpeedFixed 坏值不抛（NaN / Inf / 负数）",
+            MonitorSnapshot.FormatSpeedFixed(double.NaN) == "  0.0B"
+            && MonitorSnapshot.FormatSpeedFixed(double.PositiveInfinity) == "  0.0B"
+            && MonitorSnapshot.FormatSpeedFixed(-5) == "  0.0B");
         check("FormatSpeed 输出带单位的速率",
             MonitorSnapshot.FormatSpeed(0) == "0 B/s"
             && MonitorSnapshot.FormatSpeed(1536) == "1.5 KB/s"
@@ -60,5 +78,19 @@ internal static class MonitorModelTests
         check("ToString 汇总 CPU/内存/网速",
             new MonitorSnapshot { CpuUsage = 42, MemoryUsagePercent = 60 }
                 .ToString().Contains("CPU 42%"));
+
+        // Reading<T> 三态契约（NotRequested / Available / Unavailable）
+        var defReading = default(Reading<double>);
+        var okReading = Reading<double>.Of(55.5);
+        var badReading = Reading<double>.Unavailable("");
+        check("Reading<T> 显式区分未请求、可用与不可用三态",
+            defReading.IsNotRequested && !defReading.HasValue
+            && okReading.HasValue && !okReading.IsNotRequested && Math.Abs(okReading.GetValueOrDefault(0) - 55.5) < 1e-9
+            && !badReading.HasValue && !badReading.IsNotRequested && !string.IsNullOrEmpty(badReading.Reason));
+
+        var statusWarmup = ReadingStatus.Empty with { Cpu = Reading<double>.Unavailable("首个采样周期") };
+        var statusErr = statusWarmup with { Disk = Reading<double>.Unavailable("计数器不可用") };
+        check("ReadingStatus.FirstProblem 跳过预热占位并定位真实故障",
+            statusWarmup.FirstProblem == "" && statusErr.FirstProblem == "计数器不可用");
     }
 }

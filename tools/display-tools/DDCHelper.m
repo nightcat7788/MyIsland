@@ -51,7 +51,7 @@ static DDCValue readValueWithRetry(DDCTransport transport, UInt8 control, double
     for (int attempt = 0; attempt < 5; attempt++) {
         if (monotonicTime() >= deadline) break;
         value = readOnce(transport, control);
-        if (validValue(control, value)) break;
+        if (validValue(control, value) || value.curValue == DDC_UNSUPPORTED_VALUE) break;
         if (attempt < 4) {
             useconds_t delay = 100000 << attempt;
             if (monotonicTime() + delay / 1000000.0 >= deadline) break;
@@ -114,6 +114,11 @@ static int selfTest(void) {
     reply[10] = (char)checksum;
     DDCValue value = convertI2CtoDDC(reply);
     assert(value.maxValue == 300 && value.curValue == 128);
+    reply[3] = 1;
+    checksum = 0x50;
+    for (int i = 0; i < 10; i++) checksum ^= (uint8_t)reply[i];
+    reply[10] = (char)checksum;
+    assert(convertI2CtoDDC(reply).curValue == DDC_UNSUPPORTED_VALUE);
     reply[10] ^= 1;
     assert(convertI2CtoDDC(reply).curValue == -1);
     memset(reply, 0, sizeof(reply));
@@ -154,30 +159,45 @@ int main(int argc, const char **argv) {
         DisplayInfos displays[MAX_DISPLAYS] = {};
         CGDisplayCount count = getOnlineDisplayInfos(displays);
         DDCTransport transport = {NULL, DDC_CHIP_ADDRESS_DEFAULT};
+        NSString *targetUuid = [NSString stringWithUTF8String:argv[3]];
         for (CGDisplayCount i = 0; i < count; i++) {
-            if (displays[i].id == displayID &&
-                [displays[i].uuid isEqualToString:[NSString stringWithUTF8String:argv[3]]] &&
+            if (targetUuid && displays[i].id == displayID &&
+                [displays[i].uuid isEqualToString:targetUuid] &&
                 !CGDisplayIsBuiltin(displays[i].id)) {
                 transport = getDisplayDDCTransport(&displays[i]);
                 break;
             }
         }
+        releaseDisplayInfos(displays, count);
         if (!transport.service) return fail("未找到可用的显示器控制通道，请检查连接线或扩展坞。");
+        int rc = 0;
         DDCValue value = readValue(transport, (UInt8)control, deadline);
-        if (!validValue((UInt8)control, value)) return failUnsupported("显示器未返回有效数据，可能不支持此功能，请检查 DDC/CI 设置。");
+        if (value.curValue == DDC_UNSUPPORTED_VALUE) {
+            CFRelease(transport.service);
+            return failUnsupported("显示器明确不支持此功能。");
+        }
+        if (!validValue((UInt8)control, value)) {
+            CFRelease(transport.service);
+            return fail("显示器未返回有效数据，请检查 DDC/CI 设置或连接后重试。");
+        }
         if (setting) {
-            // percentMode：用刚读到的上限把百分比换算成 raw 绝对值。
-            // 这样调用方不必自己先读一次上限——少一次 DDC 事务，
-            // 也避免"读失败 → 整个写入被放弃"的问题（2026-11-24 用户反馈"不能设置亮度"）。
             if (percentMode) {
-                if (value.maxValue <= 0) return fail("无法获取该控制项的上限。");
+                if (value.maxValue <= 0) {
+                    CFRelease(transport.service);
+                    return fail("无法获取该控制项的上限。");
+                }
                 requested = (unsigned long)((value.maxValue * requested + 50) / 100);
             }
-            if (!validWrite((UInt8)control, requested, value)) return fail("设置值不在显示器允许的范围内。");
+            if (!validWrite((UInt8)control, requested, value)) {
+                CFRelease(transport.service);
+                return fail("设置值不在显示器允许的范围内。");
+            }
             DDCPacket packet = createDDCPacket((UInt8)control);
             prepareDDCWrite(&packet, (UInt16)requested);
-            if (performDDCWriteAtChipAddress(transport.service, transport.chipAddress, &packet))
+            if (performDDCWriteAtChipAddress(transport.service, transport.chipAddress, &packet)) {
+                CFRelease(transport.service);
                 return fail("写入失败，请检查显示器连接。");
+            }
             value = (DDCValue){-1, -1};
             for (int attempt = 0; attempt < 3; attempt++) {
                 if (monotonicTime() + 0.1 >= deadline) break;
@@ -187,11 +207,11 @@ int main(int argc, const char **argv) {
             }
             if (value.curValue != (int)requested) {
                 fprintf(stderr, "显示器未确认目标值（目标 %lu，返回 %d）。请检查显示器设置或连接后重试。\n", requested, value.curValue);
-                return 2;
+                rc = 2;
             }
         }
         CFRelease(transport.service);
-        printf("{\"current\":%d,\"maximum\":%d}\n", value.curValue, value.maxValue);
-        return 0;
+        if (rc == 0) printf("{\"current\":%d,\"maximum\":%d}\n", value.curValue, value.maxValue);
+        return rc;
     }
 }

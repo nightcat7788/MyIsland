@@ -6,6 +6,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 OUT="$HERE/../../branding"
 WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
 xcrun swiftc -O "$HERE/icongen.swift" -o "$WORK/icongen"
 (cd "$WORK" && ./icongen)
 iconutil -c icns "$WORK/island.iconset" -o "$OUT/island.icns"
@@ -26,5 +27,4 @@ for w, d in imgs:
     body += d; offset += len(d)
 open(out, 'wb').write(hdr + entries + body)
 PY
-rm -rf "$WORK"
 echo "已生成：branding/island.icns / island.iconset / island-logo-*.png / island-logo.ico"

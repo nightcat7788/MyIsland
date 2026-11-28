@@ -38,6 +38,7 @@ typedef struct
 } DisplayInfos;
 
 CGDisplayCount  getOnlineDisplayInfos(DisplayInfos* displayInfos);
+void            releaseDisplayInfos(DisplayInfos* displayInfos, CGDisplayCount count);
 DisplayInfos*   selectDisplay(DisplayInfos *displays, int connectedDisplays, char *displayIdentifier);
 
 IOAVServiceRef  getDefaultDisplayAVService();

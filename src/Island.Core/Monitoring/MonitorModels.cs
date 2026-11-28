@@ -49,14 +49,6 @@ public sealed record MonitorSnapshot
     /// <summary>显存已用/总量 GB。</summary>
     public double? GpuMemoryUsedGB { get; init; }
     public double? GpuMemoryTotalGB { get; init; }
-    /// <summary>
-    /// 显存读数的**口径**："vendor"（厂商显存）/ "dedicated"（D3D 专用显存）/ "shared"（D3D 共享内存）/ ""（未知）。
-    ///
-    /// ⚠️ 共享口径下那个"总量"是**共享内存池大小（≈ 系统内存）**，不是显存容量 ——
-    /// 显示层必须靠它决定要不要显示"总量"，否则用户会以为核显有十几 GB 显存（误导性读数）。
-    /// 取值定义见 Island.App.Services.GpuMemoryKinds（判不出来就留空，**不猜**）。
-    /// </summary>
-    public string GpuMemoryKind { get; init; } = "";
     /// <summary>GPU 核心频率 MHz。</summary>
     public double? GpuCoreClockMHz { get; init; }
 
@@ -104,13 +96,31 @@ public sealed record MonitorSnapshot
     public string SessionText =>
         $"今日 ↓{FormatBytes(TodayDownload)} ↑{FormatBytes(TodayUpload)} · 会话 ↓{FormatBytes(SessionDownload)} ↑{FormatBytes(SessionUpload)}";
 
+    /// <summary>系统开机时长人性化格式（对齐 LiteMonitor：如 "19时 36分" / "1天 4时 12分" / "42分"）。</summary>
+    public static string FormatUptime(double hours)
+    {
+        if (!double.IsFinite(hours) || hours <= 0) return "0分";
+        int totalMinutes = (int)Math.Floor(hours * 60.0 + 1e-6);
+        int days = totalMinutes / (24 * 60);
+        int remH = (totalMinutes % (24 * 60)) / 60;
+        int remM = totalMinutes % 60;
+        if (days > 0) return $"{days}天 {remH}时 {remM}分";
+        if (remH > 0) return $"{remH}时 {remM}分";
+        return $"{remM}分";
+    }
+
     public static string FormatBytes(double bytes)
     {
-        if (bytes < 1024) return $"{bytes:F0} B";
+        if (!double.IsFinite(bytes) || bytes <= 0) return "0 B";
+        if (Math.Round(bytes, 0) < 1024) return $"{Math.Round(bytes, 0):F0} B";
         string[] units = { "KB", "MB", "GB", "TB" };
         double v = bytes / 1024;
         int i = 0;
-        while (v >= 1024 && i < units.Length - 1) { v /= 1024; i++; }
+        while (i < units.Length - 1 && (v >= 1024 || Math.Round(v, 1) >= 1024))
+        {
+            v /= 1024;
+            i++;
+        }
         return $"{v:F1} {units[i]}";
     }
 
@@ -175,22 +185,21 @@ public sealed record MonitorSnapshot
             v = next; i++;
             if (Math.Round(v, 1) < 1024) break;
         }
-        double shown = Math.Min(v, 999.9);
-        string num = shown >= 100 ? $"{shown:F1}" : shown >= 10 ? $" {shown:F1}" : $"  {shown:F1}";
-        return num + units[i];
+        double shown = Math.Min(Math.Round(v, 1), 999.9);
+        return string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{shown,5:F1}{units[i]}");
     }
 
     /// <summary>
-    /// 紧凑网速（BrimDeck 刘海同款）：3.40M / 420K / 123B。
-    /// Windows 侧的 clock / monitor 视图与展开后的监控页用这一档（宽度靠占位样本兜住）；
-    /// combo / dash 两个胶囊已改用 <see cref="FormatSpeedFixed"/>（恒 6 字符，与 mac 的胶囊口径一致）。
-    /// 两者是刻意分开的两种格式，不要互相替换。
+    /// 紧凑网速（BrimDeck 刘海同款）：3.4M / 420K / 123B。
+    /// 已废弃：宽度不定（4~6 字符），会让流式/右缘排布的读数抖动；
+    /// 需要紧凑格式请用 <see cref="FormatSpeedFixed"/>（恒 6 字符）。
     /// </summary>
+    [Obsolete("宽度不定会导致排版抖动，请改用 FormatSpeedFixed")]
     public static string CompactSpeed(double bytesPerSec)
     {
         if (double.IsNaN(bytesPerSec) || double.IsInfinity(bytesPerSec) || bytesPerSec < 1) return "0B";
-        if (bytesPerSec >= 1073741824.0) return $"{bytesPerSec / 1073741824.0:F2}G";
-        if (bytesPerSec >= 1048576.0) return $"{bytesPerSec / 1048576.0:F2}M";
+        if (bytesPerSec >= 1073741824.0) return $"{bytesPerSec / 1073741824.0:F1}G";
+        if (bytesPerSec >= 1048576.0) return $"{bytesPerSec / 1048576.0:F1}M";
         if (bytesPerSec >= 1024.0) return $"{bytesPerSec / 1024.0:F0}K";
         return $"{bytesPerSec:F0}B";
     }

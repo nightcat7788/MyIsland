@@ -83,7 +83,7 @@ public static class ClipClassifier
                 {
                     3 => Color.FromRgb(Convert.ToByte(h[0].ToString() + h[0], 16), Convert.ToByte(h[1].ToString() + h[1], 16), Convert.ToByte(h[2].ToString() + h[2], 16)),
                     6 => Color.FromRgb(Convert.ToByte(h[..2], 16), Convert.ToByte(h[2..4], 16), Convert.ToByte(h[4..6], 16)),
-                    8 => Color.FromArgb(Convert.ToByte(h[..2], 16), Convert.ToByte(h[2..4], 16), Convert.ToByte(h[4..6], 16), Convert.ToByte(h[6..8], 16)),
+                    8 => Color.FromArgb(Convert.ToByte(h[6..8], 16), Convert.ToByte(h[..2], 16), Convert.ToByte(h[2..4], 16), Convert.ToByte(h[4..6], 16)),
                     _ => null,
                 };
             }
@@ -107,41 +107,52 @@ public sealed class ClipboardHistory : IDisposable
     private DispatcherTimer? _timer;
     private string? _last;
     private byte[]? _lastImg;   // 上一张图片的引用（去重）
+    private int _polling;
+
+    private void TrimExcessLocked()
+    {
+        for (int idx = _items.Count - 1; idx >= 0 && _items.Count > 20; idx--)
+        {
+            if (!_items[idx].Pinned) _items.RemoveAt(idx);
+        }
+        while (_items.Count > 20) _items.RemoveAt(_items.Count - 1);
+    }
 
     public IReadOnlyList<ClipItem> Items { get { lock (_gate) return _items.ToList(); } }
 
-    /// <summary>
-    /// 是否在监听剪贴板（借鉴 NotchBar ClipboardStore.isEnabled）。
-    /// 只在剪贴板页可见时开启——否则每 1.5 秒读一次系统剪贴板是纯浪费，
-    /// 而且会让用户的复制历史被悄悄记下（隐私上也更合理）。
-    /// </summary>
     public bool Enabled { get; set; } = true;
     /// <summary>新增一条记录时触发（收起态要实时显示条数）。</summary>
     public event Action? ItemsChanged;
 
     public void Start(TopLevel top)
     {
+        _timer?.Stop();
         _timer = new DispatcherTimer(DispatcherPriority.Normal) { Interval = TimeSpan.FromSeconds(1.5) };
         _timer.Tick += async (_, _) =>
         {
             if (!Enabled) return;
+            if (System.Threading.Interlocked.CompareExchange(ref _polling, 1, 0) != 0) return;
             try
             {
                 var clip = top.Clipboard;
                 if (clip is null) return;
                 string? text = await clip.GetTextAsync();
-                // 图片优先：macOS 有图时 GetTextAsync 也可能返回非空串（实测），
-                // 所以不能拿"文本是否为空"判断图片——先查 formats 里有没有 PNG。
                 try
                 {
                     var fmts = await clip.GetFormatsAsync();
-                    // macOS 报 UTI 名（public.png），Windows 报 MIME 名（image/png）——两个都认
+                    // 跳过密码管理器等标记的敏感剪贴板格式
+                    if (fmts.Any(f => f.Contains("Concealed", StringComparison.OrdinalIgnoreCase)
+                                   || f.Contains("Transient", StringComparison.OrdinalIgnoreCase)
+                                   || f.Contains("ExcludeClipboardContentFromMonitorProcessing", StringComparison.OrdinalIgnoreCase)
+                                   || f.Contains("ClipboardViewerIgnore", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        return;
+                    }
                     string imgFmt = fmts.Contains("public.png") ? "public.png"
                         : fmts.Contains("image/png") ? "image/png" : "";
                     if (imgFmt.Length > 0)
                     {
                         var data = await clip.GetDataAsync(imgFmt);
-                        // Avalonia 各平台返回类型不一（MemoryStream / byte[] / IBitmap…），统一转字节
                         byte[]? png = data switch
                         {
                             System.IO.MemoryStream ms2 => ms2.ToArray(),
@@ -158,7 +169,7 @@ public sealed class ClipboardHistory : IDisposable
                                 lock (_gate)
                                 {
                                     _items.Insert(0, new ClipItem(DateTime.Now, $"图片 {png.Length / 1024} KB", ClipKind.Image, "") { Image = png });
-                                    if (_items.Count > 20) _items.RemoveAt(_items.Count - 1);
+                                    TrimExcessLocked();
                                 }
                                 ItemsChanged?.Invoke();
                             }
@@ -170,10 +181,8 @@ public sealed class ClipboardHistory : IDisposable
                 if (string.IsNullOrWhiteSpace(text) || text == _last) return;
                 _lastImg = null;   // 来了新文本，图片指纹作废
                 _last = text;
-                // 单条文本上限 100 万字符（防止粘贴一个几 MB 的日志把内存撑爆）
                 if (text.Length > 1_000_000) text = text[..1_000_000];
                 var kind = ClipClassifier.Classify(text);
-                // 多行文本：预览只取第一行（对齐 BrimDeck），行数单独记，界面上标「+N 行」。
                 string normalized = text.Replace("\r", "");
                 int lines = 1;
                 for (int i = 0; i < normalized.Length; i++)
@@ -184,11 +193,12 @@ public sealed class ClipboardHistory : IDisposable
                 lock (_gate)
                 {
                     _items.Insert(0, new ClipItem(DateTime.Now, firstLine, kind, text) { Lines = lines });
-                    if (_items.Count > 20) _items.RemoveAt(_items.Count - 1);
+                    TrimExcessLocked();
                 }
                 ItemsChanged?.Invoke();
             }
             catch (Exception ex) { Console.Error.WriteLine($"[clipboard] {ex.Message}"); }
+            finally { System.Threading.Interlocked.Exchange(ref _polling, 0); }
         };
         _timer.Start();
     }
@@ -224,7 +234,7 @@ public sealed class ClipboardHistory : IDisposable
             int i = _items.FindIndex(it => it.At < item.At);
             if (i < 0) i = _items.Count;
             _items.Insert(i, item);
-            if (_items.Count > 20) _items.RemoveAt(_items.Count - 1);
+            TrimExcessLocked();
         }
         ItemsChanged?.Invoke();
     }
@@ -336,6 +346,8 @@ public sealed class ClipboardHistory : IDisposable
                 return;
             }
             Directory.CreateDirectory(ImgDir);
+            SetOwnerOnlyPermissions(StoreDir, isDir: true);
+            SetOwnerOnlyPermissions(ImgDir, isDir: true);
             var rows = new List<ClipRow>();
             List<ClipItem> snap;
             lock (_gate) snap = _items.ToList();
@@ -348,7 +360,11 @@ public sealed class ClipboardHistory : IDisposable
                     string imgPath = Path.Combine(ImgDir, imgFile);
                     if (!File.Exists(imgPath))
                     {
-                        try { File.WriteAllBytes(imgPath, png); }
+                        try
+                        {
+                            File.WriteAllBytes(imgPath, png);
+                            SetOwnerOnlyPermissions(imgPath, isDir: false);
+                        }
                         catch { imgFile = null; }
                     }
                 }
@@ -358,6 +374,7 @@ public sealed class ClipboardHistory : IDisposable
                 new System.Text.Json.JsonSerializerOptions { WriteIndented = false });
             string tmp = JsonPath + ".tmp";
             File.WriteAllText(tmp, json);
+            SetOwnerOnlyPermissions(tmp, isDir: false);
             File.Move(tmp, JsonPath, true);
             // 清掉不再被任何条目引用的图片。之前 Save 只写不删：条目被删除 / 过期后，
             // 它的 PNG 永远留在 images/ 里，自动保存每 60 秒跑一次，长期开着
@@ -408,28 +425,52 @@ public sealed class ClipboardHistory : IDisposable
             {
                 if (!Enum.TryParse<ClipKind>(r.Kind, out var kind)) kind = ClipKind.Text;
                 byte[]? img = null;
+                string? safeImgFile = null;
                 if (!string.IsNullOrEmpty(r.ImageFile))
                 {
-                    try
+                    string fileOnly = Path.GetFileName(r.ImageFile);
+                    if (fileOnly == r.ImageFile && fileOnly.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
                     {
-                        string p = Path.Combine(ImgDir, r.ImageFile);
-                        if (File.Exists(p)) img = File.ReadAllBytes(p);
+                        safeImgFile = fileOnly;
+                        try
+                        {
+                            string p = Path.Combine(ImgDir, fileOnly);
+                            if (File.Exists(p)) img = File.ReadAllBytes(p);
+                        }
+                        catch { /* 图片读不到就当纯文本条目 */ }
                     }
-                    catch { /* 图片读不到就当纯文本条目 */ }
                 }
                 loaded.Add(new ClipItem(r.At, r.Preview, kind, r.Text)
-                { Pinned = r.Pinned, Lines = r.Lines <= 0 ? 1 : r.Lines, Image = img, ImageFile = r.ImageFile });
+                { Pinned = r.Pinned, Lines = r.Lines <= 0 ? 1 : r.Lines, Image = img, ImageFile = safeImgFile });
             }
             lock (_gate)
             {
+                var merged = _items
+                    .Concat(loaded)
+                    .GroupBy(x => (x.At, x.Kind, x.Text))
+                    .Select(g => g.First())
+                    .OrderByDescending(i => i.At)
+                    .ToList();
                 _items.Clear();
-                // 新est first，合并已有（本次会话可能已经记了新条目）
-                foreach (var it in loaded.OrderByDescending(i => i.At)) _items.Add(it);
-                if (_items.Count > 20) _items.RemoveRange(20, _items.Count - 20);
+                _items.AddRange(merged);
+                TrimExcessLocked();
             }
             ItemsChanged?.Invoke();
         }
         catch (Exception ex) { Console.Error.WriteLine($"[clipboard] load: {ex.Message}"); }
+    }
+
+    private static void SetOwnerOnlyPermissions(string path, bool isDir)
+    {
+        if (OperatingSystem.IsWindows()) return;
+        try
+        {
+            var mode = isDir
+                ? UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+                : UnixFileMode.UserRead | UnixFileMode.UserWrite;
+            File.SetUnixFileMode(path, mode);
+        }
+        catch { }
     }
 
     /// <summary>按保留期清理过期条目（常驻项跳过）。返回被清掉的条数。</summary>

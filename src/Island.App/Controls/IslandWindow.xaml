@@ -18,11 +18,12 @@
                                MouseLeftButtonUp="OnMouseLeftUp"
                                MouseMove="OnMouseMove"
                                MouseRightButtonDown="OnMouseRightDown"
+                               MouseDown="OnMouseMiddleDown"
                                MouseWheel="OnMouseWheel"/>
 
-        <!-- 展开面板：不在 XAML 里声明 —— 那会在启动时就把 540×380 的整棵可视树
-             （含主题资源、中文字体、监控页/设备页控件）实例化并常驻内存，
-             而用户绝大多数时间只看收起态的小胶囊。改为首次展开时在代码里创建，
-             收起动画结束后释放（见 IslandWindow.EnsurePanel / ReleasePanel）。 -->
+        <!-- 展开面板 -->
+        <controls:ExpandedPanel x:Name="expandedPanel" Opacity="0" IsHitTestVisible="False"
+                                HorizontalAlignment="Center" VerticalAlignment="Center"
+                                Width="540" Height="380" Margin="0,0,0,0"/>
     </Grid>
 </Window>

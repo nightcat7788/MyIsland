@@ -1,20 +1,18 @@
 #!/bin/bash
 # Mac 版统一发布脚本：干净发布 + 产物完整性校验。
-#
-# 【为什么必须删干净再 publish】
-# .NET 8 的增量 publish 会**先清空输出目录**再拷贝新产物，
-# 结果是**第二次 publish 后 native dylib（libSkiaSharp 等）全部消失**，
-# 打出来的 .app 一启动就崩（TypeInitializationException: libSkiaSharp 缺失）。
-# 这个坑踩过两次，做法就是：每次 publish 前 rm -rf 输出目录，强制完整发布。
-#
 # 用法：bash packaging/macos/publish.sh [输出目录]
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 OUT="${1:-publish/osx-arm64}"
 ROOT="$(pwd)"
-export DOTNET_ROOT="${DOTNET_ROOT:-$HOME/.dotnet}"
-DOTNET="$DOTNET_ROOT/dotnet"
+if [[ -n "${DOTNET_ROOT:-}" && -x "$DOTNET_ROOT/dotnet" ]]; then
+    DOTNET="$DOTNET_ROOT/dotnet"
+elif command -v dotnet >/dev/null 2>&1; then
+    DOTNET="$(command -v dotnet)"
+else
+    DOTNET="$HOME/.dotnet/dotnet"
+fi
 
 echo "==> 清理输出目录（避免增量 publish 丢 dylib）"
 rm -rf "$OUT"
@@ -24,23 +22,14 @@ echo "==> 完整 publish"
     -c Release -r osx-arm64 --self-contained -p:PublishSingleFile=true \
     -o "$OUT" --nologo
 
-# ---- 原生探针：源码在仓库里，但产物不进版本库；缺了就现场编译 ----
-# publish.sh 下面会硬性校验 island-devices 等工具存在，缺了就直接失败。
-# 这里先尝试编译（需要 macOS 的 clang/swiftc），失败不阻断：可能产物已在目录里。
-if ! bash "$ROOT/tools/build-mac-probes.sh" "$OUT"; then
-    echo "[warn] 原生探针编译失败，继续（若发布目录里已有旧产物会沿用）"
-fi
-
 echo "==> 校验产物"
 fail=0
-# native 依赖：Avalonia/Skia/HarfBuzz 等，缺任何一个 .app 都起不来
 dylibs=$(ls "$OUT"/*.dylib 2>/dev/null | wc -l | tr -d ' ')
 if [[ "$dylibs" -lt 5 ]]; then
     echo "[error] 只找到 $dylibs 个 .dylib（应至少 5 个）—— .app 会启动即崩" >&2
     fail=1
 fi
-# 原生工具：屏幕枚举 / DDC / 设备电量 / 应用图标 / 热键
-for tool in ddc-helper screen-guardian island-screens island-devices island-hotkey app-icon; do
+for tool in ddc-helper screen-guardian island-screens island-devices island-hotkey app-icon island-thermal; do
     if [[ ! -x "$OUT/$tool" ]]; then
         echo "[error] 缺少原生工具 $tool" >&2
         fail=1
@@ -55,4 +44,4 @@ if [[ "$fail" -ne 0 ]]; then
     exit 1
 fi
 
-echo "[ok] 发布产物完整：$dylibs 个 dylib / 6 个原生工具 / 主程序"
+echo "[ok] 发布产物完整：$dylibs 个 dylib / 7 个原生工具 / 主程序"

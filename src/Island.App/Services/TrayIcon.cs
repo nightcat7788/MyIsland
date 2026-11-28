@@ -1,18 +1,24 @@
 using System.Runtime.InteropServices;
 using System.Windows;
-using System.Windows.Input;
 using System.Windows.Interop;
 
 namespace Island.App.Services;
 
 /// <summary>
-/// 纯 WPF 托盘图标（Shell_NotifyIcon P/Invoke），不依赖 WinForms，避免命名空间冲突。
-/// 隐藏一个消息窗口接收托盘回调（左键/右键）。
+/// 纯 WPF 托盘图标（Shell_NotifyIcon P/Invoke）：
+/// - 处理 explorer.exe 重启后的 TaskbarCreated 重建；
+/// - 右键弹出前 SetForegroundWindow 保证点击外部可正常收起菜单；
+/// - Dispose 时释放自载入的 HICON 句柄。
 /// </summary>
 public sealed class TrayIcon : IDisposable
 {
     private readonly Window _messageWindow;
+    private readonly IntPtr _hwnd;
+    private readonly string _toolTip;
     private readonly int _id = 1;
+    private readonly uint _taskbarCreatedMsg;
+    private IntPtr _ownedIcon;
+    private readonly IntPtr _iconHandle;
     private bool _added;
 
     private const int WM_TRAYICON = 0x8000;
@@ -24,28 +30,37 @@ public sealed class TrayIcon : IDisposable
 
     public TrayIcon(string toolTip)
     {
+        _toolTip = toolTip;
         _messageWindow = new Window { Width = 0, Height = 0, ShowInTaskbar = false, WindowStyle = WindowStyle.None };
         var helper = new WindowInteropHelper(_messageWindow);
         helper.EnsureHandle();
-        IntPtr hwnd = helper.Handle;
+        _hwnd = helper.Handle;
 
-        var hSource = HwndSource.FromHwnd(hwnd);
+        _taskbarCreatedMsg = Island.Native.NativeMethods.RegisterWindowMessage("TaskbarCreated");
+
+        var hSource = HwndSource.FromHwnd(_hwnd);
         hSource?.AddHook(WndProc);
 
+        _ownedIcon = LoadBrandIcon() ?? IntPtr.Zero;
+        _iconHandle = _ownedIcon != IntPtr.Zero ? _ownedIcon : LoadDefaultIcon();
+        AddOrRestoreIcon();
+    }
+
+    private void AddOrRestoreIcon()
+    {
         var data = new NOTIFYICONDATA
         {
             cbSize = Marshal.SizeOf<NOTIFYICONDATA>(),
-            hWnd = hwnd,
+            hWnd = _hwnd,
             uID = _id,
             uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP,
             uCallbackMessage = WM_TRAYICON,
-            hIcon = LoadBrandIcon() ?? LoadDefaultIcon(),
-            szTip = toolTip,
+            hIcon = _iconHandle,
+            szTip = _toolTip,
         };
         _added = Shell_NotifyIcon(NIM_ADD, ref data);
     }
 
-    /// <summary>载入产品 logo（island-logo.ico）作为托盘图标；缺失回退默认。</summary>
     private static IntPtr? LoadBrandIcon()
     {
         try
@@ -53,39 +68,47 @@ public sealed class TrayIcon : IDisposable
             string? dir = Environment.GetEnvironmentVariable("ISLAND_DIR");
             string[] candidates =
             {
-                dir is null ? "" : System.IO.Path.Combine(dir, "island-logo.ico"),
                 System.IO.Path.Combine(AppContext.BaseDirectory, "island-logo.ico"),
                 System.IO.Path.Combine(AppContext.BaseDirectory, "branding", "island-logo.ico"),
+                dir is null ? "" : System.IO.Path.Combine(dir, "island-logo.ico"),
             };
             foreach (var path in candidates)
             {
                 if (string.IsNullOrEmpty(path) || !System.IO.File.Exists(path)) continue;
-                // LR_LOADFROMFILE(0x10) | LR_DEFAULTSIZE(0x40)
                 IntPtr h = LoadImage(IntPtr.Zero, path, 1 /*IMAGE_ICON*/, 0, 0, 0x10 | 0x40);
                 if (h != IntPtr.Zero) return h;
             }
         }
-        catch { /* 资源缺失/格式问题 → 用默认图标 */ }
+        catch { }
         return null;
     }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        if (msg == WM_TRAYICON && wParam.ToInt32() == _id)
+        if (_taskbarCreatedMsg != 0 && (uint)msg == _taskbarCreatedMsg)
         {
-            int ev = lParam.ToInt32() & 0xFFFF;
-            if (ev == WM_LBUTTONUP) LeftClicked?.Invoke();
-            else if (ev == WM_RBUTTONUP) RightClicked?.Invoke();
+            AddOrRestoreIcon();
+            return IntPtr.Zero;
+        }
+        if (msg == WM_TRAYICON && (wParam.ToInt64() & 0xFFFF) == _id)
+        {
+            long ev = lParam.ToInt64() & 0xFFFF;
+            if (ev == WM_LBUTTONUP)
+            {
+                LeftClicked?.Invoke();
+            }
+            else if (ev == WM_RBUTTONUP)
+            {
+                SetForegroundWindow(_hwnd);
+                RightClicked?.Invoke();
+            }
             handled = true;
         }
         return IntPtr.Zero;
     }
 
     private static IntPtr LoadDefaultIcon()
-    {
-        // 载入系统默认应用图标
-        return LoadIcon(IntPtr.Zero, new IntPtr(32512)); // IDI_APPLICATION
-    }
+        => LoadIcon(IntPtr.Zero, new IntPtr(32512)); // IDI_APPLICATION
 
     public void Dispose()
     {
@@ -94,13 +117,18 @@ public sealed class TrayIcon : IDisposable
             var data = new NOTIFYICONDATA
             {
                 cbSize = Marshal.SizeOf<NOTIFYICONDATA>(),
-                hWnd = new WindowInteropHelper(_messageWindow).Handle,
+                hWnd = _hwnd,
                 uID = _id,
             };
             Shell_NotifyIcon(NIM_DELETE, ref data);
             _added = false;
         }
-        _messageWindow.Close();
+        if (_ownedIcon != IntPtr.Zero)
+        {
+            DestroyIcon(_ownedIcon);
+            _ownedIcon = IntPtr.Zero;
+        }
+        try { _messageWindow.Close(); } catch { }
     }
 
     private const int NIM_ADD = 0, NIM_DELETE = 2;
@@ -127,4 +155,10 @@ public sealed class TrayIcon : IDisposable
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern IntPtr LoadImage(IntPtr hInst, string lpszName, uint uType,
         int cxDesired, int cyDesired, uint fuLoad);
+
+    [DllImport("user32.dll")]
+    private static extern bool DestroyIcon(IntPtr hIcon);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
 }

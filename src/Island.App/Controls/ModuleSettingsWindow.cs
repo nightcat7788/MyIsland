@@ -42,9 +42,6 @@ public sealed class ModuleSettingsWindow : Window
     {
         _modules = modules;
         _preview = preview;
-        // 预览控件拿到尺寸后立刻画一次：构造时它的 ActualWidth/Height 还是 0（还没参与布局），
-        // 不补这一下的话要等到第一次 1 秒刷新才出现内容。
-        _preview.SizeChanged += (_, _) => RefreshPreview();
         _current = current;
         _getItems = getItems;
         _saveItems = saveItems;
@@ -124,12 +121,8 @@ public sealed class ModuleSettingsWindow : Window
         switch (_preview)
         {
             case IslandCanvas c:
-                // 画布只画"本体矩形"里的内容，本体矩形由宿主每帧注入（IslandWindow.Frame_Tick）；
-                // 预览没有宿主的帧循环，得在这里告诉它：本体 = 整个预览区。
-                // 2026-11-24 发现：此前从来没有注入过，而画布有一道保护（本体矩形为空时直接不画，
-                // 是上次审查为修首帧 NaN 崩窗加的）⇒ 仪表盘/信息胶囊两处预览一直是空白的。
-                if (c.ActualWidth > 0 && c.ActualHeight > 0)
-                    c.BodyRect = new Rect(0, 0, c.ActualWidth, c.ActualHeight);
+                c.BodyRect = new Rect(0, 0, Math.Max(1, c.Width), Math.Max(1, c.Height));
+                c.NeckStrength = 0;
                 c.Snapshot = snap;
                 c.Thermal = thermal;
                 break;

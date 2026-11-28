@@ -4,7 +4,6 @@ using Avalonia.Media;
 using Avalonia.Media.Immutable;
 using Island.App.Animation;
 using Island.App.Themes;
-using Island.Core.Capabilities;
 using Island.Core.Monitoring;
 
 namespace Island.Avalonia;
@@ -171,15 +170,39 @@ public sealed class IslandCanvas : Control
     // 注：第五十七轮已移除「左侧彩色状态环」与「右侧彩色柱状指示」，
     // 连带删掉了 DecorExtraW / DecorLeftBandW / DecorRightBandW —— 胶囊不再有左右装饰带。
 
-    // 页签热区（绘制时记录，宿主点击命中用）
-    private Rect _tabMonitor, _tabClips, _tabScreens, _tabDevices;
+    // ---- 媒体播放与文件中转（对齐 Windows 版 MediaPage / FileTrayService）----
+    private MacMediaSnapshot _media = new();
+    public MacMediaSnapshot Media { get => _media; set { if (_media != value) Dirty = true; _media = value; } }
+    public double[]? AudioBars { get; set; }
+    private IReadOnlyList<StagedFile> _stagedFiles = Array.Empty<StagedFile>();
+    public IReadOnlyList<StagedFile> StagedFiles { get => _stagedFiles; set { Dirty = true; _stagedFiles = value; } }
 
-    /// <summary>页签点击命中；命中返回 true 并切页。</summary>
+    public event Action? MediaPrevClicked;
+    public event Action? MediaPlayPauseClicked;
+    public event Action? MediaNextClicked;
+    public event Action? SettingsRequested;
+    public event Action<string>? FileRevealRequested;
+    public event Action<string>? FileRemoveRequested;
+    public event Action? FilesClearRequested;
+
+    // 页签热区与媒体/设置按钮热区（绘制时记录，宿主点击命中用）
+    private Rect _tabMonitor, _tabMedia, _tabClips, _tabScreens, _tabDevices;
+    private Rect _settingsBtn, _mediaPrevBtn, _mediaPlayBtn, _mediaNextBtn;
+    private readonly List<(string Path, Rect Row, Rect Del)> _fileRows = new();
+    private Rect _filesClearBtn;
+
+    /// <summary>页签与顶栏设置齿轮点击命中；命中返回 true。</summary>
     public bool HandleTabClick(Point pos)
     {
         if (!IsExpanded) return false;
+        if (_settingsBtn.Contains(pos))
+        {
+            SettingsRequested?.Invoke();
+            return true;
+        }
         string before = Page;
         if (_tabMonitor.Contains(pos)) Page = "monitor";
+        else if (_tabMedia.Contains(pos)) Page = "media";
         else if (_tabClips.Contains(pos)) Page = "clips";
         else if (_tabScreens.Contains(pos)) Page = "screens";
         else if (_tabDevices.Contains(pos)) Page = "devices";
@@ -189,6 +212,16 @@ public sealed class IslandCanvas : Control
         return true;
     }
 
+    /// <summary>媒体页按钮点击命中（上一曲 / 播放暂停 / 下一曲）。</summary>
+    public bool HandleMediaPress(Point pos)
+    {
+        if (!IsExpanded || Page != "media") return false;
+        if (_mediaPrevBtn.Contains(pos)) { MediaPrevClicked?.Invoke(); return true; }
+        if (_mediaPlayBtn.Contains(pos)) { MediaPlayPauseClicked?.Invoke(); return true; }
+        if (_mediaNextBtn.Contains(pos)) { MediaNextClicked?.Invoke(); return true; }
+        return false;
+    }
+
     /// <summary>展开面板的页切换（监控/剪贴板/屏幕）——宿主据此决定采样需求。</summary>
     public event Action<string>? PageChanged;
 
@@ -196,7 +229,15 @@ public sealed class IslandCanvas : Control
     public int DraggingVcp { get; private set; }
     public uint DraggingScreen { get; private set; }
 
-    /// <summary>屏幕页：按下。命中滑块返回 true 并开始拖动。</summary>
+    /// <summary>监控页：按下。命中「CPU / 内存」排序切换返回 true。</summary>
+    public bool HandleMonitorPress(Point pos)
+    {
+        if (!IsExpanded || Page != "monitor") return false;
+        if (ProcessSortButton.Contains(pos)) { ProcessSortToggled?.Invoke(); return true; }
+        return false;
+    }
+
+    /// <summary>屏幕页：按下。命中滑块或按钮返回 true。</summary>
     public bool HandleScreenPress(Point pos)
     {
         if (!IsExpanded || Page != "screens") return false;
@@ -208,7 +249,6 @@ public sealed class IslandCanvas : Control
             if (r.Contains(pos)) { PresetAction?.Invoke(id, true); return true; }
         foreach (var (id, r) in ScreenPresetRestoreButtons)
             if (r.Contains(pos)) { PresetAction?.Invoke(id, false); return true; }
-        if (ProcessSortButton.Contains(pos)) { ProcessSortToggled?.Invoke(); return true; }
         foreach (var (id, r) in ScreenColorResetButtons)
             if (r.Contains(pos)) { ColorResetClicked?.Invoke(id); return true; }
         foreach (var (id, r) in ScreenAutoColorToggles)
@@ -311,26 +351,12 @@ public sealed class IslandCanvas : Control
 
     // ---- 资源色：每种资源一个固定色，环 / 图标 / 数字三处同色（对齐 BrimDeck）----
     // 这些色**独立于主题**（主题换的是底色和文字色，资源色不变），只在浅色主题下过 Readable() 压对比度。
-    // 色值**取自两端唯一真相源** Island.Core.Capabilities.ResourceColorSpec（从用户参考图逐像素取样），
-    // 本文件不再写死 —— 两端各写一份就会漂。浅色主题的压对比度仍走 ReadableCached()，机制不变。
-    private static Color Hex(string h)
-        => Color.FromRgb((byte)Convert.ToInt32(h.Substring(1, 2), 16),
-                         (byte)Convert.ToInt32(h.Substring(3, 2), 16),
-                         (byte)Convert.ToInt32(h.Substring(5, 2), 16));
-
-    private static readonly Color CpuC = Hex(ResourceColorSpec.Cpu);       // CPU  蓝
-    private static readonly Color MemC = Hex(ResourceColorSpec.Memory);    // 内存 青
-    private static readonly Color GpuC = Hex(ResourceColorSpec.Gpu);       // GPU  粉
-    private static readonly Color DiskC = Hex(ResourceColorSpec.Disk);     // 硬盘 薄荷绿
-    private static readonly Color BattC = Hex(ResourceColorSpec.Battery);  // 电池 蓝紫
-    private static readonly Color NetC  = Hex(ResourceColorSpec.NetDown);  // 网络 蓝
-
-    /// <summary>网速方向箭头色：↓ 蓝 / ↑ 青（取自 ResourceColorSpec，跨端一致）。</summary>
-    private static readonly Color NetDownC = Hex(ResourceColorSpec.NetDown);
-    private static readonly Color NetUpC   = Hex(ResourceColorSpec.NetUp);
-
-    /// <summary>网速箭头与数值之间的间距（combo / dash 共用同一口径）。</summary>
-    private const double NetArrowGap = 3;
+    private static readonly Color CpuC = Color.FromRgb(0x2E, 0x9B, 0xFF);   // CPU  蓝
+    private static readonly Color MemC = Color.FromRgb(0x4F, 0xE3, 0xD7);   // 内存 青
+    private static readonly Color GpuC = Color.FromRgb(0xF2, 0x72, 0xA8);   // GPU  粉
+    private static readonly Color DiskC = Color.FromRgb(0x5F, 0xD3, 0xA0);  // 硬盘 青绿（BrimDeck 同款；原来是蓝紫，和内存的青分不开）
+    private static readonly Color BattC = Color.FromRgb(0x3F, 0xB8, 0xFF);  // 电池 蓝
+    private static readonly Color NetC  = Color.FromRgb(0x6F, 0xB8, 0xFF);  // 网络 蓝
 
     /// <summary>按资源取色（环 / 图标 / 数字共用一个来源）。</summary>
     private enum Res { Cpu, Mem, Gpu, Disk, Batt, Net }
@@ -420,12 +446,13 @@ public sealed class IslandCanvas : Control
     private static Color GpuCFor(Palette pal) => ReadableCached(GpuC, pal);
     private static Color DiskCFor(Palette pal) => ReadableCached(DiskC, pal);
 
+    /// <summary>温度分级：≤60° 绿 / 60°–90° 黄 / ≥90° 红。</summary>
     private static Color TempColor(double? t, Palette pal) => t switch
     {
         null => Color.FromRgb(0x90, 0xA8, 0xF0),
-        <= 60 => Color.FromRgb(0x60, 0xC0, 0x78),
-        <= 75 => pal.Warning,
-        _ => pal.Up,
+        >= 90 => ReadableCached(ThermalHotC, pal),
+        > 60 => ReadableCached(ThermalWarmC, pal),
+        _ => ReadableCached(ThermalCoolC, pal),
     };
 
     // macOS 无 root 读不到温度数值时用 NSProcessInfo.thermalState 档位降级显示。
@@ -472,12 +499,14 @@ public sealed class IslandCanvas : Control
         if (View == "pet")
         {
             Pet.CpuTemp = Snapshot?.CpuTemp;                  // 情境（高温流汗）
-            Pet.DiskActive = Snapshot?.DiskUsagePercent ?? 0;   // 情境（晕眩）
+            // macOS 下 DiskUsagePercent 是卷空间占用百分比而非磁盘实时 I/O 繁忙度，不能传给晕眩动画
+            Pet.DiskActive = OperatingSystem.IsMacOS() ? 0 : (Snapshot?.DiskUsagePercent ?? 0);
             Pet.SurfaceColor = pal.Surface;                     // 眼睑遮罩跟随主题
             Pet.Draw(dc, r.X + r.Width / 2, cy, 1.0, 1, LookPoint, PointerNear);
         }
         else if (View == "clock") DrawClock(dc, pal, r, cy);
         else if (View == "combo") DrawCombo(dc, pal, r, cy);
+        else if (View == "media") DrawMedia(dc, pal, r, cy);
         else DrawDash(dc, pal, r, cy);
     }
 
@@ -566,62 +595,85 @@ public sealed class IslandCanvas : Control
     // ============ 信息胶囊（combo）布局 ============
     // 和时钟一样：测量与绘制**共用** LayoutCombo 算出的数字。之前两边各写一遍公式，
     // 和时钟出框是同一种病（宽度测量靠手算魔数：24 / 30 / 58 …，和实际绘制对不上）。
-    private const double ComboPadX = 10;       // 胶囊左右内边距（第五十八轮压缩：14→10）
-    private const double ComboFigureFont = 13, ComboDial = 20, ComboDialGap = 5, ComboGaugeGap = 10, ComboClockGap = 12;
+    private const double ComboPadX = 16;       // 胶囊左右内边距（与实机截图及 Windows 版一致）
     // 收起态三个视图共用同一套图标槽尺寸与组间距 —— 风格统一的基础。
     private const double CompactIconBox = 12 * 0.9, CompactIconGap = 4, CompactTempGap = 10;
-    /// <summary>指标数值的最小占位宽度，避免窄读数导致后续内容跳动。</summary>
-    private const double CompactValueMinW = 21;
-    /// <summary>收起态分组之间的分隔留白（dash / combo 共用）。第五十八轮压缩：18→12。</summary>
-    private const double CompactGroupGap = 12;   // 组与组之间（分隔线居中）
+    /// <summary>温度数值的最小占位宽度。</summary>
+    private const double TempValueMinW = 21;
+    /// <summary>收起态分组之间的分隔留白（dash / combo 共用）。</summary>
+    private const double CompactGroupGap = 11;
 
-    /// <summary>
-    /// 信息胶囊保留时钟主次两种风格，所有系统指标共用同一套度量。
-    /// 嵌套类 ComboLayout 不是外层实例的内部类，拿不到实例属性 —— 所以时钟样式显式传进去。
-    /// </summary>
-    private struct ComboStyle
+    private static readonly Color ThermalCoolC = Color.FromRgb(0x2F, 0xD0, 0x6B);
+    private static readonly Color ThermalWarmC = Color.FromRgb(0xF5, 0xC2, 0x42);
+    private static readonly Color ThermalHotC = Color.FromRgb(0xFF, 0x45, 0x3A);
+    private static readonly Color NetDownArrowC = Color.FromRgb(0x2F, 0xD0, 0x6B);
+    private static readonly Color NetUpArrowC = Color.FromRgb(0xFF, 0x3B, 0x5C);
+
+    /// <summary>温度分级配色：≤60° 绿色 / 60°–90° 黄色 / ≥90° 红色。</summary>
+    private static Color ComboTempColor(double temp, Palette pal)
     {
-        public bool ClockStrong;
+        Color raw = temp >= 90 ? ThermalHotC : temp > 60 ? ThermalWarmC : ThermalCoolC;
+        return ReadableCached(raw, pal);
     }
 
-    /// <summary>
-    /// 当前胶囊时钟层级：true = 时钟弱化；false = 时钟强调。
-    /// </summary>
-    private ComboStyle CurrentComboStyle => new() { ClockStrong = !_comboNumericHero };
+    private struct ComboStyle
+    {
+        public double FigureFont;    // 占用/温度字号
+        public double Dial;          // 字母环直径
+        public double DialGap;       // 环 → 数值
+        public double GaugeGap;      // 环组之间
+        public double ClockGap;      // 时间后留白
+        public bool ClockStrong;     // 时间是否粗体
+        public bool FigureResColor;  // 占用数值是否用资源色
+    }
 
+    private ComboStyle CurrentComboStyle => _comboNumericHero
+        ? new ComboStyle
+        {
+            FigureFont = 13.5, Dial = 22, DialGap = 5, GaugeGap = 10, ClockGap = 12,
+            ClockStrong = false, FigureResColor = false,
+        }
+        : new ComboStyle
+        {
+            FigureFont = FontValue, Dial = 20, DialGap = 4, GaugeGap = 10, ClockGap = 12,
+            ClockStrong = true, FigureResColor = true,
+        };
 
-    /// <summary>信息胶囊版式；所有环形指标共用字号、直径、间距和最小数值槽宽。</summary>
+    /// <summary>信息胶囊的版式（1:1 对齐实机截图：03:08 [C]% [M]% [G]% │ [C]° [G]° [D]% │ ↓ 6.1K ↑ 120.5K）。</summary>
     private sealed class ComboLayout
     {
         public FormattedText Clock = null!;
-        public FormattedText NetDownArrow = null!, NetDownValue = null!, NetUpArrow = null!, NetUpValue = null!;
-        public readonly List<(Glyph Icon, Res Res, double? Usage, Color Arc, FormattedText Figure)> Gauges = new();
-        public readonly List<(Glyph Icon, Res Res, double? Usage, Color Arc, FormattedText Figure)> SystemGauges = new();
-
-        /// <summary>当前风格度量（数字主角 / 经典版）。</summary>
+        public FormattedText NetDownArrow = null!, NetDownVal = null!, NetUpArrow = null!, NetUpVal = null!;
+        public double NetDownValSlotW, NetUpValSlotW;
+        public readonly List<(Glyph Icon, Res Res, double Share, Color RingColor, FormattedText Figure, double FigureSlotW)> LeftRings = new();
+        public readonly List<(Glyph Icon, Res Res, double Share, Color RingColor, FormattedText Figure, double FigureSlotW)> MidRings = new();
         public ComboStyle Style;
 
+        public const double NetArrowGap = 4;
+        public const double NetPairGap = 8;
+
         public double ClockW => Clock.WidthIncludingTrailingWhitespace;
-        public double ClockGap => ComboClockGap;
-        public double DialGap => ComboDialGap;
-        public double GaugeGap => ComboGaugeGap;
-        public double Dial => ComboDial;
-        public double FigureFont => ComboFigureFont;
-        public double NetGap => 7;
-        public double NetDownW => NetDownArrow.WidthIncludingTrailingWhitespace + NetArrowGap + NetDownValue.WidthIncludingTrailingWhitespace;
-        public double NetUpW => NetUpArrow.WidthIncludingTrailingWhitespace + NetArrowGap + NetUpValue.WidthIncludingTrailingWhitespace;
-        public double GaugesW => GaugeWidth(Gauges);
-        public double SystemGaugesW => GaugeWidth(SystemGauges);
-        private double GaugeWidth(List<(Glyph Icon, Res Res, double? Usage, Color Arc, FormattedText Figure)> gauges)
-            => gauges.Sum(g => Dial + DialGap + Math.Max(g.Figure.WidthIncludingTrailingWhitespace, CompactValueMinW) + GaugeGap)
-                - (gauges.Count > 0 ? GaugeGap : 0);
+        public double ClockGap => Style.ClockGap;
+        public double DialGap => Style.DialGap;
+        public double GaugeGap => Style.GaugeGap;
+        public double Dial => Style.Dial;
 
-        // 分组之间有分隔线（宽度 = 两侧留白 + 1px 线），和 dash 一样
-        public double ContentW => ClockW + ClockGap + GaugesW
-            + (SystemGauges.Count > 0 ? CompactGroupGap * 2 + SystemGaugesW : 0)
-            + CompactGroupGap * 2 + NetDownW + NetGap + NetUpW;
+        private double MeasureGroup(List<(Glyph Icon, Res Res, double Share, Color RingColor, FormattedText Figure, double FigureSlotW)> list)
+            => list.Count == 0 ? 0
+                : list.Sum(g => Dial + DialGap + g.FigureSlotW + GaugeGap) - GaugeGap;
+
+        public double LeftRingsW => MeasureGroup(LeftRings);
+        public double MidRingsW => MeasureGroup(MidRings);
+
+        public double NetW => NetDownArrow.WidthIncludingTrailingWhitespace + NetArrowGap + NetDownValSlotW
+            + NetPairGap
+            + NetUpArrow.WidthIncludingTrailingWhitespace + NetArrowGap + NetUpValSlotW;
+
+        public double ContentW => ClockW
+            + (LeftRings.Count > 0 ? ClockGap + LeftRingsW : 0)
+            + (MidRings.Count > 0 ? CompactGroupGap * 2 + MidRingsW : 0)
+            + CompactGroupGap * 2 + NetW;
         public double CapsuleW => ContentW + ComboPadX * 2;
-
     }
 
     private ComboLayout LayoutCombo(Palette pal)
@@ -631,39 +683,68 @@ public sealed class IslandCanvas : Control
         var l = new ComboLayout { Style = style };
         l.Clock = RenderKit.Text(DateTime.Now.ToString("HH:mm"), FontValue,
             style.ClockStrong ? pal.Text : pal.TextDim, style.ClockStrong);
-        l.NetDownArrow = RenderKit.Text("↓", FontValue, ReadableCached(NetDownC, pal), true);
-        l.NetDownValue = RenderKit.Text(MonitorSnapshot.FormatSpeedFixed(snap?.DownloadSpeed ?? 0), FontValue, pal.Text, true);
-        l.NetUpArrow = RenderKit.Text("↑", FontValue, ReadableCached(NetUpC, pal), true);
-        l.NetUpValue = RenderKit.Text(MonitorSnapshot.FormatSpeedFixed(snap?.UploadSpeed ?? 0), FontValue, pal.Text, true);
+
+        double minPctSlot = Math.Ceiling(RenderKit.Text("9%", style.FigureFont, pal.Text, true).WidthIncludingTrailingWhitespace);
+        double minTempSlot = Math.Ceiling(RenderKit.Text("88°", style.FigureFont, pal.Text, true).WidthIncludingTrailingWhitespace);
+        double minSpeedSlot = Math.Ceiling(RenderKit.Text("99.9K", style.FigureFont, pal.Text, true).WidthIncludingTrailingWhitespace);
+
+        string dn = MonitorSnapshot.FormatSpeedFixed(snap?.DownloadSpeed ?? 0).Trim();
+        string up = MonitorSnapshot.FormatSpeedFixed(snap?.UploadSpeed ?? 0).Trim();
+        l.NetDownArrow = RenderKit.Text("↓", style.FigureFont, ReadableCached(NetDownArrowC, pal), true);
+        l.NetDownVal = RenderKit.Text(dn, style.FigureFont, pal.Text, true);
+        l.NetDownValSlotW = Math.Max(l.NetDownVal.WidthIncludingTrailingWhitespace, minSpeedSlot);
+        l.NetUpArrow = RenderKit.Text("↑", style.FigureFont, ReadableCached(NetUpArrowC, pal), true);
+        l.NetUpVal = RenderKit.Text(up, style.FigureFont, pal.Text, true);
+        l.NetUpValSlotW = Math.Max(l.NetUpVal.WidthIncludingTrailingWhitespace, minSpeedSlot);
+
         if (snap is not null)
         {
-            foreach (var (icon, res, usage) in new[]
-                     { (Glyph.Cpu, Res.Cpu, snap.CpuUsage), (Glyph.Mem, Res.Mem, snap.MemoryUsagePercent),
-                       (Glyph.Gpu, Res.Gpu, snap.GpuUsage) })
+            void AddUsageRing(List<(Glyph, Res, double, Color, FormattedText, double)> target, Glyph icon, Res res, double usage)
             {
-                Color arc = ResColor(res, pal);
-                Color value = RenderKit.LevelColor(usage, pal.Text, pal);
-                l.Gauges.Add((icon, res, usage / 100, arc,
-                    RenderKit.Text($"{Math.Round(usage)}%", l.FigureFont, value, true)));
+                Color rc = ResColor(res, pal);
+                Color figC = style.FigureResColor ? rc : RenderKit.LevelColor(usage, pal.Text, pal);
+                var fig = RenderKit.Text($"{Math.Round(usage)}%", style.FigureFont, figC, true);
+                double share = usage > 0 ? Math.Max(usage / 100.0, 0.05) : 0;
+                target.Add((icon, res, share, rc, fig, Math.Max(fig.WidthIncludingTrailingWhitespace, minPctSlot)));
             }
-            double? cpuTemp = snap.CpuTemp is > 0 ? snap.CpuTemp : null;
-            double? gpuTemp = snap.GpuTemp is > 0 ? snap.GpuTemp : null;
-            AddSystemGauge(Glyph.Cpu, Res.Cpu, cpuTemp,
-                cpuTemp is { } ct ? Math.Clamp(ct / 125, 0, 1) : null,
-                cpuTemp is { } ctv ? $"{Math.Round(ctv)}°" : "—", TempColor(cpuTemp, pal));
-            AddSystemGauge(Glyph.Gpu, Res.Gpu, gpuTemp,
-                gpuTemp is { } gt ? Math.Clamp(gt / 125, 0, 1) : null,
-                gpuTemp is { } gtv ? $"{Math.Round(gtv)}°" : "—", TempColor(gpuTemp, pal));
-            AddSystemGauge(Glyph.Disk, Res.Disk, snap.DiskUsagePercent,
-                snap.DiskUsagePercent / 100, $"{Math.Round(snap.DiskUsagePercent)}%", ResColor(Res.Disk, pal));
-        }
-        void AddSystemGauge(Glyph icon, Res res, double? usage, double? fill, string text, Color arc)
-        {
-            Color value = usage is null ? pal.TextTertiary : res == Res.Disk
-                ? RenderKit.LevelColor(usage.Value, pal.Text, pal)
-                : TempColor(usage, pal);
-            l.SystemGauges.Add((icon, res, fill, arc,
-                RenderKit.Text(text, l.FigureFont, value, true)));
+
+            void AddTempRing(Glyph icon, Res res, double? temp)
+            {
+                if (temp is not { } tv || tv <= 0) return;
+                Color tc = ComboTempColor(tv, pal);
+                var fig = RenderKit.Text($"{Math.Round(tv)}°", style.FigureFont, tc, true);
+                l.MidRings.Add((icon, res, Math.Clamp(tv / 100.0, 0.06, 1.0), tc, fig,
+                    Math.Max(fig.WidthIncludingTrailingWhitespace, minTempSlot)));
+            }
+
+            // ① 左组：CPU / 内存 / GPU / 硬盘 占用环（C% / M% / G% / D%）
+            AddUsageRing(l.LeftRings, Glyph.Cpu, Res.Cpu, snap.CpuUsage);
+            AddUsageRing(l.LeftRings, Glyph.Mem, Res.Mem, snap.MemoryUsagePercent);
+            AddUsageRing(l.LeftRings, Glyph.Gpu, Res.Gpu, snap.GpuUsage);
+            AddUsageRing(l.LeftRings, Glyph.Disk, Res.Disk, snap.DiskUsagePercent);
+
+            // ② 中组：CPU 温度环 + GPU 温度环 + 硬盘温度环 + 电池状态环（C° / G° / D° / B%⚡）
+            AddTempRing(Glyph.Cpu, Res.Cpu, snap.CpuTemp);
+            AddTempRing(Glyph.Gpu, Res.Gpu, snap.GpuTemp);
+            AddTempRing(Glyph.Ssd, Res.Disk, snap.SsdTemp);
+            if (snap.BatteryPercent is { } bpVal)
+            {
+                int pct = (int)Math.Round(Math.Clamp(bpVal, 0, 100));
+                bool charging = snap.BatteryCharging;
+                Color rc = charging
+                    ? ReadableCached(ThermalCoolC, pal)
+                    : pct <= 20 ? pal.Up
+                    : pct <= 40 ? pal.Warning
+                    : ResColor(Res.Batt, pal);
+                Color figC = charging
+                    ? ReadableCached(ThermalCoolC, pal)
+                    : pct <= 20 ? pal.Up
+                    : (style.FigureResColor ? rc : pal.Text);
+                string label = charging ? $"{pct}%⚡" : $"{pct}%";
+                var fig = RenderKit.Text(label, style.FigureFont, figC, true);
+                l.MidRings.Add((Glyph.Battery, Res.Batt, Math.Clamp(pct / 100.0, 0.05, 1.0), rc, fig,
+                    Math.Max(fig.WidthIncludingTrailingWhitespace, minPctSlot)));
+            }
         }
         return l;
     }
@@ -671,54 +752,62 @@ public sealed class IslandCanvas : Control
     /// <summary>信息胶囊所需宽度（宿主用它设置窗口大小）。</summary>
     public double MeasureComboWidth() => LayoutCombo(Palette).CapsuleW;
 
-    /// <summary>
-    /// 信息胶囊：时间 + CPU/内存/GPU、CPU/GPU 温度、磁盘占用与网速。
-    /// 各指标共用环形表盘；网速数值中性，箭头保留方向色。
-    /// </summary>
+    /// <summary>信息胶囊：03:08 [C]% [M]% [G]% │ [C]° [G]° [D]% │ ↓ 6.1K ↑ 120.5K（与 Windows 版 1:1 像素对齐）。</summary>
     private void DrawCombo(DrawingContext dc, Palette pal, Rect r, double cy)
     {
         var L = LayoutCombo(pal);
         if (Snapshot is null) return;
-        // 背景由外层统一画（与 dash 同一层）
-        double x = r.X + (r.Width - L.ContentW) / 2;      // 内容在胶囊里水平居中
+        double x = r.X + (r.Width - L.ContentW) / 2;
 
-        // 分组分隔线（与 dash 视图同一套：竖线 + 两侧留白）
         void Divider()
-            => dc.DrawLine(RenderKit.PenOf(pal.Hairline, 1, 0.8), new Point(x + CompactGroupGap / 2, cy - 9), new Point(x + CompactGroupGap / 2, cy + 9));
-        void Gap() { x += CompactGroupGap; Divider(); x += CompactGroupGap; }
+            => dc.DrawLine(RenderKit.PenOf(pal.Hairline, 1, 0.78),
+                new Point(x + CompactGroupGap, cy - 9), new Point(x + CompactGroupGap, cy + 9));
+        void Gap() { Divider(); x += CompactGroupGap * 2; }
 
-        // ① 时间（数字主角版为次级 13px 弱化；经典版为主角 13px 粗体）
-        RenderKit.Baseline(dc, L.Clock, x, Math.Round(cy + FontValue * 0.36));
-        x += L.ClockW + L.ClockGap;
-
-        void DrawGaugeGroup(List<(Glyph Icon, Res Res, double? Usage, Color Arc, FormattedText Figure)> gauges)
+        void DrawRingGroup(List<(Glyph Icon, Res Res, double Share, Color RingColor, FormattedText Figure, double FigureSlotW)> list)
         {
-            for (int i = 0; i < gauges.Count; i++)
+            for (int i = 0; i < list.Count; i++)
             {
-                var g = gauges[i];
-                RenderKit.Ring(dc, new Point(x + L.Dial / 2, cy), L.Dial, Math.Max(1.8, L.Dial * 0.14),
-                    g.Usage ?? 0, pal.Track, g.Arc);
-                DrawGaugeCenter(dc, pal, g.Icon, g.Res, x, cy, L.Dial, g.Arc);
+                var g = list[i];
+                RenderKit.Ring(dc, new Point(x + L.Dial / 2, cy), L.Dial, 2.3, g.Share, pal.Track, g.RingColor);
+                DrawGaugeCenter(dc, pal, g.Icon, g.Res, x, cy, L.Dial, g.RingColor);
                 x += L.Dial + L.DialGap;
-                RenderKit.Baseline(dc, g.Figure, x, Math.Round(cy + L.FigureFont * 0.36));
-                x += Math.Max(g.Figure.WidthIncludingTrailingWhitespace, CompactValueMinW);
-                if (i < gauges.Count - 1) x += L.GaugeGap;
+                dc.DrawText(g.Figure, new Point(x, cy - g.Figure.Height / 2));
+                x += g.FigureSlotW;
+                if (i < list.Count - 1) x += L.GaugeGap;
             }
         }
-        DrawGaugeGroup(L.Gauges);
-        if (L.Gauges.Count > 0 && L.SystemGauges.Count > 0) Gap();
-        DrawGaugeGroup(L.SystemGauges);
-        if (L.SystemGauges.Count > 0) Gap();
 
-        // 网速方向由箭头表达，数值统一使用中性色。
-        double netBaseline = Math.Round(cy + FontValue * 0.36);
-        RenderKit.Baseline(dc, L.NetDownArrow, x, netBaseline);
-        x += L.NetDownArrow.WidthIncludingTrailingWhitespace + NetArrowGap;
-        RenderKit.Baseline(dc, L.NetDownValue, x, netBaseline);
-        x += L.NetDownValue.WidthIncludingTrailingWhitespace + L.NetGap;
-        RenderKit.Baseline(dc, L.NetUpArrow, x, netBaseline);
-        x += L.NetUpArrow.WidthIncludingTrailingWhitespace + NetArrowGap;
-        RenderKit.Baseline(dc, L.NetUpValue, x, netBaseline);
+        // ① 时间
+        dc.DrawText(L.Clock, new Point(x, cy - L.Clock.Height / 2));
+        x += L.ClockW;
+
+        // ② 左组（C% / M% / G%）
+        if (L.LeftRings.Count > 0)
+        {
+            x += L.ClockGap;
+            DrawRingGroup(L.LeftRings);
+        }
+
+        // ③ 中组（C° / G° / D%）
+        if (L.MidRings.Count > 0)
+        {
+            Gap();
+            DrawRingGroup(L.MidRings);
+        }
+
+        // ④ 右组（绿↓ / 红↑ + 纯白速率）
+        Gap();
+        dc.DrawText(L.NetDownArrow, new Point(x, cy - L.NetDownArrow.Height / 2));
+        x += L.NetDownArrow.WidthIncludingTrailingWhitespace + ComboLayout.NetArrowGap;
+        double dnOffset = L.NetDownValSlotW - L.NetDownVal.WidthIncludingTrailingWhitespace;
+        dc.DrawText(L.NetDownVal, new Point(x + dnOffset, cy - L.NetDownVal.Height / 2));
+        x += L.NetDownValSlotW + ComboLayout.NetPairGap;
+
+        dc.DrawText(L.NetUpArrow, new Point(x, cy - L.NetUpArrow.Height / 2));
+        x += L.NetUpArrow.WidthIncludingTrailingWhitespace + ComboLayout.NetArrowGap;
+        double upOffset = L.NetUpValSlotW - L.NetUpVal.WidthIncludingTrailingWhitespace;
+        dc.DrawText(L.NetUpVal, new Point(x + upOffset, cy - L.NetUpVal.Height / 2));
     }
 
     // ==================== 展开态：页签 + 监控页 / 剪贴板页 ====================
@@ -743,34 +832,23 @@ public sealed class IslandCanvas : Control
             dc.DrawText(t, new Point(tabX + iconW + 5, tabY));
             tabX += rect.Width + 6;
         }
-        // 展开页签：**取自能力清单**（两端唯一真相源）。
-        // 清单顺序 = 共享页签在前、平台专属页签在后（总纲 §1 的统一呈现规则），
-        // 所以 mac 侧是 监控 / 剪贴板 / 设备 / 屏幕（"屏幕"从"设备"前面挪到最后）。
-        // 清单决定"有哪些页签、什么顺序、叫什么"；IsMacOS() 只决定"本机能不能真的服务这个页签"
-        // （设备页要 IOKit 探针、屏幕页要 DDC 工具链，dev 机跑 mac 工程时都没有）。
-        // ===== 能力清单页签区：开始 =====
-        foreach (string key in CapabilityManifest.ExpandedTabsFor(macOS: true))
-        {
-            string title = CapabilityManifest.ExpandedTabs.First(e => e.Key == key).Title;
-            switch (key)
-            {
-                case "monitor": Tab(title, "monitor", Glyph.Spark, ref _tabMonitor); break;
-                case "clips": Tab(title, "clips", Glyph.ClipBox, ref _tabClips); break;
-                case "devices":
-                    if (OperatingSystem.IsMacOS()) Tab(title, "devices", Glyph.Battery, ref _tabDevices);
-                    break;
-                case "screens":
-                    if (OperatingSystem.IsMacOS()) Tab(title, "screens", Glyph.SunLine, ref _tabScreens);
-                    break;
-            }
-        }
-        // ===== 能力清单页签区：结束 =====
+        Tab("监控", "monitor", Glyph.Spark, ref _tabMonitor);
+        Tab("媒体", "media", Glyph.Speaker, ref _tabMedia);
+        Tab("剪贴板", "clips", Glyph.ClipBox, ref _tabClips);
+        if (OperatingSystem.IsMacOS()) Tab("屏幕", "screens", Glyph.SunLine, ref _tabScreens);
+        if (OperatingSystem.IsMacOS()) Tab("设备", "devices", Glyph.Battery, ref _tabDevices);
 
-        // 顶栏右侧：当前时间（参考图 18:10 的位置）
+        // 顶栏右侧：实时时间 + 设置中心齿轮按钮（对齐 Windows 版顶栏交互）
+        var gearTxt = RenderKit.Text("⚙", 13, pal.TextDim);
+        double gearX = r.Right - 20 - gearTxt.WidthIncludingTrailingWhitespace;
+        _settingsBtn = SafeRect(gearX - 6, tabY - 4, gearTxt.WidthIncludingTrailingWhitespace + 12, 22);
+        dc.DrawText(gearTxt, new Point(gearX, tabY - 1));
+
         var clockText = RenderKit.Text(DateTime.Now.ToString("HH:mm"), 12, pal.TextDim);
-        dc.DrawText(clockText, new Point(r.Right - 24 - clockText.WidthIncludingTrailingWhitespace, tabY));
+        dc.DrawText(clockText, new Point(gearX - 12 - clockText.WidthIncludingTrailingWhitespace, tabY));
 
         double contentY = tabY + 24 + 16;
+        if (Page == "media") { DrawMediaPage(dc, pal, r, contentY); return; }
         if (Page == "clips")
         {
             DrawClipsPage(dc, pal, r, contentY);
@@ -782,18 +860,143 @@ public sealed class IslandCanvas : Control
         DrawMonitorPage(dc, pal, r, contentY);
     }
 
+    private byte[]? _mediaArtBytes;
+    private global::Avalonia.Media.Imaging.Bitmap? _mediaArtBmp;
+
+    private global::Avalonia.Media.Imaging.Bitmap? ResolveMediaArtwork(byte[]? bytes)
+    {
+        if (ReferenceEquals(bytes, _mediaArtBytes)) return _mediaArtBmp;
+        _mediaArtBytes = bytes;
+        try { _mediaArtBmp?.Dispose(); } catch { }
+        _mediaArtBmp = null;
+        if (bytes is { Length: > 0 })
+        {
+            try
+            {
+                using var ms = new MemoryStream(bytes);
+                _mediaArtBmp = new global::Avalonia.Media.Imaging.Bitmap(ms);
+            }
+            catch { _mediaArtBmp = null; }
+        }
+        return _mediaArtBmp;
+    }
+
+    /// <summary>展开态媒体播放页（对齐 Windows 版 MediaPage：真实专辑封面 + 曲目信息 + 16 段频谱 + 上下曲/播放控制）。</summary>
+    private void DrawMediaPage(DrawingContext dc, Palette pal, Rect r, double y0)
+    {
+        _mediaPrevBtn = _mediaPlayBtn = _mediaNextBtn = default;
+        var m = Media;
+        double pad = 20;
+        double coverSize = 132;
+        double cx = r.X + pad;
+        double cy = y0 + 10;
+        var coverBox = SafeRect(cx, cy, coverSize, coverSize);
+        dc.DrawRectangle(RenderKit.BrushOf(pal.Elevated), RenderKit.PenOf(pal.Rim, 1, 0.55), new RoundedRect(coverBox, 16));
+
+        var artBmp = ResolveMediaArtwork(m.ArtworkBytes);
+        if (artBmp is not null)
+        {
+            using (dc.PushClip(new RoundedRect(coverBox, 16)))
+                dc.DrawImage(artBmp, coverBox);
+            dc.DrawRectangle(null, RenderKit.PenOf(pal.Rim, 1, 0.55), new RoundedRect(coverBox, 16));
+        }
+        else
+        {
+            // 无封面时回退为唱片矢量圆心（带强调色光环）
+            var diskCenter = new Point(cx + coverSize / 2, cy + coverSize / 2);
+            dc.DrawEllipse(RenderKit.Faint(pal.Accent, 0.14), RenderKit.PenOf(pal.Accent, 1.5, 0.7), diskCenter, 42, 42);
+            dc.DrawEllipse(RenderKit.BrushOf(pal.Surface), RenderKit.PenOf(pal.Rim, 1, 0.7), diskCenter, 14, 14);
+            dc.DrawEllipse(RenderKit.BrushOf(pal.Accent), null, diskCenter, 5, 5);
+        }
+
+        double tx = cx + coverSize + 20;
+        double tw = Math.Max(80, r.Right - pad - tx);
+        double ty = cy + 2;
+
+        // 来源标签胶囊
+        string appLabel = string.IsNullOrEmpty(m.AppName) ? "系统媒体控制" : m.AppName;
+        var appTxt = RenderKit.Text(appLabel, 10, pal.Accent, true);
+        var pill = SafeRect(tx, ty, appTxt.WidthIncludingTrailingWhitespace + 16, 20);
+        dc.DrawRectangle(RenderKit.Faint(pal.Accent, 0.18), null, new RoundedRect(pill, 10));
+        dc.DrawText(appTxt, new Point(tx + 8, ty + 3));
+        ty += 28;
+
+        string title = m.HasMedia && !string.IsNullOrEmpty(m.Title) ? m.Title : "暂无正在播放的媒体";
+        string artist = m.HasMedia && !string.IsNullOrEmpty(m.Artist) ? m.Artist : "打开 Apple Music 或 Spotify 即可联动控制";
+        dc.DrawText(RenderKit.Trimmed(title, 16, pal.Text, tw, true), new Point(tx, ty));
+        ty += 24;
+        dc.DrawText(RenderKit.Trimmed(artist, 11.5, pal.TextDim, tw, false), new Point(tx, ty));
+        ty += 26;
+
+        // 16 段实时音频律动频谱条
+        const int barCount = 16;
+        double barGap = 4;
+        double barW = Math.Max(3, (Math.Min(tw, 240) - barGap * (barCount - 1)) / barCount);
+        double specH = 26;
+        var bars = AudioBars;
+        for (int i = 0; i < barCount; i++)
+        {
+            double v = m.IsPlaying && bars is { Length: > 0 } ? Math.Clamp(bars[i % bars.Length], 0.14, 1.0) : 0.18;
+            double bh = Math.Max(4, v * specH);
+            dc.DrawRectangle(RenderKit.Faint(pal.Accent, m.IsPlaying ? 0.88 : 0.35), null,
+                new RoundedRect(SafeRect(tx + i * (barW + barGap), ty + specH - bh, barW, bh), barW / 2));
+        }
+        ty += specH + 14;
+
+        // 播放进度条
+        double frac = m.DurationSeconds > 1 ? Math.Clamp(m.PositionSeconds / m.DurationSeconds, 0, 1) : 0;
+        dc.DrawRectangle(RenderKit.BrushOf(pal.Track), null, new RoundedRect(SafeRect(tx, ty, tw, 4), 2));
+        if (frac > 0.005)
+            dc.DrawRectangle(RenderKit.BrushOf(pal.Accent), null, new RoundedRect(SafeRect(tx, ty, Math.Max(4, tw * frac), 4), 2));
+        ty += 16;
+
+        // 播放控制按钮：上一曲 / 播放暂停 / 下一曲
+        Rect MediaBtn(double bx, double by, double bw, double bh, string glyph, bool primary)
+        {
+            var box = SafeRect(bx, by, bw, bh);
+            dc.DrawRectangle(primary ? RenderKit.BrushOf(pal.Accent) : RenderKit.BrushOf(pal.Elevated),
+                primary ? null : RenderKit.PenOf(pal.Rim, 1, 0.55), new RoundedRect(box, bh / 2));
+            var gt = RenderKit.Text(glyph, primary ? 14 : 12, primary ? pal.Surface : pal.Text, true);
+            dc.DrawText(gt, new Point(bx + (bw - gt.WidthIncludingTrailingWhitespace) / 2, by + (bh - gt.Height) / 2));
+            return box;
+        }
+        double midBtnX = tx + tw / 2;
+        _mediaPrevBtn = MediaBtn(midBtnX - 78, ty, 36, 32, "⏮", false);
+        _mediaPlayBtn = MediaBtn(midBtnX - 24, ty - 2, 48, 36, m.IsPlaying ? "⏸" : "▶", true);
+        _mediaNextBtn = MediaBtn(midBtnX + 42, ty, 36, 32, "⏭", false);
+    }
+
     /// <summary>
     /// 屏幕页：显示器控制。布局对齐参考界面（LunarCN 主窗口）的**纵向流式卡片**：
     ///   卡片头（行首图标 + 名称 / 副标题）→ 每个控制项独占一行（行首图标 + 标签 + 滑轨 + 数值）
     ///   → 开关行 → 状态行 → 可展开的「设置与预设」。面板宽 560（参考是 698），高度按内容自适应。
     /// 配色沿用主题 token，不照搬参考图的浅色。
     /// </summary>
+    /// <summary>单张外接屏卡片高度（DrawScreensPage 与 MeasureScreensHeight 共用，杜绝两处高度计算漂移）。</summary>
+    private double ExternalScreenCardHeight(DdcScreen s, bool hasBuiltin)
+    {
+        const double cardPad = 16, rowH = 34;
+        double card = 38 + 2 + rowH;                 // 头 + 亮度
+        card += 28;                                  // 亮度范围（三档分段）
+        card += rowH;                                // 对比度
+        if (hasBuiltin) card += rowH;                // 跟随开关
+        card += rowH;                                // 音量
+        if (s.Mute is not null) card += rowH;        // 静音开关
+        card += 24 + 3 * 30 + 38;                    // 颜色标题 + 三条 RGB 滑条 + 重置按钮
+        card += ScreenColorTempValues.TryGetValue(s.Id, out var presets) && presets.Length > 0 ? 28 : 24; // 色温档位行或自动色温单独行
+        card += 30 + 30;                             // 状态行 + 折叠行
+        if (ScreenSettingsOpen.Contains(s.Id)) card += 32; // 展开后的预设保存行
+        return card + cardPad - 4;
+    }
+
     private void DrawScreensPage(DrawingContext dc, Palette pal, Rect r, double y0)
     {
         ScreenBrightnessBars.Clear(); ScreenContrastBars.Clear(); ScreenVolumeBars.Clear();
         ScreenFollowToggles.Clear(); ScreenPresetSaveButtons.Clear(); ScreenPresetRestoreButtons.Clear();
         ScreenRetryButtons.Clear(); ScreenMuteToggles.Clear();
         ScreenSettingsRows.Clear(); ScreenRangeOptions.Clear();
+        ScreenRgbBars.Clear(); ScreenColorResetButtons.Clear();
+        ScreenAutoColorToggles.Clear(); ScreenColorTempOptions.Clear();
         BuiltinToggleButton = default; BuiltinKeepButton = default; ScreensFooterHint = default;
 
         double x = r.X + 20, w = r.Width - 40, y = y0;
@@ -808,32 +1011,11 @@ public sealed class IslandCanvas : Control
         }
 
         // ---------- 共用绘制件 ----------
-        // 卡片底必须在内容**之前**画（不透明，画在内容之后会把内容全盖住）。
-        // 高度用 ScreenCardHeight 预先算出来，与下面逐行排布的常量保持一致。
         void Card(double cy, double ch)
             => dc.DrawRectangle(RenderKit.BrushOf(pal.Elevated), RenderKit.PenOf(pal.Rim, 1, 0.55),
                  new RoundedRect(SafeRect(x, cy, w, ch), radius));
 
-        // 单张外接屏/内建屏卡片的高度（不含卡片间距）
-        double ScreenCardHeight(DdcScreen s, bool hasBuiltin)
-        {
-            double card = 38 + 2 + rowH;                 // 头 + 亮度
-            if (!s.Builtin)
-            {
-                card += 28;                              // 亮度范围（三档分段）
-                card += rowH;                            // 对比度
-                if (hasBuiltin) card += rowH;            // 跟随开关
-                card += rowH;                            // 音量
-                if (s.Mute is not null) card += rowH;    // 静音开关
-            }
-            // 颜色设置区（外接屏恒有；读不到时显示 --）
-            if (!s.Builtin) card += 24 + 3 * 30 + 38;   // 标题 + 三条 RGB 滑条 + 重置按钮
-            // 色温档位行（显示器支持色温预设时才有）
-            if (!s.Builtin && ScreenColorTempValues.ContainsKey(s.Id)) card += 28;
-            card += 30 + 30;                             // 状态行 + 折叠行
-            if (ScreenSettingsOpen.Contains(s.Id)) card += 64;
-            return card + cardPad - 4;
-        }
+        double ScreenCardHeight(DdcScreen s, bool hasBuiltin) => ExternalScreenCardHeight(s, hasBuiltin);
 
         // 卡片头：行首图标（强调色）+ 名称 / 副标题。返回内容起始 y。
         double CardHead(double cy, Glyph g, string name, string sub)
@@ -1204,15 +1386,13 @@ public sealed class IslandCanvas : Control
         double x = r.X + 20, w = r.Width - 40, y = y0;
         if (Devices.Count == 0)
         {
-            var t = RenderKit.Text("未检测到设备（蓝牙 / 2.4G 接收器 / 鼠标键盘耳机，或本机内置电池）", 11.5, pal.TextDim);
+            var t = RenderKit.Text("未检测到带电量的设备（蓝牙鼠标 / 键盘 / 耳机 / 手柄，或本机内置电池）", 11.5, pal.TextDim);
             dc.DrawText(t, new Point(x, y + 30));
             return;
         }
 
         // 每个设备一张小卡：大环 + 环内图标 + 百分比 + 名称 + 状态
-        const double cardW = MonitorLayoutSpec.DeviceCardWidth;
-        const double cardH = MonitorLayoutSpec.DeviceCardHeight;
-        const double gap = MonitorLayoutSpec.DeviceCardGap;
+        const double cardW = 132, cardH = 150, gap = 12;
         int perRow = Math.Max(1, (int)((w + gap) / (cardW + gap)));
         for (int i = 0; i < Devices.Count; i++)
         {
@@ -1222,37 +1402,25 @@ public sealed class IslandCanvas : Control
             var box = SafeRect(cx, cy, cardW, cardH);
             dc.DrawRectangle(RenderKit.BrushOf(pal.Elevated), RenderKit.PenOf(pal.Rim, 1, 0.55), new RoundedRect(box, 12));
 
-            // 电量色：低红 / 偏低橙 / 正常蓝；充电中绿。
-            // 读不到电量的设备（只有识别没有读数）用暗色 —— 不能拿 0% 画成"满电环以外的样子"。
-            bool unknown = dev.LevelText is not null;
-            Color c = unknown ? pal.TextDim
-                 : dev.Charging ? DownC
-                 : dev.Percent <= 20 ? pal.Up
-                 : dev.Percent <= 40 ? pal.Warning : ResColor(Res.Batt, pal);
+            // 电量色：低红 / 偏低橙 / 正常蓝；充电中绿
+            Color c = dev.Charging ? DownC : dev.Percent <= 20 ? pal.Up : dev.Percent <= 40 ? pal.Warning : ResColor(Res.Batt, pal);
 
             // 大环（60px）+ 环内设备图标
             const double ring = 60;
             double rx = cx + cardW / 2, ry = cy + 20 + ring / 2;
             RenderKit.Ring(dc, new Point(rx, ry), ring, 5, dev.Percent / 100.0, pal.Track, c);
-            // 环内设备图标：按设备类型给 per-type 矢量剪影（battery / ble / mouse / keyboard /
-            // headset / gamepad / other 七种），与 Windows 端同一套图形语言（16×16 网格、圆头描边）。
-            // 认不出的类型兜底成"通用外设"，不抛异常、不画空白。
-            // 尺寸 16×16 —— 与 Windows 端设备页一致（环内 60px 环里放得下，不压到下方文字）。
-            DeviceGlyphs.Draw(dc, DeviceGlyphs.Of(dev.Kind), SafeRect(rx - 8, ry - 8, 16, 16), pal.Text);
+            // 图标按设备类型：内置电池 / 蓝牙设备
+            Glyph g = dev.Kind == "内置" ? Glyph.Battery : Glyph.Disk;
+            DrawIcon(dc, g, rx - (12 * 1.1) / 2, ry, pal.Text, 1.1);
 
-            // 大号读数：有百分数显示百分比；只有档位/未知时显示那行文字（不画假的 0%）
-            var pct = unknown
-                ? RenderKit.Text(dev.LevelText!, 20, c, true)
-                : RenderKit.Text($"{dev.Percent}%", 26, c, true);
+            // 大号百分比
+            var pct = RenderKit.Text($"{dev.Percent}%", 26, c, true);
             dc.DrawText(pct, new Point(rx - pct.WidthIncludingTrailingWhitespace / 2, cy + 20 + ring + 6));
             // 设备名
             var nm = RenderKit.Trimmed(dev.Name, 11, pal.Text, cardW - 16, true);
             dc.DrawText(nm, new Point(rx - nm.WidthIncludingTrailingWhitespace / 2, cy + 20 + ring + 38));
-            // 状态："未知"必须排在百分数判断前面（否则读不到电量的设备会显示"正常"）
-            string state = unknown ? "电量未知"
-                     : dev.Charging ? "充电中"
-                     : dev.Percent <= 20 ? "电量低"
-                     : dev.Percent <= 40 ? "电量偏低" : "正常";
+            // 状态
+            string state = dev.Charging ? "充电中" : dev.Percent <= 20 ? "电量低" : dev.Percent <= 40 ? "电量偏低" : "正常";
             var st = RenderKit.Text(state, 10, dev.Charging ? DownC : dev.Percent <= 40 ? pal.Warning : pal.TextTertiary);
             dc.DrawText(st, new Point(rx - st.WidthIncludingTrailingWhitespace / 2, cy + 20 + ring + 56));
         }
@@ -1273,10 +1441,15 @@ public sealed class IslandCanvas : Control
         ClipDeleteRows.Clear();
         ClipFilterButtons.Clear();
         _clipVisibleIdx.Clear();
+        _fileRows.Clear();
+        _filesClearBtn = default;
+        ClipClearButton = default;
+        ClipExportButton = default;
+        ClipScrollBar = default;
         double x = r.X + 24, y = y0;
-        if (Clips.Count == 0)
+        if (Clips.Count == 0 && StagedFiles.Count == 0)
         {
-            var t = RenderKit.Text("复制文字后自动记录（点一条即可粘回）", 12, pal.TextDim);
+            var t = RenderKit.Text("复制文字或拖入文件到灵动岛即可暂存", 12, pal.TextDim);
             dc.DrawText(t, new Point(x, y + 30));
             return;
         }
@@ -1346,9 +1519,10 @@ public sealed class IslandCanvas : Control
         double colW = (r.Width - 48 - 20) / 2;
         double rowH = 30;
         int perCol = (source.Count + 1) / 2;
-        // 可见区高度：面板底部减去列表起点。内容超出时可滚动（BrimDeck 有滚动条）。
+        // 底部文件中转暂存条（有拖入文件时自动显示，对齐 Windows 版文件中转架）
+        double fileStripH = StagedFiles.Count > 0 ? Math.Min(3, StagedFiles.Count) * 24 + 26 : 0;
         double listTop = y;
-        double listBottom = r.Bottom - 8;
+        double listBottom = r.Bottom - 8 - fileStripH;
         double viewH = Math.Max(rowH, listBottom - listTop);
         double rowsH = Math.Ceiling(source.Count / 2.0) * rowH;
         // 滚动偏移夹在合法范围：内容不足时为 0，超出时最多滚到底。
@@ -1356,8 +1530,8 @@ public sealed class IslandCanvas : Control
         _clipViewH = viewH;
         _clipContentH = rowsH;
 
-        // 裁剪到列表区，滚动时超出部分不画（也避免画到面板边框外）
-        using (dc.PushClip(new Rect(r.X, listTop, r.Width, viewH)))
+        var clipViewport = SafeRect(r.X, listTop, r.Width, viewH);
+        using (dc.PushClip(clipViewport))
         {
         for (int vis = 0; vis < source.Count; vis++)
         {
@@ -1365,9 +1539,11 @@ public sealed class IslandCanvas : Control
             _clipVisibleIdx.Add(origIdx);
             double cx = x + (vis / perCol) * (colW + 20);
             double cy = listTop + (vis % perCol) * rowH - _clipScroll;
-            // 完全在可见区外的行不画（但要保留索引映射，点击才对得上）
-            if (cy + rowH < listTop || cy > listBottom) { ClipRows[vis] = new Rect(cx, cy, colW, rowH - 4); continue; }
-            ClipRows[vis] = new Rect(cx, cy, colW, rowH - 4);
+            // 完全在可见区外的行不画也不登记热区（避免滚出可见区的行遮挡顶部筛选标签）
+            if (cy + rowH <= listTop || cy >= listBottom) continue;
+            var rawRow = SafeRect(cx, cy, colW, rowH - 4).Intersect(clipViewport);
+            if (rawRow.Width <= 0 || rawRow.Height <= 0) continue;
+            ClipRows[vis] = rawRow;
 
             // 类型圆点（参考图每条左侧带颜色点）
             Color tagColor = ClipTagOf(c) switch
@@ -1444,7 +1620,8 @@ public sealed class IslandCanvas : Control
             dc.DrawText(tm, new Point(right - 20 - tm.WidthIncludingTrailingWhitespace, cy + 2));
             var del = RenderKit.Text("×", 12, pal.TextDim);
             dc.DrawText(del, new Point(right - 4, cy + 1));
-            ClipDeleteRows[vis] = SafeRect(right - 10, cy - 2, 16, rowH - 4);
+            var delRect = SafeRect(right - 10, cy - 2, 16, rowH - 4).Intersect(clipViewport);
+            if (delRect.Width > 0 && delRect.Height > 0) ClipDeleteRows[vis] = delRect;
         }
         }   // ← 结束列表裁剪
 
@@ -1464,6 +1641,34 @@ public sealed class IslandCanvas : Control
             ClipScrollBar = SafeRect(trackX - 4, listTop, 11, trackH);
         }
         else ClipScrollBar = new Rect();
+
+        // 绘制底部文件中转暂存架（拖入文件后显示；点击在 Finder 中定位，点 × 移除）
+        if (StagedFiles.Count > 0)
+        {
+            double fy = listBottom + 6;
+            dc.DrawLine(RenderKit.PenOf(pal.Hairline, 1, 0.7), new Point(x, fy), new Point(r.Right - 24, fy));
+            fy += 6;
+            var fh = RenderKit.Text($"文件中转（{StagedFiles.Count}）· 点击定位", 10, pal.TextTertiary, true);
+            dc.DrawText(fh, new Point(x, fy));
+            var fclr = RenderKit.Text("清空文件", 10, pal.TextDim);
+            double fclrX = r.Right - 24 - fclr.WidthIncludingTrailingWhitespace;
+            dc.DrawText(fclr, new Point(fclrX, fy));
+            _filesClearBtn = SafeRect(fclrX - 6, fy - 3, fclr.WidthIncludingTrailingWhitespace + 12, 18);
+            fy += 18;
+            foreach (var sf in StagedFiles.Take(3))
+            {
+                var rowRect = SafeRect(x, fy, r.Width - 48, 22);
+                var nm = RenderKit.Trimmed($"📄 {sf.Name}", 11, pal.Text, r.Width - 130, false);
+                dc.DrawText(nm, new Point(x, fy + 2));
+                var sz = RenderKit.Text(sf.SizeText, 9.5, pal.TextTertiary);
+                dc.DrawText(sz, new Point(r.Right - 46 - sz.WidthIncludingTrailingWhitespace, fy + 4));
+                var dx = RenderKit.Text("×", 12, pal.TextDim);
+                dc.DrawText(dx, new Point(r.Right - 30, fy + 2));
+                var delRect = SafeRect(r.Right - 36, fy, 16, 22);
+                _fileRows.Add((sf.FullPath, rowRect, delRect));
+                fy += 24;
+            }
+        }
     }
 
     private readonly Dictionary<ClipItem, global::Avalonia.Media.IImage> _clipThumbs = new();
@@ -1477,8 +1682,17 @@ public sealed class IslandCanvas : Control
         {
             using var ms = new System.IO.MemoryStream(png);
             var full = global::Avalonia.Media.Imaging.Bitmap.DecodeToWidth(ms, 112);
+            if (_clipThumbs.Count >= 24)
+            {
+                foreach (var k in _clipThumbs.Keys.Take(4).ToList())
+                {
+                    if (_clipThumbs.Remove(k, out var oldImg) && oldImg is IDisposable disp)
+                    {
+                        try { disp.Dispose(); } catch { }
+                    }
+                }
+            }
             _clipThumbs[c] = full;
-            if (_clipThumbs.Count > 24) { foreach (var k in _clipThumbs.Keys.Take(4)) _clipThumbs.Remove(k); }
             return full;
         }
         catch { return null; }
@@ -1581,10 +1795,12 @@ public sealed class IslandCanvas : Control
     /// <summary>菜单针对的条目显示行号（-1 = 无）。</summary>
     public int ClipMenuTarget => _clipMenuTarget;
 
-    /// <summary>打开剪贴板右键菜单（针对某个显示行）。</summary>
+    /// <summary>打开剪贴板右键菜单（针对某个显示行，内部自动映射到原始 Clips 索引）。</summary>
     public void OpenClipMenu(int visRow, Point at)
     {
-        _clipMenuTarget = visRow;
+        int origIdx = visRow >= 0 && visRow < _clipVisibleIdx.Count ? _clipVisibleIdx[visRow] : visRow;
+        if (origIdx < 0 || origIdx >= Clips.Count) return;
+        _clipMenuTarget = origIdx;
         _clipMenuPos = at;
         _clipMenuOpen = true;
         Dirty = true;
@@ -1664,6 +1880,12 @@ public sealed class IslandCanvas : Control
                 if (vis < _clipVisibleIdx.Count) ClipDeleted?.Invoke(_clipVisibleIdx[vis]);
                 return true;
             }
+        if (_filesClearBtn.Contains(pos)) { FilesClearRequested?.Invoke(); return true; }
+        foreach (var (path, rowRect, delRect) in _fileRows)
+        {
+            if (delRect.Contains(pos)) { FileRemoveRequested?.Invoke(path); return true; }
+            if (rowRect.Contains(pos)) { FileRevealRequested?.Invoke(path); return true; }
+        }
         if (ClipClearButton.Contains(pos)) { ClipCleared?.Invoke(); return true; }
         if (ClipExportButton.Contains(pos)) { ClipExportAll?.Invoke(); return true; }
         foreach (var (vis, rect) in ClipRows)
@@ -1678,24 +1900,18 @@ public sealed class IslandCanvas : Control
     // ==================== 展开态：四组卡片（占用 / 温度 / 上下速度 / 电池） ====================
     private void DrawMonitorPage(DrawingContext dc, Palette pal, Rect r, double y0)
     {
+        ProcessSortButton = default;
         var s = Snapshot;
-        // 栅格常量取自 MonitorLayoutSpec（唯一真相源，探针与门禁链同一份）。
-        // 局部抄一份的话，产品改了这里探针不会知道 ⇒ 探针的断言会悄悄失效。
-        const double pad = MonitorLayoutSpec.ContentPadX;
-        const double gap = MonitorLayoutSpec.GridGap;
-        double cardW = MonitorLayoutSpec.MonitorCardWidth(r.Width);
-        // 底部状态行（9px 单行，两端共享规格 MonitorStatusLineSpec）占的高度**先从可用高度里扣掉**：
-        // TopMargin(6) + LineHeight(14) = 20。不扣的话最紧凑时状态行会压到栅格底边 / 越出面板底。
-        double statusLineH = MonitorStatusLineSpec.TopMargin + MonitorStatusLineSpec.LineHeight;
-        double availH = r.Bottom - y0 - pad - statusLineH;
+        const double pad = 18, gap = 12;
+        double cardW = (r.Width - pad * 2 - gap) / 2;
+        double availH = r.Bottom - y0 - pad;
         if (cardW < 120 || availH < 100) return;
 
         // 卡片高度按内容算，不再两行均分——原来 3 行内容撑满 230px 高度，下半大片空白。
         // 上排：标题 44 + 3 行 × 37 + 12 余量 = 167
-        const double rowH = MonitorLayoutSpec.RowH;         // 行高 44：进度条下方留 16px 给历史曲线
-        const double speedRowH = MonitorLayoutSpec.SpeedRowH;
-        double topCardH = MonitorLayoutSpec.TopCardH;                        // 占用 / 温度：3 行 → 181
-        double botCardH = MonitorLayoutSpec.BottomCardHeight;               // 速度：2 行 + 网络标签；电池：大字 → 156
+        const double headH = 42, rowH = 44, rowGap = 7;   // 行高 44：进度条下方留 16px 给历史曲线
+        double topCardH = headH + 3 * rowH + rowGap;                       // 占用 / 温度：3 行 → 148
+        double botCardH = Math.Max(headH + 2 * 46 + 22, headH + 86);      // 速度：2 行 + 网络标签；电池：大字 → 156
         double topH = topCardH, botH = botCardH;
 
         // 卡片外壳 + 图标标题 + 分隔线，返回内容起始 y
@@ -1709,7 +1925,7 @@ public sealed class IslandCanvas : Control
             dc.DrawText(t, new Point(cx + 33, cy0 + 12));
             dc.DrawLine(RenderKit.PenOf(pal.Hairline, 1, 0.9),
                 new Point(cx + 15, cy0 + 36), new Point(cx + cardW - 15, cy0 + 36));
-            return cy0 + MonitorLayoutSpec.CardContentTop;
+            return cy0 + 44;
         }
 
         // 曲线用的暂存数组（避免每帧分配）
@@ -1746,39 +1962,35 @@ public sealed class IslandCanvas : Control
 
         double x1 = r.X + pad, x2 = x1 + cardW + gap;
         double y1 = y0, y2 = y1 + topH + gap;
-        // 栅格底边与状态行的落点：状态行在栅格**下方** TopMargin 处；
-        // 再夹在内容区底边内 ⇒ 绝不越出面板；实在放不下就不画（不压栅格）。
-        double gridBottom = y2 + botH;
-        double statusY = Math.Min(gridBottom + MonitorStatusLineSpec.TopMargin,
-                                  r.Bottom - pad - MonitorStatusLineSpec.LineHeight);
         // 读不到显示 "--"（Reading 三态），读到 0 显示 0%
         var stt = s?.Status ?? ReadingStatus.Empty;
         string Pct(Reading<double> r, double v) => r.HasValue ? $"{Math.Round(v)}%" : "--";
 
         // ① 占用：CPU / 内存 / 磁盘，各用资源色 + 历史曲线（对齐 BrimDeck）
-        double cy = Card(x1, y1, topH, MonitorPageLayoutSpec.TitleOf("usage"), Glyph.Cpu, ResColor(Res.Cpu, pal));
+        double cy = Card(x1, y1, topH, "占用", Glyph.Cpu, ResColor(Res.Cpu, pal));
         if (s is not null && s.GpuUsage > 0)
         {
             var gx = RenderKit.Text($"GPU {Math.Round(s.GpuUsage)}%", 10, ResColor(Res.Gpu, pal), true);
             dc.DrawText(gx, new Point(x1 + cardW - 15 - gx.WidthIncludingTrailingWhitespace, y1 + 14));
         }
         // 行高 44：进度条下方留 16px 给历史曲线（否则曲线会压到下一行的标签上）
-        Row(x1, cy,             Glyph.Cpu,  ResColor(Res.Cpu, pal),  MonitorPageLayoutSpec.LabelOf("usage", "cpu-usage"),  Pct(stt.Cpu, s?.CpuUsage ?? 0),           (s?.CpuUsage ?? 0) / 100,  null, HistoryBuffer.Kind.Cpu);
-        Row(x1, cy + rowH,      Glyph.Mem,  ResColor(Res.Mem, pal),  MonitorPageLayoutSpec.LabelOf("usage", "memory"), Pct(stt.Memory, s?.MemoryUsagePercent ?? 0), (s?.MemoryUsagePercent ?? 0) / 100, null, HistoryBuffer.Kind.Mem);
-        Row(x1, cy + rowH * 2,  Glyph.Disk, ResColor(Res.Disk, pal), MonitorPageLayoutSpec.LabelOf("usage", "disk"), Pct(stt.Disk, s?.DiskUsagePercent ?? 0),   (s?.DiskUsagePercent ?? 0) / 100, null, HistoryBuffer.Kind.DiskRead, 8 * 1024 * 1024);
+        string diskLabel = (s is not null && (s.DiskReadSpeed + s.DiskWriteSpeed) >= 1024)
+            ? $"磁盘  读{MonitorSnapshot.FormatSpeedFixed(s.DiskReadSpeed).Trim()} 写{MonitorSnapshot.FormatSpeedFixed(s.DiskWriteSpeed).Trim()}"
+            : "磁盘";
+        Row(x1, cy,       Glyph.Cpu,  ResColor(Res.Cpu, pal),  "CPU",      Pct(stt.Cpu, s?.CpuUsage ?? 0),           (s?.CpuUsage ?? 0) / 100,  null, HistoryBuffer.Kind.Cpu);
+        Row(x1, cy + 44,  Glyph.Mem,  ResColor(Res.Mem, pal),  "内存",     Pct(stt.Memory, s?.MemoryUsagePercent ?? 0), (s?.MemoryUsagePercent ?? 0) / 100, null, HistoryBuffer.Kind.Mem);
+        Row(x1, cy + 88,  Glyph.Disk, ResColor(Res.Disk, pal), diskLabel, Pct(stt.Disk, s?.DiskUsagePercent ?? 0),   (s?.DiskUsagePercent ?? 0) / 100, null, HistoryBuffer.Kind.DiskRead, 8 * 1024 * 1024);
 
-        // ② 温度：CPU / GPU / SSD，条长按 0-110°C 映射
-        // 温度用语义色：正常走强调色、偏高走警告色、过高走红色（规范：语义色要精确而非喊叫）
-        cy = Card(x2, y1, topH, MonitorPageLayoutSpec.TitleOf("temp"), Glyph.Thermo, ResColor(Res.Cpu, pal));
+        // ② 温度：CPU / GPU / SSD，统一采用 ≤60°绿 / 60°–90°黄 / ≥90°红 分级配色
+        cy = Card(x2, y1, topH, "温度", Glyph.Thermo, ResColor(Res.Cpu, pal));
         string Deg(double? v) => v is { } x && x > 0 ? $"{Math.Round(x)}°" : "--";
-        // 返回 null=正常（用中性强调），非 null=超阈值（用警告色）
-        string? TempWarn(double? v) => v is { } t ? (t >= 90 ? "过热" : t >= 70 ? "偏高" : null) : null;
-        Row(x2, cy,             Glyph.Thermo, ResColor(Res.Cpu, pal),  MonitorPageLayoutSpec.LabelOf("temp", "cpu-temp"), Deg(s?.CpuTemp), (s?.CpuTemp ?? 0) / 110, TempWarn(s?.CpuTemp));
-        Row(x2, cy + rowH,      Glyph.Gpu,    ResColor(Res.Gpu, pal),  MonitorPageLayoutSpec.LabelOf("temp", "gpu-temp"), Deg(s?.GpuTemp), (s?.GpuTemp ?? 0) / 110, TempWarn(s?.GpuTemp));
-        Row(x2, cy + rowH * 2,  Glyph.Ssd,    ResColor(Res.Disk, pal), MonitorPageLayoutSpec.LabelOf("temp", "storage-temp"), Deg(s?.SsdTemp), (s?.SsdTemp ?? 0) / 110, TempWarn(s?.SsdTemp));
+        Color TCol(double? v, Color fallback) => v is { } x && x > 0 ? TempColor(x, pal) : fallback;
+        Row(x2, cy,      Glyph.Thermo, TCol(s?.CpuTemp, pal.TextTertiary), "CPU", Deg(s?.CpuTemp), (s?.CpuTemp ?? 0) / 110);
+        Row(x2, cy + 44, Glyph.Gpu,    TCol(s?.GpuTemp, pal.TextTertiary), "GPU", Deg(s?.GpuTemp), (s?.GpuTemp ?? 0) / 110);
+        Row(x2, cy + 88, Glyph.Ssd,    TCol(s?.SsdTemp, pal.TextTertiary), "SSD", Deg(s?.SsdTemp), (s?.SsdTemp ?? 0) / 110);
 
         // ③ 上下速度：图标 + 数值 + 流量条（2 MB/s 为满格）
-        cy = Card(x1, y2, botH, MonitorPageLayoutSpec.TitleOf("speed"), Glyph.Down, pal.Accent);
+        cy = Card(x1, y2, botH, "上下速度", Glyph.Down, pal.Accent);
         void Speed(double yy, Glyph g, Color c, string label, double v, HistoryBuffer.Kind? curve = null)
         {
             DrawIcon(dc, g, x1 + 15, yy + 11, c);
@@ -1801,10 +2013,14 @@ public sealed class IslandCanvas : Control
                 if (n > 1) RenderKit.Sparkline(dc, new Rect(bx, yy + 33, bw, 14), _curveBuf, n, c);
             }
         }
-        Speed(cy,      Glyph.Down, DownC, MonitorPageLayoutSpec.LabelOf("speed", "down"), s?.DownloadSpeed ?? 0, HistoryBuffer.Kind.Down);
-        Speed(cy + speedRowH, Glyph.Up,   UpC,   MonitorPageLayoutSpec.LabelOf("speed", "up"), s?.UploadSpeed ?? 0, HistoryBuffer.Kind.Up);
-        // 卡底信息位：网络类型 + 电池（应用榜占了右下角，电池信息挪到这里）
-        var link = RenderKit.Text($"网络 {s?.LinkType ?? "--"}", 10, pal.TextTertiary);
+        Speed(cy,      Glyph.Down, DownC, "下行", s?.DownloadSpeed ?? 0, HistoryBuffer.Kind.Down);
+        Speed(cy + 46, Glyph.Up,   UpC,   "上行", s?.UploadSpeed ?? 0, HistoryBuffer.Kind.Up);
+        // 卡底信息位：今日流量 / 已开机时长 + 右侧电池
+        string netFooter = s is not null && (s.TodayDownload > 0 || s.TodayUpload > 0)
+            ? $"今日 ↓{MonitorSnapshot.FormatBytes(s.TodayDownload)} ↑{MonitorSnapshot.FormatBytes(s.TodayUpload)}"
+              + (s.UptimeHours > 0 ? $" · 已开机 {MonitorSnapshot.FormatUptime(s.UptimeHours)}" : "")
+            : $"网络 {s?.LinkType ?? "--"}" + (s is { UptimeHours: > 0 } ? $" · 已开机 {MonitorSnapshot.FormatUptime(s.UptimeHours)}" : "");
+        var link = RenderKit.Trimmed(netFooter, 9.5, pal.TextTertiary, cardW * 0.62, false);
         dc.DrawText(link, new Point(x1 + 15, y2 + botH - 18));
         if (s?.BatteryPercent is { } bp0)
         {
@@ -1815,7 +2031,7 @@ public sealed class IslandCanvas : Control
 
         // ④ 应用榜（右下）：真实应用图标 + 名称 + 数值，右上角「CPU / 内存」切换排序依据。
         //    对齐 BrimDeck 监控页右区。电池信息挪到速度卡底部（那里本来就有"网络"这类信息位）。
-        cy = Card(x2, y2, botH, MonitorPageLayoutSpec.TitleOf("topproc") + " · " + (ProcessListByMemory ? "内存" : "CPU"), Glyph.Ping, pal.Accent);
+        cy = Card(x2, y2, botH, ProcessListByMemory ? "占用最高 · 内存" : "占用最高 · CPU", Glyph.Ping, pal.Accent);
 
         // 右上角：CPU / 内存 分段切换
         {
@@ -1851,9 +2067,7 @@ public sealed class IslandCanvas : Control
             }
             else
             {
-                // 首字母兜底（取不到应用图标时）：用**次要文字色**，与 Windows 端一致 ——
-                // 它是图标的替身，视觉上应比旁边的应用名更安静，不该抢眼。
-                var initial = RenderKit.Text(string.IsNullOrEmpty(tp.Name) ? "?" : tp.Name[..1].ToUpperInvariant(), 9, pal.TextDim, true);
+                var initial = RenderKit.Text(string.IsNullOrEmpty(tp.Name) ? "?" : tp.Name[..1].ToUpperInvariant(), 9, pal.Text, true);
                 dc.DrawEllipse(RenderKit.BrushOf(pal.Track), null, new Point(x2 + 23, ry + 8), 8, 8);
                 dc.DrawText(initial, new Point(x2 + 23 - initial.Width / 2, ry + 3));
             }
@@ -1869,28 +2083,7 @@ public sealed class IslandCanvas : Control
             dc.DrawText(none, new Point(x2 + 16, cy + 8));
         }
 
-        // ⑤ 底部状态行（9px 单行）：2×2 栅格**下方**，左边与栅格左缘对齐，一行不换行。
-        //    字段位与顺序取自两端共享规格（SlotsFor 决定本平台显示哪些：平台不支持的**直接不出现**，
-        //    不置灰、不留空位）；读不到显示「未知」，绝不用 0 / 默认值 / 换算百分比充数（项目硬红线）。
-        if (statusY >= gridBottom)
-        {
-            double sx = x1;
-            foreach (var slot in MonitorStatusLineSpec.SlotsFor(macOS: true))
-            {
-                string? value = slot.Key switch
-                {
-                    "storage-temp" => MonitorStatusLineText.SsdTemp(s?.SsdTemp),
-                    "runtime" => MonitorStatusLineText.Uptime(s?.UptimeHours),
-                    _ => null,   // 规格里有、但本端还没有数据源的键 ⇒ 不出现（不显示假的未知）
-                };
-                if (value is null) continue;
-                var txt = RenderKit.Text($"{slot.Label} {value}", MonitorStatusLineSpec.FontSize, pal.TextTertiary);
-                dc.DrawText(txt, new Point(sx, statusY));
-                sx += txt.WidthIncludingTrailingWhitespace + MonitorStatusLineSpec.SlotGap;
-            }
-        }
-
-        // ⑥ 底部：读数健康状态（Reading<T> 三态）。
+        // ⑤ 底部：读数健康状态（Reading<T> 三态）。
         // 有读不到的项就把名字和原因列出来，让采样错误一眼可见，而不是在卡片里显示一个假的 0。
         if (s is not null)
         {
@@ -1904,17 +2097,17 @@ public sealed class IslandCanvas : Control
             Check("CPU", stt.Cpu); Check("内存", stt.Memory); Check("磁盘", stt.Disk);
             Check("网速", stt.NetDown); Check("CPU 温度", stt.CpuTemp); Check("GPU 温度", stt.GpuTemp);
             Check("SSD 温度", stt.SsdTemp);
-            // 状态行占了栅格底边下方第一行（TopMargin + LineHeight），健康行排在其下 ⇒ 两行不重叠。
-            double sy = Math.Min(r.Bottom - 14, statusY + MonitorStatusLineSpec.LineHeight + 2);
+            double sy = Math.Min(r.Bottom - 16, y2 + botH + 10);   // 贴着卡片底，不浮在面板底
             if (problems.Count > 0)
             {
                 var line = RenderKit.Trimmed("⚠ " + string.Join(" · ", problems), 9, pal.Warning, r.Width - 2 * pad, false);
                 dc.DrawText(line, new Point(r.X + pad, sy));
             }
-            // 一切正常时**不画这行**（2026-11-26）：
-            // Windows 端读不到时是**就地**标注（「需管理员」「缺驱动」），正常时没有任何多余的一行；
-            // mac 端原来常态也画一行「读数正常」⇒ 正常情况下两端底部行数不一致（mac 多一行）。
-            // 安静即正常 —— 只有真有问题时才多这一行警示，两端的常态底部就一致了。
+            else
+            {
+                var ok = RenderKit.Text("读数正常", 9, pal.TextTertiary);
+                dc.DrawText(ok, new Point(r.X + pad, sy));
+            }
         }
     }
 
@@ -1933,7 +2126,7 @@ public sealed class IslandCanvas : Control
         public readonly List<(Glyph Icon, Res Res, bool Ok, FormattedText Text)> Temps = new();   // 温度组
         public readonly List<(Glyph Icon, Res Res, double Share, FormattedText Text)> Usage = new();  // 占用组（环包图标）
         public (Glyph Icon, double Share, Color Color, FormattedText Text)? Battery;
-        public FormattedText NetDownArrow = null!, NetDownValue = null!, NetUpArrow = null!, NetUpValue = null!;
+        public FormattedText NetDown = null!, NetUp = null!;
         /// <summary>渐变频谱柱（CPU 历史，对齐 BrimDeck 收起形态的柱状图）。</summary>
         public double[] Spectrum = Array.Empty<double>();
         public int SpectrumCount;
@@ -1942,13 +2135,11 @@ public sealed class IslandCanvas : Control
         /// <summary>设备电量（收起态显示电量环，对齐 BrimDeck）。</summary>
         public IReadOnlyList<DeviceBattery.Device> Devices = Array.Empty<DeviceBattery.Device>();
 
-        public double TempW => Temps.Sum(t => DashIconBox + DashIconGap + Math.Max(t.Text.WidthIncludingTrailingWhitespace, CompactValueMinW) + DashTempGap) - (Temps.Count > 0 ? DashTempGap : 0);
+        public double TempW => Temps.Sum(t => DashIconBox + DashIconGap + Math.Max(t.Text.WidthIncludingTrailingWhitespace, TempValueMinW) + DashTempGap) - (Temps.Count > 0 ? DashTempGap : 0);
         public double UsageW => Usage.Sum(u => DashRing + 5 + Math.Max(u.Text.WidthIncludingTrailingWhitespace, 34) + DashItemGap) - (Usage.Count > 0 ? DashItemGap : 0);
         public double BattW => Battery is { } b ? DashRing + 5 + Math.Max(b.Text.WidthIncludingTrailingWhitespace, 34) : 0;
         public const double NetGap = 10;
-        /// <summary>网速总宽：↓箭头 + 间距 + 数值 + 组间距 + ↑箭头 + 间距 + 数值。</summary>
-        public double NetW => (NetDownArrow.WidthIncludingTrailingWhitespace + NetArrowGap + NetDownValue.WidthIncludingTrailingWhitespace)
-            + NetGap + (NetUpArrow.WidthIncludingTrailingWhitespace + NetArrowGap + NetUpValue.WidthIncludingTrailingWhitespace);
+        public double NetW => NetDown.WidthIncludingTrailingWhitespace + NetGap + NetUp.WidthIncludingTrailingWhitespace;
 
         public double ContentW
         {
@@ -2003,10 +2194,8 @@ public sealed class IslandCanvas : Control
             l.Battery = (Glyph.Battery, (double)bp / 100, bc, RenderKit.Text($"{Math.Round(bp)}%", FontValue, ReadableCached(bc, pal), true));
         }
         // ④ 网速
-        l.NetDownArrow = RenderKit.Text("↓", FontValue, ReadableCached(NetDownC, pal));
-        l.NetDownValue = RenderKit.Text(Core.Monitoring.MonitorSnapshot.FormatSpeedFixed(snap.DownloadSpeed), FontValue, pal.Text);
-        l.NetUpArrow = RenderKit.Text("↑", FontValue, ReadableCached(NetUpC, pal));
-        l.NetUpValue = RenderKit.Text(Core.Monitoring.MonitorSnapshot.FormatSpeedFixed(snap.UploadSpeed), FontValue, pal.Text);
+        l.NetDown = RenderKit.Text("↓" + Core.Monitoring.MonitorSnapshot.FormatSpeedFixed(snap.DownloadSpeed), FontValue, pal.Down);
+        l.NetUp = RenderKit.Text("↑" + Core.Monitoring.MonitorSnapshot.FormatSpeedFixed(snap.UploadSpeed), FontValue, pal.Up);
         // ⑤ 渐变频谱柱：CPU 历史（对齐 BrimDeck 收起形态的柱状图）
         var spec = new double[20];
         int n = _history.Series(HistoryBuffer.Kind.Cpu, spec.Length, spec, 100);
@@ -2060,7 +2249,7 @@ public sealed class IslandCanvas : Control
             DrawIcon(dc, t.Icon, x, cy, t.Ok ? ResColor(t.Res, pal) : pal.TextTertiary, 0.9);
             x += DashIconBox + DashIconGap;
             dc.DrawText(t.Text, new Point(x, top));
-            x += Math.Max(t.Text.WidthIncludingTrailingWhitespace, CompactValueMinW);   // 与指标胶囊共用最小数值槽
+            x += Math.Max(t.Text.WidthIncludingTrailingWhitespace, TempValueMinW);   // 同 combo：只留最小槽位
             if (i < L.Temps.Count - 1) x += DashTempGap;
         }
         if (L.Temps.Count > 0) Gap();
@@ -2100,14 +2289,10 @@ public sealed class IslandCanvas : Control
         }
         if (L.Devices.Count > 0) Gap();
 
-        // ④ 网速：一行，下载在前。箭头按方向取色（↓蓝 / ↑青），数值中性。
-        RenderKit.Baseline(dc, L.NetDownArrow, x, Math.Round(cy + FontValue * 0.36));
-        x += L.NetDownArrow.WidthIncludingTrailingWhitespace + NetArrowGap;
-        RenderKit.Baseline(dc, L.NetDownValue, x, Math.Round(cy + FontValue * 0.36));
-        x += L.NetDownValue.WidthIncludingTrailingWhitespace + DashLayout.NetGap;
-        RenderKit.Baseline(dc, L.NetUpArrow, x, Math.Round(cy + FontValue * 0.36));
-        x += L.NetUpArrow.WidthIncludingTrailingWhitespace + NetArrowGap;
-        RenderKit.Baseline(dc, L.NetUpValue, x, Math.Round(cy + FontValue * 0.36));
+        // ④ 网速：一行，下载在前。方向语义色保留。
+        RenderKit.Baseline(dc, L.NetDown, x, Math.Round(cy + FontValue * 0.36));
+        x += L.NetDown.WidthIncludingTrailingWhitespace + DashLayout.NetGap;
+        RenderKit.Baseline(dc, L.NetUp, x, Math.Round(cy + FontValue * 0.36));
     }
 
     // ============ 胶囊监控图标（12×12 单位矢量，描边式） ============
@@ -2468,6 +2653,9 @@ public sealed class IslandCanvas : Control
         public Glyph? Icon; public Color IconColor;
         public FormattedText? Temp, City;
         public bool HasWeather;
+        public FormattedText? BattText;
+        public Color BattColor;
+        public bool HasBattery;
 
         // 逐段宽度（不含分区间距）
         public double TimeW => Time.WidthIncludingTrailingWhitespace;
@@ -2480,11 +2668,16 @@ public sealed class IslandCanvas : Control
         public double TempW => Temp?.WidthIncludingTrailingWhitespace ?? 0;
         public double CityGap => 8;
         public double CityW => City?.WidthIncludingTrailingWhitespace ?? 0;
+        public double BattIconW => 13;
+        public double BattGap => 5;
+        public double BattW => HasBattery && BattText is not null ? BattIconW + BattGap + BattText.WidthIncludingTrailingWhitespace : 0;
 
         public double LeftW => TimeW + SecGap + SecW;
         public double WeatherW => HasWeather ? IconW + IconGap + TempGap + TempW + CityGap + CityW : 0;
-        /// <summary>内容总宽 = 三段 + 两个分区间距。</summary>
-        public double ContentW => LeftW + ClockColGap + DateW + (HasWeather ? ClockColGap + WeatherW : 0);
+        /// <summary>内容总宽 = 时间 + 日期 + 天气 +（带电池机型的紧凑电量）。</summary>
+        public double ContentW => LeftW + ClockColGap + DateW
+            + (HasWeather ? ClockColGap + WeatherW : 0)
+            + (HasBattery ? ClockColGap + BattW : 0);
         /// <summary>胶囊宽度 = 内容 + 左右内边距。</summary>
         public double CapsuleW => ContentW + ClockPadX * 2;
     }
@@ -2511,10 +2704,10 @@ public sealed class IslandCanvas : Control
         {
             Time = RenderKit.Text(now.ToString("HH:mm"), FontHero, pal.Text, true),
             // 日期与星期用间隔点连接："11月24日·周二"。原来用 ASCII 空格，在苹方下太宽，像断开了
-            Date = RenderKit.Text(ClockTextSpec.DateText(now), FontValue, pal.TextDim),
+            Date = RenderKit.Text(now.ToString("M月d日") + "·" + WeekdayShort(now.DayOfWeek), FontValue, pal.TextDim),
             // 秒：和主时间是一体的，用 TextDim（不是第三级灰），**基线对齐**主时间。
             // 之前是 10px + TextTertiary 悬在右下角，像个瑕疵。
-            Sec = RenderKit.Text(ClockTextSpec.SecondsText(now), FontBody, pal.TextDim, true),
+            Sec = RenderKit.Text(now.ToString("ss"), FontBody, pal.TextDim, true),
             Icon = wGlyph, IconColor = wColor,
             HasWeather = weatherText is not null && wGlyph is not null,
         };
@@ -2531,6 +2724,14 @@ public sealed class IslandCanvas : Control
                     ? full
                     : RenderKit.Trimmed(cs, FontLabel, pal.TextDim, ClockCityMaxW, false);
             }
+        }
+        if (Snapshot?.BatteryPercent is { } bpVal)
+        {
+            l.HasBattery = true;
+            int pct = (int)Math.Round(Math.Clamp(bpVal, 0, 100));
+            bool chg = Snapshot.BatteryCharging;
+            l.BattColor = chg ? DownC : pct <= 20 ? pal.Up : pct <= 40 ? pal.Warning : ResColor(Res.Batt, pal);
+            l.BattText = RenderKit.Text($"{pct}%", FontValue, pct <= 20 && !chg ? pal.Up : pal.Text, true);
         }
         return l;
     }
@@ -2573,15 +2774,91 @@ public sealed class IslandCanvas : Control
                 x += L.TempW + L.TempGap;
             }
             if (L.City is not null)
+            {
                 dc.DrawText(L.City, new Point(x, mid - L.City.Height / 2));
+                x += L.CityW + L.CityGap;
+            }
+        }
+
+        // ④ 本机电池（带电池机型显示，对齐 Windows 时间胶囊）
+        if (L.HasBattery && L.BattText is not null)
+        {
+            Divider(x + ClockColGap / 2);
+            x += ClockColGap;
+            DrawIcon(dc, Glyph.Battery, x, mid, L.BattColor, L.BattIconW / 12);
+            x += L.BattIconW + L.BattGap;
+            dc.DrawText(L.BattText, new Point(x, mid - L.BattText.Height / 2));
         }
     }
 
-    /// <summary>
-    /// 星期两字缩写（周二/周三）——比"星期二"紧凑。
-    /// 2026-11-26 起改为直接用两端共用的 <see cref="ClockTextSpec.WeekdayShort"/>，
-    /// 两端不再各写一份（否则日期格式会漂）。
-    /// </summary>
+    /// <summary>媒体律动收起胶囊（对齐 Windows 版 DrawMedia：圆角唱片 + 歌名歌手 + 5 根律动柱）。</summary>
+    public double MeasureMediaWidth()
+    {
+        var m = Media;
+        if (!m.HasMedia)
+            return RenderKit.Text("暂无正在播放的媒体", FontBody, Palette.TextDim).WidthIncludingTrailingWhitespace + 68;
+        string label = string.IsNullOrEmpty(m.Artist) ? m.Title : $"{m.Title} · {m.Artist}";
+        double textW = Math.Min(210, RenderKit.Text(label, FontBody, Palette.Text, true).WidthIncludingTrailingWhitespace);
+        return 14 + 28 + 10 + textW + 12 + 24 + 14;
+    }
+
+    private void DrawMedia(DrawingContext dc, Palette pal, Rect r, double cy)
+    {
+        var m = Media;
+        double x = r.X + 14;
+        var cover = SafeRect(x, cy - 14, 28, 28);
+        dc.DrawRectangle(RenderKit.BrushOf(pal.Elevated), RenderKit.PenOf(pal.Rim, 0.8, 0.5), new RoundedRect(cover, 7));
+        var miniArt = ResolveMediaArtwork(m.ArtworkBytes);
+        if (miniArt is not null)
+        {
+            using (dc.PushClip(new RoundedRect(cover, 7)))
+                dc.DrawImage(miniArt, cover);
+            dc.DrawRectangle(null, RenderKit.PenOf(pal.Rim, 0.8, 0.5), new RoundedRect(cover, 7));
+        }
+        else
+        {
+            var center = new Point(x + 14, cy);
+            dc.DrawEllipse(RenderKit.Faint(pal.Accent, 0.22), RenderKit.PenOf(pal.Accent, 1.2, 0.8), center, 8.5, 8.5);
+            dc.DrawEllipse(RenderKit.BrushOf(pal.Accent), null, center, 2.8, 2.8);
+        }
+        x += 28 + 10;
+
+        if (!m.HasMedia)
+        {
+            var idle = RenderKit.Text("暂无正在播放的媒体", FontBody, pal.TextDim);
+            dc.DrawText(idle, new Point(x, cy - idle.Height / 2));
+            return;
+        }
+
+        const int barCount = 5;
+        const double barW = 3.2, barGap = 2.0, barMaxH = 18;
+        double waveTotalW = barCount * barW + (barCount - 1) * barGap;
+        double waveX = r.Right - 14 - waveTotalW;
+        var bars = AudioBars;
+        for (int i = 0; i < barCount; i++)
+        {
+            double v = m.IsPlaying && bars is { Length: > 0 }
+                ? Math.Clamp(bars[(i * 3) % bars.Length], 0.18, 1.0)
+                : (0.22 + (i % 2) * 0.12);
+            double bh = Math.Max(4, v * barMaxH);
+            dc.DrawRectangle(RenderKit.BrushOf(pal.Accent), null,
+                new RoundedRect(SafeRect(waveX + i * (barW + barGap), cy - bh / 2, barW, bh), barW / 2));
+        }
+
+        double availW = Math.Max(40, waveX - 12 - x);
+        string label = string.IsNullOrEmpty(m.Artist) ? m.Title : $"{m.Title} · {m.Artist}";
+        var txt = RenderKit.Trimmed(label, FontBody, pal.Text, availW, true);
+        dc.DrawText(txt, new Point(x, cy - txt.Height / 2));
+    }
+
+    /// <summary>星期两字缩写（周二/周三）——比"星期二"紧凑。</summary>
+    private static string WeekdayShort(DayOfWeek d) => d switch
+    {
+        DayOfWeek.Monday => "周一", DayOfWeek.Tuesday => "周二", DayOfWeek.Wednesday => "周三",
+        DayOfWeek.Thursday => "周四", DayOfWeek.Friday => "周五",
+        DayOfWeek.Saturday => "周六", DayOfWeek.Sunday => "周日",
+        _ => "",
+    };
 
     /// <summary>
     /// 屏幕页实际内容高度——展开面板高度按它算，不写死。
@@ -2596,17 +2873,14 @@ public sealed class IslandCanvas : Control
     public double MeasureScreensHeight()
     {
         const double cardPad = 16, cardGap = 12, rowH = 34;
+        if (Screens.Count == 0 && !BuiltinOff) return 60;
         double h = 0;
         bool hasBuiltin = Screens.Any(s => s.Builtin);
         if (hasBuiltin || BuiltinOff) h += 38 + 2 + (hasBuiltin ? rowH : 0) + 24 + cardPad + cardGap;   // 笔记本屏幕卡（含内建屏亮度）
         foreach (var s in Screens)
         {
             if (s.Builtin) continue;                                    // 已并入笔记本屏幕卡
-            double card = 38 + 2 + rowH + rowH + (hasBuiltin ? rowH : 0) + rowH;   // 头 + 亮度 + 对比度 + (跟随) + 音量
-            if (!s.Builtin) card += 24 + 3 * 30 + 38;  // 颜色设置（标题+三滑条+重置按钮）
-            card += 30 + 30;                                            // 状态行 + 折叠行
-            if (ScreenSettingsOpen.Contains(s.Id)) card += 64;
-            h += card + cardPad - 4 + cardGap;
+            h += ExternalScreenCardHeight(s, hasBuiltin) + cardGap;
         }
         if (!string.IsNullOrEmpty(AutoFollowStatus)) h += 16;
         return h + 22;
@@ -2615,9 +2889,9 @@ public sealed class IslandCanvas : Control
     /// <summary>设备页高度：每行 150 + 间距 12。</summary>
     public double MeasureDevicesHeight()
     {
-        const double cardH = MonitorLayoutSpec.DeviceCardHeight, gap = MonitorLayoutSpec.DeviceCardGap;
-        double w = MonitorLayoutSpec.DevicesContentWidth(MonitorLayoutSpec.ExpandedPanelWidth); // 与 DrawDevicesPage 的可用宽度一致
-        int perRow = MonitorLayoutSpec.DevicesPerRow(MonitorLayoutSpec.ExpandedPanelWidth);
+        const double cardH = 150, gap = 12;
+        double w = 520;                                  // 与 DrawDevicesPage 的可用宽度一致
+        int perRow = Math.Max(1, (int)((w + gap) / (132 + gap)));
         int rows = (Devices.Count + perRow - 1) / perRow;
         if (rows == 0) return 40;                        // 空状态提示一行
         return rows * cardH + (rows - 1) * gap;

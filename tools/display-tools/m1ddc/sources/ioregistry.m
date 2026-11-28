@@ -8,7 +8,10 @@
 
 static CFTypeRef getCFStringRef(io_service_t service, char* key) {
     CFStringRef cfstring = CFStringCreateWithCString(kCFAllocatorDefault, key, kCFStringEncodingASCII);
-    return IORegistryEntrySearchCFProperty(service, kIOServicePlane, cfstring, kCFAllocatorDefault, kIORegistryIterateRecursively);
+    if (cfstring == NULL) return NULL;
+    CFTypeRef result = IORegistryEntrySearchCFProperty(service, kIOServicePlane, cfstring, kCFAllocatorDefault, kIORegistryIterateRecursively);
+    CFRelease(cfstring);
+    return result;
 }
 
 static Boolean isMCDP29XXProxy(io_service_t proxy) {
@@ -37,14 +40,17 @@ static Boolean isMCDP29XXProxy(io_service_t proxy) {
 
 CGDisplayCount getOnlineDisplayInfos(DisplayInfos* displayInfos) {
     // Getting online display list and count
-    CGDisplayCount screenCount;
+    CGDisplayCount screenCount = 0;
     CGDirectDisplayID screenList[MAX_DISPLAYS];
-    CGGetOnlineDisplayList(MAX_DISPLAYS, screenList, &screenCount);
+    if (CGGetOnlineDisplayList(MAX_DISPLAYS, screenList, &screenCount) != kCGErrorSuccess) {
+        return 0;
+    }
 
     int validDisplayCount = 0;
     // Fetching each display infos from IOKit
     for (int i = 0; i < (int)screenCount && validDisplayCount < MAX_DISPLAYS; i++) {
         DisplayInfos *currDisplay = displayInfos + validDisplayCount;
+        memset(currDisplay, 0, sizeof(DisplayInfos));
         currDisplay->id = screenList[i];
 
         // This is a private API, but it's a shortcut to get the system UUID
@@ -58,13 +64,18 @@ CGDisplayCount getOnlineDisplayInfos(DisplayInfos* displayInfos) {
         currDisplay->model = CGDisplayModelNumber(currDisplay->id);
         currDisplay->vendor = CGDisplayVendorNumber(currDisplay->id);
 
-        currDisplay->uuid = CFDictionaryGetValue(displayInfoDict, CFSTR("kCGDisplayUUID"));
-        currDisplay->ioLocation = CFDictionaryGetValue(displayInfoDict, CFSTR("IODisplayLocation"));
+        CFStringRef uuidRef = CFDictionaryGetValue(displayInfoDict, CFSTR("kCGDisplayUUID"));
+        CFStringRef ioLocRef = CFDictionaryGetValue(displayInfoDict, CFSTR("IODisplayLocation"));
 
         // Skip virtual displays (like Sidecar/AirPlay) that don't have required properties
-        if (currDisplay->uuid == NULL || currDisplay->ioLocation == NULL) {
+        if (uuidRef == NULL || ioLocRef == NULL) {
+            CFRelease(displayInfoDict);
             continue;
         }
+
+        currDisplay->uuid = [[(NSString *)uuidRef copy] autorelease];
+        currDisplay->ioLocation = [[(NSString *)ioLocRef copy] autorelease];
+        CFRelease(displayInfoDict);
 
         // Retrieving IORegistry entry for display
         currDisplay->adapter = IORegistryEntryCopyFromPath(kIOMainPortDefault, (CFStringRef)currDisplay->ioLocation);
@@ -73,22 +84,44 @@ CGDisplayCount getOnlineDisplayInfos(DisplayInfos* displayInfos) {
         }
 
         // If successful, we can retrieve the EDID UUID, and other display attributes
-        currDisplay->edid = getCFStringRef(currDisplay->adapter, "EDID UUID");
-        CFDictionaryRef displayAttrs = getCFStringRef(currDisplay->adapter, "DisplayAttributes");
-        if (displayAttrs) {
-            NSDictionary* displayAttrsNS = (NSDictionary*)displayAttrs;
-            NSDictionary* productAttrs = [displayAttrsNS objectForKey:@"ProductAttributes"];
-            if (productAttrs) {
-                currDisplay->productName = [productAttrs objectForKey:@"ProductName"] ?: @"Unknown Display";
-                currDisplay->manufacturer = [productAttrs objectForKey:@"ManufacturerID"];
-                currDisplay->alphNumSerial = [productAttrs objectForKey:@"AlphanumericSerialNumber"];
+        CFTypeRef edidRef = getCFStringRef(currDisplay->adapter, "EDID UUID");
+        if (edidRef != NULL) {
+            if (CFGetTypeID(edidRef) == CFStringGetTypeID()) {
+                currDisplay->edid = [[(NSString *)edidRef copy] autorelease];
             }
+            CFRelease(edidRef);
+        }
+        CFTypeRef displayAttrs = getCFStringRef(currDisplay->adapter, "DisplayAttributes");
+        if (displayAttrs != NULL) {
+            if (CFGetTypeID(displayAttrs) == CFDictionaryGetTypeID()) {
+                NSDictionary* displayAttrsNS = (NSDictionary*)displayAttrs;
+                NSDictionary* productAttrs = [displayAttrsNS objectForKey:@"ProductAttributes"];
+                if (productAttrs) {
+                    NSString *prodName = [productAttrs objectForKey:@"ProductName"] ?: @"Unknown Display";
+                    NSString *mfg = [productAttrs objectForKey:@"ManufacturerID"];
+                    NSString *alphaSer = [productAttrs objectForKey:@"AlphanumericSerialNumber"];
+                    currDisplay->productName = [[prodName copy] autorelease];
+                    if (mfg) currDisplay->manufacturer = [[mfg copy] autorelease];
+                    if (alphaSer) currDisplay->alphNumSerial = [[alphaSer copy] autorelease];
+                }
+            }
+            CFRelease(displayAttrs);
         }
 
         validDisplayCount++;
     }
 
     return validDisplayCount;
+}
+
+void releaseDisplayInfos(DisplayInfos* displayInfos, CGDisplayCount count) {
+    if (displayInfos == NULL) return;
+    for (CGDisplayCount i = 0; i < count; i++) {
+        if (displayInfos[i].adapter != MACH_PORT_NULL) {
+            IOObjectRelease(displayInfos[i].adapter);
+            displayInfos[i].adapter = MACH_PORT_NULL;
+        }
+    }
 }
 
 /* 
@@ -145,7 +178,7 @@ DisplayInfos* selectDisplay(DisplayInfos *displays, int connectedDisplays, char 
     char *stop;
     long displayNumber = strtol(displayIdentifier, &stop, 10);
     if (*stop == '\0') {
-        return displayNumber <= connectedDisplays ? displays + (displayNumber - 1) : NULL;
+        return (displayNumber >= 1 && displayNumber <= connectedDisplays) ? displays + (displayNumber - 1) : NULL;
     }
 
     // Checking if an identification method is specified, otherwise defaulting to UUID
@@ -171,10 +204,14 @@ DisplayInfos* selectDisplay(DisplayInfos *displays, int connectedDisplays, char 
 }
 
 static kern_return_t getIORegistryRootIterator(io_iterator_t* iter) {
+    *iter = MACH_PORT_NULL;
     io_registry_entry_t root = IORegistryGetRootEntry(kIOMainPortDefault);
+    if (root == MACH_PORT_NULL) return KERN_FAILURE;
     kern_return_t ret = IORegistryEntryCreateIterator(root, kIOServicePlane, kIORegistryIterateRecursively, iter);
-    if (ret != KERN_SUCCESS) {
+    IOObjectRelease(root);
+    if (ret != KERN_SUCCESS && *iter != MACH_PORT_NULL) {
         IOObjectRelease(*iter);
+        *iter = MACH_PORT_NULL;
     }
     return ret;
 }

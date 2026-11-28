@@ -1,95 +1,59 @@
 using System.Windows;
 using System.Windows.Media;
-using System.Windows.Input;
+using Island.App.Animation;
 using Island.App.Services;
 using Island.App.Themes;
 
 namespace Island.App.Controls;
 
 /// <summary>
-/// 设备电量页（对齐 mac 版 <c>DrawDevicesPage</c> 的**卡片网格**）：每台设备一张 132×150 的小卡片，
-/// 卡片里是 60px 电量环（分级配色）+ 环内设备图标 + 26px 大号读数 + 设备名 + 状态行。
-///
-/// 几何与结构抄 mac（数值全部引用 <see cref="ExpandedPanelSpec"/>，常量不在本文件里另抄一份）：
-///  · 卡片 132×150、间距 12 —— 每行卡片数 = 内容区宽 / (132+12)，面板够宽时一行三张；
-///  · 高度按行数自适应（mac 口径）：一行 150、两行 150+12+150；
-///  · 大号读数 26px **单串**（"58%"），档位设备显示 20px 的档位文字（不画假的 0%）；
-///  · 状态行 10px；空态是 mac 文案、11.5px TextDim，落在内容区左上。
-///
-/// 配色身份保持 Windows 的暗色科技（**不引入** mac 的"按资源配色"）：
-/// ≤20 红（pal.Up）/ ≤40 橙（pal.Warning）/ 正常主题文字色 / 充电绿。
-///
-/// Windows 独有能力保留（平台专属能力不互相搬运）：
-///  · 设备类型矢量图标（鼠标 / 键盘 / 耳机 / 手柄，<see cref="Glyphs.IconOf"/>）；
-///  · 充电角标（右下绿圆 + 闪电）；
-///  · 档位文字（空 / 低 / 中 / 满 / 有线）。
-///
-/// 电量环走共享的 <see cref="RenderKit.Ring"/>：死区（占比 ≤ 0.004 不画弧）与轨道透明度（0.9）
-/// 跟收起态、mac 版都是同一口径，不再在页面里自写一份绕过去。
-/// 整页自绘，读数变化只触发重绘；数据直接读 DeviceService.Snapshot（静态，零接线）。
+/// 设备电量页（完全对齐 BrimDeck devices.png 参考图）：
+/// 每设备一列 —— 大电量环（分级配色，轨道+圆弧）+ 环内纯白极简矢量剪影图标（告别彩色系统 Emoji）
+/// + 矢量闪电充电角标 + 大号百分比（数字大、% 小）+ 设备名 + 状态行。
 /// </summary>
 public sealed class DevicesPage : FrameworkElement
 {
     public Palette? Palette { get; set; }
 
-    // ---- 卡片规格（抄 mac，数值统一在 ExpandedPanelSpec 里） ----
-    private const double CardW = ExpandedPanelSpec.DeviceCardWidth;    // 132
-    private const double CardH = ExpandedPanelSpec.DeviceCardHeight;   // 150
-    private const double Gap = ExpandedPanelSpec.DeviceCardGap;        // 12
-
-    /// <summary>卡片左右各留的边距（卡片不贴内容区边缘）。</summary>
-    private const double Inset = 4;
-
-    /// <summary>裁剪用的矩形几何（按可视区大小缓存，冻结后可反复用）。</summary>
-    private RectangleGeometry? _clipGeo;
-    private Rect _clipRect;
-
-    /// <summary>纵向滚动偏移：卡片比可视区高时靠滚轮翻（旧实现是翻页器，现在换成滚动）。</summary>
-    private double _scroll;
-
-    /// <summary>当前最多能滚多远（每次渲染按设备数重算）。</summary>
-    private double _maxScroll;
-
-    private double Ppd => VisualTreeHelper.GetDpi(this).PixelsPerDip;
-
-    /// <summary>
-    /// 滚轮翻卡片行（旧的翻页器删掉了，设备多的时候还得能看完）。
-    /// 一格 = 一行卡片；没有超出可视区时不管它。
-    /// </summary>
-    protected override void OnMouseWheel(MouseWheelEventArgs e)
+    private double Ppd
     {
-        base.OnMouseWheel(e);
-        if (_maxScroll <= 0) return;
-        double step = CardH + Gap;
-        _scroll = Math.Clamp(_scroll - Math.Sign(e.Delta) * step, 0, _maxScroll);
-        InvalidateVisual();
-        e.Handled = true;
+        get
+        {
+            try
+            {
+                double v = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+                return double.IsFinite(v) && v > 0 ? v : 1.0;
+            }
+            catch { return 1.0; }
+        }
     }
 
-    /// <summary>电量分级：充电绿 / ≤20 红 / ≤40 橙 / 其余主题文字色（Windows 既有口径）。</summary>
     private static Color LevelColor(DeviceInfo d, Palette pal)
     {
-        if (d.Charging) return Color.FromRgb(0x3F, 0xC1, 0x5E);
-        if (d.LevelText is "有线" or "未知") return pal.TextDim;
+        if (d.Charging || d.PluggedIn) return Color.FromRgb(0x3F, 0xC1, 0x5E);
         if (d.Percent <= 20) return pal.Up;
         if (d.Percent <= 40) return pal.Warning;
-        return pal.Text;
+        return d.Kind == "battery" ? Color.FromRgb(0x3F, 0xB8, 0xFF) : pal.Text;
     }
 
-    private static string StatusText(DeviceInfo d) =>
-        d.Charging ? "充电中" :
-        // "未知"必须排在 ObservedAt 前面：档位设备永远带 ObservedAt，
-        // 以前这个分支永远走不到，外设读不到电量时显示的是"读取于 02:19"而不是"电量未知"（审查发现）。
-        d.LevelText == "未知" ? "电量未知" :
-        d.ObservedAt is { } at ? $"读取于 {at:HH:mm}" :
-        d.Kind == "gamepad" ? (d.LevelText == "有线" ? "有线" : "无线") :
-        d.Percent <= 20 ? "电量低" :
-        d.Percent <= 40 ? "电量偏低" : KindLabel(d.Kind);
+    private static string StatusText(DeviceInfo d)
+    {
+        if (d.Charging) return "充电中";
+        if (d.Percent <= 20) return "电量低";
+        if (d.Percent <= 40) return "电量偏低";
+        if (!string.IsNullOrWhiteSpace(d.Subtitle)) return d.Subtitle!;
+        return KindLabel(d.Kind);
+    }
 
     private static string KindLabel(string kind) => kind switch
     {
-        "mouse" => "鼠标", "keyboard" => "键盘", "headset" => "耳机",
-        "gamepad" => "手柄", "ble" => "蓝牙设备", "battery" => "本机电池", "other" => "外设", _ => kind,
+        "mouse" => "无线鼠标",
+        "keyboard" => "无线键盘",
+        "headset" => "无线耳机",
+        "earbuds" => "真无线耳机",
+        "gamepad" => "无线控制器",
+        "battery" => "本机电池",
+        _ => kind,
     };
 
     protected override void OnRender(DrawingContext dc)
@@ -100,106 +64,165 @@ public sealed class DevicesPage : FrameworkElement
         double ppd = Ppd;
 
         var devices = DeviceService.Snapshot;
-        double contentX = Inset;
-        double contentW = Math.Max(1, W - Inset * 2);
-
         if (devices.Count == 0)
         {
-            // 空状态：图标 + mac 文案（11.5px TextDim），落在内容区左上角（原来在正中间）
-            Glyphs.Draw(dc, GlyphKind.Battery, RenderKit.SafeRect(contentX, 2, 16, 16), pal.TextTertiary);
-            var empty = RenderKit.Text("未检测到设备（蓝牙 / 2.4G 接收器 / 鼠标键盘耳机，或本机内置电池）",
-                ExpandedPanelSpec.DeviceEmptyFont, pal.TextDim, ppd: ppd);
-            dc.DrawText(empty, new Point(contentX + 22, 2));
+            var empty = RenderKit.Text("未检测到带电量汇报的无线设备或本机电池", 11.5, pal.TextDim, ppd: ppd);
+            dc.DrawText(empty, new Point((W - empty.Width) / 2, H / 2 - empty.Height / 2));
             return;
         }
 
-        // ---- 网格布局 ----
-        // 每行卡片数：内容区宽塞得下几张就是几张（132 + 12 一个卡位），至少一张。
-        int perRow = Math.Max(1, (int)((contentW + Gap) / (CardW + Gap)));
-        int rows = (devices.Count + perRow - 1) / perRow;
-        // 高度自适应：行数决定网格高度（mac 口径）
-        double gridH = rows * CardH + (rows - 1) * Gap;
-        // 装得下就垂直居中，装不下就顶对齐 + 滚轮翻（面板高度由宿主定，这里不改宿主）
-        double top = gridH <= H ? Math.Max(0, (H - gridH) / 2) : 0;
-        _maxScroll = Math.Max(0, gridH - (H - top));
-        _scroll = Math.Clamp(_scroll, 0, _maxScroll);
+        int n = Math.Min(devices.Count, 5);
+        double colW = Math.Clamp(W / n, 96, 130);
+        double totalW = colW * n;
+        double x0 = (W - totalW) / 2;
+        double topY = Math.Max(10, (H - 180) / 2);
 
-        // WPF 的 PushClip 返回 void（不像 Avalonia 返回 IDisposable），所以不写 using；
-        // 裁剪只作用于本次渲染的后续绘制，正好是下面这圈卡片。
-        dc.PushClip(ClipGeo(new Rect(0, 0, W, H)));
-        for (int i = 0; i < devices.Count; i++)
+        for (int i = 0; i < n; i++)
         {
-            int col = i % perRow, row = i / perRow;
-            double cx = contentX + col * (CardW + Gap);
-            double cy = top + row * (CardH + Gap) - _scroll;
-            // 整张卡都在可视区外就不画（滚出去 / 滚进来时的无用绘制）
-            if (cy + CardH < 0 || cy > H) continue;
-            DrawCard(dc, pal, ppd, devices[i], cx, cy);
+            var d = devices[i];
+            var color = LevelColor(d, pal);
+            double cx = x0 + colW * i + colW / 2;
+            double y = topY;
+
+            // 1. 大电量环
+            const double ringR = 30, stroke = 5;
+            double ringCy = y + ringR;
+            dc.DrawEllipse(null, RenderKit.PenOf(pal.Track, stroke, 0.85), new Point(cx, ringCy), ringR, ringR);
+            dc.DrawGeometry(null, RenderKit.PenOf(color, stroke), Arc(cx, ringCy, ringR, d.Percent / 100.0));
+
+            // 2. 环内纯白极简矢量设备剪影（与 devices.png 视觉对齐）
+            DrawDeviceSilhouette(dc, d.Kind, d.Name, new Point(cx, ringCy), pal.Text, pal.Surface);
+
+            // 3. 充电/接通电源角标：右下绿色实心圆 + 矢量闪电
+            if (d.Charging || d.PluggedIn)
+            {
+                double bx = cx + ringR * 0.72, by = ringCy + ringR * 0.72;
+                dc.DrawEllipse(RenderKit.BrushOf(pal.Surface), null, new Point(bx, by), 10.5, 10.5);
+                dc.DrawEllipse(RenderKit.BrushOf(Color.FromRgb(0x3F, 0xC1, 0x5E)), null, new Point(bx, by), 8.5, 8.5);
+                var bolt = new StreamGeometry();
+                using (var bctx = bolt.Open())
+                {
+                    bctx.BeginFigure(new Point(bx + 0.8, by - 4.6), true, true);
+                    bctx.LineTo(new Point(bx - 3.2, by + 0.5), false, false);
+                    bctx.LineTo(new Point(bx - 0.2, by + 0.5), false, false);
+                    bctx.LineTo(new Point(bx - 1.0, by + 4.6), false, false);
+                    bctx.LineTo(new Point(bx + 3.2, by - 0.5), false, false);
+                    bctx.LineTo(new Point(bx + 0.2, by - 0.5), false, false);
+                }
+                bolt.Freeze();
+                dc.DrawGeometry(RenderKit.BrushOf(Color.FromRgb(0x0D, 0x11, 0x17)), null, bolt);
+            }
+            y += ringR * 2 + 14;
+
+            // 4. 大号百分比
+            var num = RenderKit.Text($"{d.Percent}", 20, color, true, ppd);
+            var pct = RenderKit.Text("%", 11, color, ppd: ppd);
+            double numW = num.WidthIncludingTrailingWhitespace + pct.WidthIncludingTrailingWhitespace;
+            RenderKit.Baseline(dc, num, cx - numW / 2, Math.Round(y + 20 * 0.8));
+            RenderKit.Baseline(dc, pct, cx - numW / 2 + num.WidthIncludingTrailingWhitespace + 1, Math.Round(y + 20 * 0.8));
+            y += 30;
+
+            // 5. 设备名与状态行
+            var name = RenderKit.Trimmed(d.Name, 11, pal.Text, colW - 10, false, ppd);
+            dc.DrawText(name, new Point(cx - name.Width / 2, y));
+            y += 18;
+
+            var statusColor = d.Charging || d.PluggedIn || d.Percent <= 40 ? color : pal.TextDim;
+            var status = RenderKit.Text(StatusText(d), 9.5, statusColor, ppd: ppd);
+            dc.DrawText(status, new Point(cx - status.Width / 2, y));
         }
     }
 
-    /// <summary>
-    /// 裁剪几何：WPF 的 PushClip 收 Geometry（不是 Rect），按可视区大小缓存一份冻结的矩形几何。
-    /// 每次重绘都 new 的话是纯浪费（每帧一个对象）。
-    /// </summary>
-    private RectangleGeometry ClipGeo(Rect r)
+    private static void DrawDeviceSilhouette(DrawingContext dc, string kind, string name, Point c, Color fg, Color cutout)
     {
-        if (_clipGeo is null || _clipRect != r)
+        var fill = RenderKit.BrushOf(fg);
+        var cut = RenderKit.BrushOf(cutout);
+        var stroke = RenderKit.PenOf(fg, 2.0);
+        var cutPen = RenderKit.PenOf(cutout, 1.4);
+
+        bool isEarbuds = kind == "earbuds" || name.Contains("AirPods", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("Buds", StringComparison.OrdinalIgnoreCase);
+
+        if (isEarbuds)
         {
-            _clipRect = r;
-            _clipGeo = new RectangleGeometry(r);
-            _clipGeo.Freeze();
+            // 双耳塞剪影（devices.png 第 4 列）
+            dc.DrawEllipse(fill, null, new Point(c.X - 5.2, c.Y - 3.5), 4.2, 4.2);
+            dc.DrawRoundedRectangle(fill, null, RenderKit.SafeRect(c.X - 4.2, c.Y - 1, 2.8, 10.5), 1.4, 1.4);
+            dc.DrawEllipse(fill, null, new Point(c.X + 5.2, c.Y - 3.5), 4.2, 4.2);
+            dc.DrawRoundedRectangle(fill, null, RenderKit.SafeRect(c.X + 1.4, c.Y - 1, 2.8, 10.5), 1.4, 1.4);
+            return;
         }
-        return _clipGeo;
+
+        switch (kind)
+        {
+            case "mouse":
+                // 无线鼠标实心剪影 + 按键分界线（devices.png 第 1 列）
+                dc.DrawRoundedRectangle(fill, null, RenderKit.SafeRect(c.X - 7.5, c.Y - 11, 15, 22), 7.5, 7.5);
+                dc.DrawLine(cutPen, new Point(c.X - 7.5, c.Y - 2), new Point(c.X + 7.5, c.Y - 2));
+                dc.DrawLine(cutPen, new Point(c.X, c.Y - 11), new Point(c.X, c.Y - 2));
+                break;
+
+            case "keyboard":
+                // 无线键盘实心剪影 + 键帽镂空点与空格条（devices.png 第 2 列）
+                dc.DrawRoundedRectangle(fill, null, RenderKit.SafeRect(c.X - 11.5, c.Y - 7, 23, 14), 3.2, 3.2);
+                for (int r = 0; r < 2; r++)
+                {
+                    for (int k = 0; k < 5; k++)
+                        dc.DrawEllipse(cut, null, new Point(c.X - 7.6 + k * 3.8, c.Y - 3.6 + r * 3.4), 1.0, 1.0);
+                }
+                dc.DrawRoundedRectangle(cut, null, RenderKit.SafeRect(c.X - 5.5, c.Y + 2.8, 11, 2.0), 1, 1);
+                break;
+
+            case "headset":
+                // 头戴耳机剪影（devices.png 第 3 列）
+                {
+                    var arc = new StreamGeometry();
+                    using (var ctx = arc.Open())
+                    {
+                        ctx.BeginFigure(new Point(c.X - 8.5, c.Y + 2), false, false);
+                        ctx.ArcTo(new Point(c.X + 8.5, c.Y + 2), new Size(8.5, 9), 0, false, SweepDirection.Clockwise, true, false);
+                    }
+                    arc.Freeze();
+                    dc.DrawGeometry(null, stroke, arc);
+                    dc.DrawRoundedRectangle(fill, null, RenderKit.SafeRect(c.X - 10, c.Y + 0.5, 4.2, 8.5), 2, 2);
+                    dc.DrawRoundedRectangle(fill, null, RenderKit.SafeRect(c.X + 5.8, c.Y + 0.5, 4.2, 8.5), 2, 2);
+                }
+                break;
+
+            case "gamepad":
+                // 手柄剪影 + 十字键与按键镂空（devices.png 第 5 列）
+                dc.DrawRoundedRectangle(fill, null, RenderKit.SafeRect(c.X - 11.5, c.Y - 6.5, 23, 13), 6, 6);
+                dc.DrawLine(cutPen, new Point(c.X - 7, c.Y), new Point(c.X - 3, c.Y));
+                dc.DrawLine(cutPen, new Point(c.X - 5, c.Y - 2), new Point(c.X - 5, c.Y + 2));
+                dc.DrawEllipse(cut, null, new Point(c.X + 5, c.Y - 2), 1.0, 1.0);
+                dc.DrawEllipse(cut, null, new Point(c.X + 7, c.Y), 1.0, 1.0);
+                dc.DrawEllipse(cut, null, new Point(c.X + 5, c.Y + 2), 1.0, 1.0);
+                dc.DrawEllipse(cut, null, new Point(c.X + 3, c.Y), 1.0, 1.0);
+                break;
+
+            default:
+                // 笔记本/本机电池矢量框
+                dc.DrawRoundedRectangle(null, stroke, RenderKit.SafeRect(c.X - 9.5, c.Y - 5.5, 17, 11), 2.5, 2.5);
+                dc.DrawRoundedRectangle(fill, null, RenderKit.SafeRect(c.X + 8.5, c.Y - 2.5, 2.2, 5), 1, 1);
+                dc.DrawRoundedRectangle(fill, null, RenderKit.SafeRect(c.X - 6.8, c.Y - 2.8, 11.5, 5.6), 1.2, 1.2);
+                break;
+        }
     }
 
-    /// <summary>一张设备卡片：底板 + 电量环 + 环内图标 + 大号读数 + 设备名 + 状态行。</summary>
-    private static void DrawCard(DrawingContext dc, Palette pal, double ppd, DeviceInfo d, double x, double y)
+    private static StreamGeometry Arc(double cx, double cy, double radius, double fraction)
     {
-        // 卡片底板：Windows 的卡片配方（3.5% 白 + 1px 发丝边 + 14px 圆角；像素主题直角）
-        double r = pal.SquareCorners ? 3 : 14;
-        dc.DrawRoundedRectangle(RenderKit.Faint(pal.Text, 0.035), RenderKit.PenOf(pal.Hairline, 1),
-            RenderKit.SafeRect(x, y, CardW, CardH), r, r);
-
-        Color color = LevelColor(d, pal);
-
-        // ---- 电量环：直径 60、线宽 5、12 点起顺时针（共享 RenderKit.Ring） ----
-        const double ring = 60, thickness = 5;
-        double ccx = x + CardW / 2, ccy = y + 20 + ring / 2;
-        RenderKit.Ring(dc, new Point(ccx, ccy), ring, thickness, d.Percent / 100.0, pal.Track, color);
-
-        // 环内设备图标（Windows 独有：按设备类型的矢量剪影，认不出的类型给电池轮廓）
-        Glyphs.Draw(dc, Glyphs.IconOf(d.Kind), RenderKit.SafeRect(ccx - 8, ccy - 8, 16, 16), pal.Text);
-
-        // 充电角标（Windows 独有）：右下绿圆 + 矢量闪电（不用 emoji：线粗和配色跟主题走）
-        if (d.Charging)
+        fraction = Easing.Clamp(fraction, 0.02, 1);
+        var geo = new StreamGeometry();
+        using (var ctx = geo.Open())
         {
-            double bx = ccx + 21, by = ccy + 21;
-            dc.DrawEllipse(RenderKit.BrushOf(pal.Down), null, new Point(bx, by), 9, 9);
-            Glyphs.Draw(dc, GlyphKind.Bolt, RenderKit.SafeRect(bx - 5, by - 5.5, 10, 11),
-                pal.IsDark ? pal.Surface : Colors.White);
+            double start = -Math.PI / 2;
+            double end = start + fraction * 2 * Math.PI;
+            var p0 = new Point(cx + radius * Math.Cos(start), cy + radius * Math.Sin(start));
+            var p1 = new Point(cx + radius * Math.Cos(end), cy + radius * Math.Sin(end));
+            ctx.BeginFigure(p0, false, false);
+            ctx.ArcTo(p1, new Size(radius, radius), 0, fraction > 0.5, SweepDirection.Clockwise, true, false);
         }
-
-        // ---- 大号读数：百分比设备 26px 单串（"58%"）；档位设备显示 20px 档位文字（不画假的 0%） ----
-        double readoutTop = y + 20 + ring + 6;
-        if (d.LevelText is { } levelText)
-        {
-            var lv = RenderKit.Text(levelText, 20, color, true, ppd);
-            dc.DrawText(lv, new Point(ccx - lv.WidthIncludingTrailingWhitespace / 2, readoutTop));
-        }
-        else
-        {
-            var pct = RenderKit.Text($"{d.Percent}%", ExpandedPanelSpec.DevicePercentFont, color, true, ppd);
-            dc.DrawText(pct, new Point(ccx - pct.WidthIncludingTrailingWhitespace / 2, readoutTop));
-        }
-
-        // ---- 设备名（11px，超长截断，居中） ----
-        var name = RenderKit.Trimmed(d.Name, 11, pal.Text, CardW - 16, false, ppd);
-        dc.DrawText(name, new Point(ccx - name.WidthIncludingTrailingWhitespace / 2, y + 20 + ring + 38));
-
-        // ---- 状态行（10px；档位设备的百分比颜色已按档位取好） ----
-        var statusColor = d.Charging || d.Percent <= 40 ? color : pal.TextDim;
-        var status = RenderKit.Text(StatusText(d), ExpandedPanelSpec.DeviceStatusFont, statusColor, ppd: ppd);
-        dc.DrawText(status, new Point(ccx - status.WidthIncludingTrailingWhitespace / 2, y + 20 + ring + 56));
+        geo.Freeze();
+        return geo;
     }
 }

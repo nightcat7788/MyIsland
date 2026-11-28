@@ -33,13 +33,32 @@ public sealed record WeatherInfo(
 /// </summary>
 public sealed class WeatherService : IDisposable
 {
-    private static readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(8) };
+    private static readonly HttpClient _http = CreateHttpClient();
+
+    private static HttpClient CreateHttpClient()
+    {
+        var handler = new SocketsHttpHandler
+        {
+            PooledConnectionLifetime = TimeSpan.FromMinutes(10),
+        };
+        var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(8) };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("MyIsland/1.1.6");
+        return client;
+    }
     private WeatherInfo? _last;
     private DateTime _lastFetch;
     private string? _resolvedCity;
     private (double lat, double lon)? _coords;
     private readonly object _gate = new();
     private Task? _fetching;
+    private CancellationTokenSource? _fetchCts;
+    private int _generation;
+
+    /// <summary>测试用 HTTP 替身；生产环境保持 null，仍由共享 HttpClient 发请求。</summary>
+    internal Func<string, CancellationToken, Task<string>>? HttpGetForTest { get; set; }
+
+    /// <summary>测试用：捕获当前代次任务，以便验证旧任务完全结束后也不能提交结果。</summary>
+    internal Task? FetchingForTest { get { lock (_gate) return _fetching; } }
 
     /// <summary>
     /// 失败后的重试间隔：首次 60 秒，逐次翻倍，封顶 10 分钟。
@@ -66,17 +85,32 @@ public sealed class WeatherService : IDisposable
     /// <summary>当前天气（可能为缓存；null=从未成功）。</summary>
     public WeatherInfo? Current { get { lock (_gate) return _last; } }
 
-    /// <summary>城市变更后调用：作废缓存，下次 Get() 立即重新定位并拉取。</summary>
+    /// <summary>
+    /// 城市变更后调用：作废旧缓存与旧请求。旧请求即使无视取消并稍后完成，
+    /// 也会因为代次不匹配而被丢弃，不能覆盖新城市的结果或重试状态。
+    /// </summary>
     public void Invalidate()
     {
+        CancellationTokenSource? old;
         lock (_gate)
         {
+            _generation++;
+            _last = null;
             _lastFetch = DateTime.MinValue;
             _resolvedCity = null;
             _coords = null;
             // 换城市是用户的主动操作：清掉退避，立刻重试（别让用户等 60 秒）
             _retryAfter = DateTime.MinValue;
             _retryDelay = MinRetryDelay;
+            old = _fetchCts;
+            _fetchCts = null;
+            // 允许新城市立即发起请求，不被一个可能忽略取消的旧请求挡住。
+            _fetching = null;
+        }
+        if (old is not null)
+        {
+            try { old.Cancel(); } catch (ObjectDisposedException) { }
+            old.Dispose();
         }
     }
 
@@ -93,25 +127,36 @@ public sealed class WeatherService : IDisposable
             bool stale = _last is null || (DateTime.Now - _lastFetch).TotalMinutes > 30;
             if (!stale) return _last;                                  // 缓存还新鲜
             if (DateTime.Now < _retryAfter) return _last;              // 退避中：等自愈重试
-            if (!(_fetching is null || _fetching.IsCompleted)) return _last;  // 已有请求在飞
-            _fetching = Task.Run(FetchAsync);
+            if (!(_fetching is null || _fetching.IsCompleted)) return _last;
+
+            _fetchCts?.Dispose();
+            var cts = new CancellationTokenSource();
+            _fetchCts = cts;
+            int generation = _generation;
+            _fetching = Task.Run(() => FetchAsync(generation, cts.Token));
             return _last;
         }
     }
 
-    private async Task FetchAsync()
+    private async Task FetchAsync(int generation, CancellationToken cancellationToken)
     {
         bool ok = false;
         try
         {
-            var (lat, lon, city) = await ResolveLocationAsync();
+            // 每次请求固定使用开始时的城市配置；后续 Settings 替换不会改变本轮语义。
+            string? wantedCity = Settings.City;
+            var (lat, lon, city) = await ResolveLocationAsync(wantedCity, cancellationToken);
             if (city is null) return;
-            lock (_gate) _resolvedCity = city;
+            lock (_gate)
+            {
+                if (generation == _generation && !_disposed) _resolvedCity = city;
+            }
 
-            string url = $"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}" +
+            string url = FormattableString.Invariant(
+                $"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}") +
                          "&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m" +
                          "&daily=temperature_2m_max,temperature_2m_min&forecast_days=1&timezone=auto";
-            string json = await _http.GetStringAsync(url);
+            string json = await GetStringAsync(url, cancellationToken);
             using var doc = JsonDocument.Parse(json);
             var cur = doc.RootElement.GetProperty("current");
             var daily = doc.RootElement.GetProperty("daily");
@@ -128,10 +173,11 @@ public sealed class WeatherService : IDisposable
             var info = new WeatherInfo(city, cond, emoji, temp, feels, tmin, tmax, humidity, wind, DateTime.Now);
             lock (_gate)
             {
+                // 只有当前代次可以提交。取消/换城市后完成的旧响应到这里直接丢弃。
+                if (generation != _generation || _disposed || cancellationToken.IsCancellationRequested) return;
                 _last = info;
                 _lastFetch = DateTime.Now;
                 _coords = (lat, lon);
-                // 成功一次：退避重置，下次失败重新从 60 秒开始
                 _retryDelay = MinRetryDelay;
                 _retryAfter = DateTime.MinValue;
             }
@@ -143,24 +189,25 @@ public sealed class WeatherService : IDisposable
         }
         finally
         {
-            // 失败：不更新 _lastFetch（保持 stale），但排一次"退避后自动重试"，
-            // 否则只有宿主 30 分钟的定时器会再调 Get()，天气最长空白半小时
-            if (!ok) ScheduleRetry();
+            // 旧代次失败不能给新城市排退避，也不能清掉新城市的请求状态。
+            if (!ok) ScheduleRetry(generation);
         }
     }
+
+    private Task<string> GetStringAsync(string url, CancellationToken cancellationToken)
+        => HttpGetForTest is { } testGet ? testGet(url, cancellationToken) : _http.GetStringAsync(url, cancellationToken);
 
     /// <summary>
     /// 安排一次退避后的自动重试：按当前退避时长（60 秒起，逐次翻倍，封顶 10 分钟）重拉一次。
     /// 退避期内 Get() 不再发起请求，避免断网时每次取用都打一次网络。
     /// </summary>
-    private void ScheduleRetry()
+    private void ScheduleRetry(int generation)
     {
         lock (_gate)
         {
-            if (_disposed) return;   // 已释放：不再排重试
+            if (_disposed || generation != _generation) return;
             TimeSpan delay = _retryDelay;
             _retryAfter = DateTime.Now + delay;
-            // 逐次翻倍，封顶 10 分钟：断网时也不至于把接口打爆
             _retryDelay = TimeSpan.FromTicks(Math.Min(_retryDelay.Ticks * 2, MaxRetryDelay.Ticks));
             _retryTimer ??= new System.Threading.Timer(_ => RetryTick(), null,
                 System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
@@ -183,18 +230,16 @@ public sealed class WeatherService : IDisposable
         catch { }
     }
 
-    /// <summary>定位：Settings.City 中文名 → Open-Meteo geocoding；否则 IP 定位。</summary>
-    private async Task<(double lat, double lon, string? city)> ResolveLocationAsync()
+    /// <summary>定位：指定城市名 → Open-Meteo geocoding；否则 IP 定位。</summary>
+    private async Task<(double lat, double lon, string? city)> ResolveLocationAsync(
+        string? want, CancellationToken cancellationToken)
     {
-        string? want = Settings.City;
         if (!string.IsNullOrWhiteSpace(want))
         {
-            // 地理编码单独包 try：原来它的 HTTP 调用不在 try 内，
-            // 端点一挂（超时/DNS 失败）整个定位直接抛出去 → 连 IP 兜底都不走
             try
             {
                 string url = $"https://geocoding-api.open-meteo.com/v1/search?name={Uri.EscapeDataString(want)}&count=1&language=zh";
-                string json = await _http.GetStringAsync(url);
+                string json = await GetStringAsync(url, cancellationToken);
                 using var doc = JsonDocument.Parse(json);
                 if (doc.RootElement.TryGetProperty("results", out var results) && results.GetArrayLength() > 0)
                 {
@@ -203,19 +248,96 @@ public sealed class WeatherService : IDisposable
                             r.GetProperty("name").GetString() ?? want);
                 }
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             catch { /* 地理编码端点不可用 → 继续走 IP 兜底 */ }
         }
-        // IP 定位兜底
+        // IP 定位兜底：多源逐个尝试，任一成功即可；全失败返回"无定位"，绝不伪造坐标。
+        foreach (var probe in IpLocators)
+        {
+            try
+            {
+                string json = await GetStringAsync(probe.Url, cancellationToken);
+                using var doc = JsonDocument.Parse(json);
+                var root = doc.RootElement;
+                double lat = probe.Lat(root), lon = probe.Lon(root);
+                if (lat is < -90 or > 90 || lon is < -180 or > 180) continue;
+                string city = probe.City(root) ?? "本地";
+                // 若 IP 定位返回英文拼音城市名（如 Shanghai / Beijing），尝试经 Open-Meteo 中文地理库转为中文名（与 macOS 时间胶囊对齐）
+                if (HttpGetForTest is null && !string.IsNullOrWhiteSpace(city) && IsAsciiLetters(city))
+                {
+                    string? zhCity = await TryLocalizeCityNameAsync(city, lat, lon, cancellationToken);
+                    if (!string.IsNullOrWhiteSpace(zhCity)) city = zhCity;
+                }
+                return (lat, lon, city);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch { /* 这个源不可用，试下一个 */ }
+        }
+        return (0, 0, null);
+    }
+
+    private static bool IsAsciiLetters(string s)
+    {
+        foreach (char ch in s)
+            if (ch > 127) return false;
+        return true;
+    }
+
+    private async Task<string?> TryLocalizeCityNameAsync(string englishCity, double lat, double lon, CancellationToken cancellationToken)
+    {
         try
         {
-            string json = await _http.GetStringAsync("https://ipapi.co/json/");
+            string url = $"https://geocoding-api.open-meteo.com/v1/search?name={Uri.EscapeDataString(englishCity)}&count=3&language=zh";
+            string json = await GetStringAsync(url, cancellationToken);
             using var doc = JsonDocument.Parse(json);
-            return (doc.RootElement.GetProperty("latitude").GetDouble(),
-                    doc.RootElement.GetProperty("longitude").GetDouble(),
-                    doc.RootElement.GetProperty("city").GetString() ?? "本地");
+            if (!doc.RootElement.TryGetProperty("results", out var results)) return null;
+            foreach (var r in results.EnumerateArray())
+            {
+                double rLat = r.GetProperty("latitude").GetDouble();
+                double rLon = r.GetProperty("longitude").GetDouble();
+                if (Math.Abs(rLat - lat) <= 2.5 && Math.Abs(rLon - lon) <= 2.5)
+                    return r.GetProperty("name").GetString();
+            }
         }
-        catch { return (_coords?.lat ?? 39.9, _coords?.lon ?? 116.4, _resolvedCity ?? "本地"); }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch { }
+        return null;
     }
+
+    /// <summary>IP 定位备用源（依次尝试）。每个源用不同的 JSON 结构，取值方式不同。</summary>
+    private sealed record IpLocator(string Url, Func<JsonElement, double> Lat, Func<JsonElement, double> Lon,
+                                  Func<JsonElement, string?> City)
+    {
+        public static IpLocator Get(string url, string latKey, string lonKey, string cityKey)
+            => new(url,
+                  r => r.GetProperty(latKey).GetDouble(),
+                  r => r.GetProperty(lonKey).GetDouble(),
+                  r => r.TryGetProperty(cityKey, out var c) ? c.GetString() : null);
+
+        public static IpLocator GetNested(string url, string[] path, string latKey, string lonKey, string cityKey)
+            => new(url,
+                  r => GetNested(r, path).GetProperty(latKey).GetDouble(),
+                  r => GetNested(r, path).GetProperty(lonKey).GetDouble(),
+                  r => GetNested(r, path).TryGetProperty(cityKey, out var c) ? c.GetString() : null);
+
+        private static JsonElement GetNested(JsonElement root, string[] path)
+        {
+            var cur = root;
+            foreach (var seg in path) cur = cur.GetProperty(seg);
+            return cur;
+        }
+    }
+
+    private static readonly IpLocator[] IpLocators =
+    {
+        IpLocator.Get("https://ipwho.is/", "latitude", "longitude", "city"),
+        IpLocator.Get("https://ipapi.co/json/", "latitude", "longitude", "city"),
+        IpLocator.Get("https://freeipapi.com/api/json", "latitude", "longitude", "cityName"),
+        new("https://ipinfo.io/json",
+            r => double.Parse(r.GetProperty("loc").GetString()!.Split(',')[0], System.Globalization.CultureInfo.InvariantCulture),
+            r => double.Parse(r.GetProperty("loc").GetString()!.Split(',')[1], System.Globalization.CultureInfo.InvariantCulture),
+            r => r.TryGetProperty("city", out var c) ? c.GetString() : null),
+    };
 
     /// <summary>WMO weather code → 中文描述 + emoji。</summary>
     private static (string, string) Describe(int code) => code switch
@@ -238,12 +360,21 @@ public sealed class WeatherService : IDisposable
 
     public void Dispose()
     {
-        // 退避重试定时器也要停：否则窗口关了还会自己再拉一次天气
+        CancellationTokenSource? fetching;
         lock (_gate)
         {
+            if (_disposed) return;
             _disposed = true;
+            _generation++;
             _retryTimer?.Dispose();
             _retryTimer = null;
+            fetching = _fetchCts;
+            _fetchCts = null;
+        }
+        if (fetching is not null)
+        {
+            try { fetching.Cancel(); } catch (ObjectDisposedException) { }
+            fetching.Dispose();
         }
     }
 }

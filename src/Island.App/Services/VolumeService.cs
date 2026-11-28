@@ -4,132 +4,200 @@ using NAudio.CoreAudioApi;
 namespace Island.App.Services;
 
 /// <summary>
-/// 音量监听：系统音量/静音变化（含用户按键盘/其他程序调整）时触发事件，
-/// 像手机一样在岛内弹出音量指示。参考 wisland 的 on_volume 交互。
+/// 音量监听：系统音量/静音变化（含默认播放设备热插拔切换）时触发事件。
+/// 所有 NAudio COM 对象访问统一加锁，避免 UI 线程与轮询线程并发重入或热插拔后失效。
 /// </summary>
 public sealed class VolumeService : IDisposable
 {
+    private readonly object _gate = new();
     private readonly MMDeviceEnumerator _enumerator = new();
     private MMDevice? _device;
+    private string? _deviceId;
     private System.Threading.Timer? _timer;
     private (float vol, bool mute)? _last;
+    private bool _disposed;
 
-    // ---------- 音量（NAudio MMDevice：读/写主音量与静音） ----------
-    /// <summary>设置主音量 0..1。</summary>
     public void SetVolume(float v)
     {
-        try
+        lock (_gate)
         {
-            if (_device is not null)
-                _device.AudioEndpointVolume.MasterVolumeLevelScalar = Math.Clamp(v, 0, 1);
+            if (_disposed) return;
+            try
+            {
+                var d = EnsureRenderDeviceLocked();
+                if (d is not null)
+                    d.AudioEndpointVolume.MasterVolumeLevelScalar = Math.Clamp(v, 0, 1);
+            }
+            catch { ResetDeviceLocked(); }
         }
-        catch { }
     }
 
-    /// <summary>设置静音。</summary>
     public void SetMute(bool mute)
     {
-        try
+        lock (_gate)
         {
-            if (_device is not null) _device.AudioEndpointVolume.Mute = mute;
+            if (_disposed) return;
+            try
+            {
+                var d = EnsureRenderDeviceLocked();
+                if (d is not null)
+                    d.AudioEndpointVolume.Mute = mute;
+            }
+            catch { ResetDeviceLocked(); }
         }
-        catch { }
     }
 
-    /// <summary>当前（音量0..1, 静音）读数（无设备为 null）。</summary>
-    public (float vol, bool mute)? Current => _last;
+    public (float vol, bool mute)? Current { get { lock (_gate) return _last; } }
+    public bool IsMutedNow => Current?.mute ?? false;
 
-    /// <summary>当前是否静音。</summary>
-    public bool IsMutedNow => _last?.mute ?? false;
-
-    // ---------- 麦克风（YASB Microphone 同款：默认采集端点静音切换） ----------
-
-    /// <summary>麦克风静音状态；无采集设备为 null。</summary>
     public bool? MicMuted
     {
         get
         {
-            try
+            lock (_gate)
             {
-                return _enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications)
-                    .AudioEndpointVolume.Mute;
+                if (_disposed) return null;
+                try
+                {
+                    using var ep = GetDefaultCaptureLocked();
+                    return ep?.AudioEndpointVolume.Mute;
+                }
+                catch { return null; }
             }
-            catch { return null; }
         }
     }
 
-    /// <summary>切换麦克风静音，返回新状态（无设备返回 false）。</summary>
     public bool ToggleMicMute()
     {
-        try
+        lock (_gate)
         {
-            var ep = _enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
-            bool next = !ep.AudioEndpointVolume.Mute;
-            ep.AudioEndpointVolume.Mute = next;
-            return next;
+            if (_disposed) return false;
+            try
+            {
+                using var ep = GetDefaultCaptureLocked();
+                if (ep is null) return false;
+                bool next = !ep.AudioEndpointVolume.Mute;
+                ep.AudioEndpointVolume.Mute = next;
+                return next;
+            }
+            catch { return false; }
         }
-        catch { return false; }
     }
 
-    /// <summary>麦克风是否正被使用（默认采集端点存在活动会话；L4 隐私点同款数据源）。</summary>
     public bool MicInUse
     {
         get
         {
-            try
+            lock (_gate)
             {
-                var ep = _enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
-                var sessions = ep.AudioSessionManager.Sessions;
-                for (int i = 0; i < sessions.Count; i++)
+                if (_disposed) return false;
+                try
                 {
-                    using var s = sessions[i];
-                    if (s.State == NAudio.CoreAudioApi.Interfaces.AudioSessionState.AudioSessionStateActive)
-                        return true;
+                    using var ep = GetDefaultCaptureLocked();
+                    if (ep is null) return false;
+                    var sessions = ep.AudioSessionManager.Sessions;
+                    for (int i = 0; i < sessions.Count; i++)
+                    {
+                        using var s = sessions[i];
+                        if (s.State == NAudio.CoreAudioApi.Interfaces.AudioSessionState.AudioSessionStateActive)
+                            return true;
+                    }
                 }
+                catch { }
+                return false;
             }
-            catch { }
-            return false;
         }
     }
 
-    /// <summary>(音量0..1, 是否静音)。后台线程触发。</summary>
+    private MMDevice? GetDefaultCaptureLocked()
+    {
+        try { return _enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Multimedia); }
+        catch
+        {
+            try { return _enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications); }
+            catch { return null; }
+        }
+    }
+
+    private MMDevice? EnsureRenderDeviceLocked()
+    {
+        try
+        {
+            using var currentDefault = _enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+            if (_device is null || !string.Equals(_deviceId, currentDefault.ID, StringComparison.Ordinal))
+            {
+                ResetDeviceLocked();
+                _device = _enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+                _deviceId = _device.ID;
+            }
+            return _device;
+        }
+        catch
+        {
+            ResetDeviceLocked();
+            return null;
+        }
+    }
+
+    private void ResetDeviceLocked()
+    {
+        try { _device?.Dispose(); } catch { }
+        _device = null;
+        _deviceId = null;
+    }
+
     public event Action<float, bool>? Changed;
 
     public void Start()
     {
-        try
+        lock (_gate)
         {
-            _device = _enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-            _last = (_device.AudioEndpointVolume.MasterVolumeLevelScalar,
-                     _device.AudioEndpointVolume.Mute);
-        }
-        catch { /* 无音频设备 */ }
-
-        // 轮询而非事件订阅：AudioEndpointVolume 的回调在 COM 线程，轮询更稳更简单
-        _timer = new System.Threading.Timer(_ =>
-        {
+            if (_disposed || _timer is not null) return;
             try
             {
-                var d = _device;
-                if (d is null)
-                {
-                    d = _enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-                    _device = d;
-                }
-                var cur = (d.AudioEndpointVolume.MasterVolumeLevelScalar,
-                           d.AudioEndpointVolume.Mute);
-                if (_last is { } prev && cur != prev)
-                    Changed?.Invoke(cur.Item1, cur.Item2);
+                var d = EnsureRenderDeviceLocked();
+                if (d is not null)
+                    _last = (d.AudioEndpointVolume.MasterVolumeLevelScalar, d.AudioEndpointVolume.Mute);
+            }
+            catch { ResetDeviceLocked(); }
+
+            _timer = new System.Threading.Timer(_ => PollTick(), null, 500, 500);
+        }
+    }
+
+    private void PollTick()
+    {
+        (float vol, bool mute)? notify = null;
+        lock (_gate)
+        {
+            if (_disposed) return;
+            try
+            {
+                var d = EnsureRenderDeviceLocked();
+                if (d is null) return;
+                var cur = (d.AudioEndpointVolume.MasterVolumeLevelScalar, d.AudioEndpointVolume.Mute);
+                if (_last is { } prev && (Math.Abs(cur.Item1 - prev.vol) > 0.002f || cur.Item2 != prev.mute))
+                    notify = cur;
                 _last = cur;
             }
-            catch { /* 设备切换瞬间忽略 */ }
-        }, null, 500, 500);
+            catch
+            {
+                ResetDeviceLocked();
+            }
+        }
+        if (notify is { } n) Changed?.Invoke(n.vol, n.mute);
     }
 
     public void Dispose()
     {
-        _timer?.Dispose();
-        _device?.Dispose();
-        _enumerator.Dispose();
+        lock (_gate)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            _timer?.Dispose();
+            _timer = null;
+            ResetDeviceLocked();
+            try { _enumerator.Dispose(); } catch { }
+        }
     }
 }

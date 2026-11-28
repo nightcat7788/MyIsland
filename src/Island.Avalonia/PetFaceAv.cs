@@ -42,11 +42,9 @@ public sealed class PetFaceAv
     private readonly Spring _morph = new(0, 200, 0.7, 0.003);
     private readonly Spring _blush = new(0, 120, 0.9, 0.003);
     private readonly Spring _squash = new(0, 260, 0.45, 0.003);
-    private readonly Spring _bob = new(0, 185, 0.72, 0.004);
-    private readonly Spring _sway = new(0, 95, 0.82, 0.004);
     // 所有弹簧一次性建数组，Step 时不再每帧 new[]
     private readonly Spring[] _springs;
-    public PetFaceAv() { _springs = new[] { _ex, _ey, _lh, _rh, _tired, _wide, _morph, _blush, _squash, _bob, _sway }; }
+    public PetFaceAv() { _springs = new[] { _ex, _ey, _lh, _rh, _tired, _wide, _morph, _blush, _squash }; }
 
     private string _mood = "default";
     private string _lastMood = "";
@@ -59,7 +57,6 @@ public sealed class PetFaceAv
     private double _nextIdleGlance = Now + 2.2;
     private double _idleGlanceUntil;
     private double _idleLookX, _idleLookY;
-    private double _nextIdleMotion = Now + 3.0;
     private double _nextIdleWink = Now + Random.Shared.NextDouble() * 10 + 5;
     private double _idleWinkUntil;
     private double _t = Now;
@@ -110,8 +107,6 @@ public sealed class PetFaceAv
             _surpriseUntil = now + 1.4;
             _wide.Kick(9);
             _squash.Kick(-7.5);
-            _bob.Kick(-34);
-            _sway.Kick(Random.Shared.NextDouble() * 18 - 9);
         }
     }
 
@@ -144,8 +139,6 @@ public sealed class PetFaceAv
         {
             PickMood();
             _squash.Kick(-4.2);
-            _bob.Kick(-20);
-            _sway.Kick(Math.Clamp(look.X / 18, -1, 1) * 10);
         }
         else if (!near && _near) _mood = "default";
         _near = near;
@@ -163,12 +156,6 @@ public sealed class PetFaceAv
         {
             _idleWinkUntil = now + 0.42;
             _nextIdleWink = now + 11.0 + Random.Shared.NextDouble() * 15.0;
-        }
-        if (!near && now >= _nextIdleMotion)
-        {
-            _bob.Kick(-8 - Random.Shared.NextDouble() * 7);
-            _sway.Kick(Random.Shared.NextDouble() * 22 - 11);
-            _nextIdleMotion = now + 5.0 + Random.Shared.NextDouble() * 5.0;
         }
 
         string m = CurrentMood(now, near);
@@ -229,9 +216,9 @@ public sealed class PetFaceAv
         double breathRate = m == "sleepy" ? 1.1 : 2.2;
         double breath = Math.Sin(now * breathRate);
         double breathY = breath * (m == "sleepy" ? 0.9 : 0.55) * s;
-        double bounce = _bob.Value * s + (m == "laugh" ? Math.Sin(now * 12) * 0.8 * s : 0);
+        double bounce = m == "laugh" ? Math.Sin(now * 16) * 1.6 * s : 0;
         double jitterX = m == "hot" ? Math.Sin(now * 28) * 0.35 * s : 0;
-        double faceX = cx + jitterX + _sway.Value * s;
+        double faceX = cx + jitterX;
         double faceY = cy + breathY + bounce;
         double headParallax = _ex.Value * 2.2 * s;
 

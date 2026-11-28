@@ -62,17 +62,17 @@ public sealed class AppIconCache
             };
             using var p = Process.Start(psi);
             if (p is null) { MarkAllUnknown(batch); return; }
-            // 写路径（探针读到 EOF 结束）
+            // 先挂起异步读取 stdout/stderr，再向 stdin 写入批量路径，防止输出填满管道缓冲引发死锁
+            var outTask = p.StandardOutput.ReadToEndAsync();
+            var errTask = p.StandardError.ReadToEndAsync();
             foreach (var path in batch)
             {
                 p.StandardInput.WriteLine(path);
-                p.StandardInput.Flush();
             }
+            p.StandardInput.Flush();
             p.StandardInput.Close();
 
-            var outTask = p.StandardOutput.ReadToEndAsync();
-            var errTask = p.StandardError.ReadToEndAsync();
-            if (!p.WaitForExit(4000)) { try { p.Kill(true); } catch { /* 失败降级：保留默认值/上次值 */ } }
+            if (!p.WaitForExit(4000)) { try { p.Kill(true); } catch { } p.WaitForExit(500); }
             string text = outTask.Wait(500) ? outTask.Result : "";
             errTask.Wait(100);
 

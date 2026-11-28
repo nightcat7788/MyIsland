@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 
 namespace Island.Avalonia;
 
@@ -28,12 +29,19 @@ public sealed class HotKeyClient : IDisposable
     private uint _nextId = 1;
     private readonly Dictionary<uint, Action> _actions = new();
     private readonly object _gate = new();
+    private readonly Action<Action> _dispatch;
+    private volatile bool _ready;
+    private volatile string _lastError = "";
+
+    /// <summary>所有热键动作都经宿主提供的 UI 调度器执行，避免后台读取线程触碰 Avalonia UI。</summary>
+    public HotKeyClient(Action<Action> dispatch)
+        => _dispatch = dispatch ?? throw new ArgumentNullException(nameof(dispatch));
 
     /// <summary>探针是否已就绪（READY 已收到）。</summary>
-    public bool Ready { get; private set; }
+    public bool Ready { get => _ready; private set => _ready = value; }
 
     /// <summary>注册失败时的说明（供界面提示）。</summary>
-    public string LastError { get; private set; } = "";
+    public string LastError { get => _lastError; private set => _lastError = value; }
 
     /// <summary>
     /// 启动探针并注册一组热键。
@@ -42,6 +50,14 @@ public sealed class HotKeyClient : IDisposable
     /// <param name="bindings">要注册的快捷键：(键字符, cmd, shift, alt, 回调)</param>
     public void Start(string toolPath, IEnumerable<(char Key, bool Cmd, bool Shift, bool Alt, Action Act)> bindings)
     {
+        Dispose();
+        lock (_gate)
+        {
+            _actions.Clear();
+            _nextId = 1;
+        }
+        Ready = false;
+        LastError = "";
         if (!File.Exists(toolPath))
         {
             LastError = "未找到 island-hotkey（随包工具缺失）";
@@ -88,11 +104,7 @@ public sealed class HotKeyClient : IDisposable
             {
                 Action? act;
                 lock (_gate) _actions.TryGetValue(id, out act);
-                if (act is not null)
-                {
-                    try { act(); }
-                    catch (Exception ex) { Console.Error.WriteLine($"[hotkey] 回调异常: {ex.Message}"); }
-                }
+                if (act is not null) DispatchCallback(act);
             }
             return;
         }
@@ -102,6 +114,20 @@ public sealed class HotKeyClient : IDisposable
             LastError = line.Length > 8 ? $"快捷键注册失败：{line.Substring(8)}（-9878 表示已被其他应用占用）" : "快捷键注册失败";
             Console.Error.WriteLine($"[hotkey] {LastError}");
         }
+    }
+
+    /// <summary>调度到 UI 线程；内部可见便于验证回调不会在当前后台线程直接执行。</summary>
+    internal void DispatchCallback(Action act)
+    {
+        try
+        {
+            _dispatch(() =>
+            {
+                try { act(); }
+                catch (Exception ex) { Console.Error.WriteLine($"[hotkey] 回调异常: {ex.Message}"); }
+            });
+        }
+        catch (Exception ex) { Console.Error.WriteLine($"[hotkey] 调度异常: {ex.Message}"); }
     }
 
     public void Dispose()

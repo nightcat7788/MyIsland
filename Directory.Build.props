@@ -11,15 +11,15 @@
     改版本号时需要同步的三处：
       1. 本文件的 <Version>
       2. packaging/macos/Info.plist 的 CFBundleShortVersionString
-      3. installer/MyIsland.iss 的 AppVersion
+      3. installer/MyIsland.iss 的 MyAppVersion
     另外，产物文件名（MyIsland-Setup-x.y.z.exe 等）里也带版本号。
   -->
   <PropertyGroup>
-    <!-- 语义化版本：1.1.5 —— 修「鼠标穿透时展开面板也点不动」+ 托盘一键开关 -->
-    <Version>1.1.5</Version>
+    <!-- 语义化版本：1.1.8 —— 对齐 LiteMonitor 硬件监控与唤醒自愈、免提权降级采样、双端监控页与交互增强 -->
+    <Version>1.1.8</Version>
     <!-- 程序集版本：只取主次版本（1.1.0.0），补丁号变更时不破坏强命名/绑定引用 -->
     <AssemblyVersion>1.1.0.0</AssemblyVersion>
-    <FileVersion>1.1.0.0</FileVersion>
-    <InformationalVersion>1.1.5</InformationalVersion>
+    <FileVersion>1.1.8.0</FileVersion>
+    <InformationalVersion>1.1.8</InformationalVersion>
   </PropertyGroup>
 </Project>

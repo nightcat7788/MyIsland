@@ -1,186 +1,73 @@
 # MyIsland
 
-MyIsland 是一款 Windows 与 macOS 菜单栏系统监控工具，以轻量胶囊展示实时指标，并提供可切换的小形象与主题。
+MyIsland 是一款 Windows 与 macOS 双端轻量级灵动岛系统监控与效率工具，以悬浮圆角胶囊实时展示硬件指标、媒体播放与时间，并支持悬停展开面板、多主题切换与灵动小形象互动。
 
-**当前版本：1.1.5**（源码与已发布安装包同版本）· Windows WPF · macOS Avalonia · Apple Silicon 原生发布
+**当前版本：1.1.8** · Windows WPF（.NET 8）· macOS Avalonia 11（Apple Silicon 原生）
 
-Windows 与 macOS 各自一套原生实现（Windows WPF 自绘 + macOS Avalonia 自绘），共享
-`src/Island.Core` 的数据模型与读数语义；两边共用的约定写在 [SOURCE-README.txt](SOURCE-README.txt)。
+Windows 与 macOS 各自一套原生自绘实现，共享 `src/Island.Core` 数据模型、读数三态语义、硬件传感器护栏（`ThermalSensorGuard`）与设置配置，两端功能与视觉高度对齐。开发与目录约定详见 [SOURCE-README.txt](SOURCE-README.txt) 与 [README-Mac.md](README-Mac.md)。
 
-## 下载
+## 核心特性（v1.1.8）
 
-**Windows v1.1.5**：<https://github.com/nightcat7788/MyIsland/releases/tag/v1.1.5>
-
-| 产物 | 说明 |
-|---|---|
-| `MyIsland-Setup-1.1.5.exe` | 免管理员安装包（Authenticode 签名 + RFC3161 时间戳） |
-| `MyIsland-1.1.5-portable.zip` | 便携版，解压即用（签名在包内 `Island.App.exe` 上） |
-| `SHA256SUMS.txt` | 校验清单，下载后先核对 SHA256 |
-
-> ⚠️ 签名用的是**自签证书**（`CN=MyIsland`）：本机装了根证书所以显示「已签名且有效」，
-> 在**未装该根证书的机器上会显示「未知发布者」** —— 这是自签证书的固有行为，不是包被改过。
-> 换公有 CA 证书只需改 `release.ps1` 的 `-CertPfx` / `-CertThumbprint`，流程不动。
-
-## 功能
-
-- CPU、内存、GPU、磁盘和网络读数；可用功能随操作系统不同。
-- **Windows**：灵动岛窗口、展开监控面板、快捷控制、剪贴板历史、小形象互动。
-- **鼠标穿透（游戏时不拦截点击）**：只在**收起态**拦鼠标；**展开的面板始终可交互**（用户显式展开就是要看/要点）。
-  托盘右键菜单里可一键开关，状态与面板里的开关同步。
-- **展开监控面板**：2×2 卡片栅格 + 栅格下方的**底部状态行**（运行时长 / 今日流量 / 功耗 / 温度，
-  按平台支持情况出现；支持但读不到显示「未知」，平台不支持则不出现）。
-- **Windows 外设电量**：WMI 电池 + MSBatteryClass + BLE GATT 直读（0x180F/0x2A19）+ XInput 手柄档位；
-  读不到就不显示，不做百分比换算伪装。
-- **2.4G 接收器电量**：HID 协议表（内置条目 + 用户 JSON 覆盖）+ 三层校验（标准 usage / 协议表 / 兜底）；
-  内置表**只收已实机验证的条目**，未验证的候选不参与匹配 —— 宁可显示「未知」，不输出没验过的读数。
-- **硬件详情面板**：列出硬件库枚举到的全部传感器（只读窗口；读不到的项显示「未知」，不填 0）。
-- **macOS**：菜单栏胶囊、显示器控制（DDC/内置背光）、剪贴板历史、图片预览、设备页 per-type 矢量图标。
-- 8 种小形象款式，支持视线、表情、眨眼、呼吸、互动弹跳和待机动作。
-- 主题与紧凑视图自定义；「暗色科技」设计系统（一套主题 = 近黑中性色 + 一个强调色 + 状态色）。
-
-## 界面截图
-
-![MyIsland macOS 监控胶囊](docs/screenshots/macos-capsule.png)
-
-### 展开面板（Windows）
-
-![Windows 展开面板](docs/screenshots/windows-expanded-panel.png)
-
-### 监控页（Windows / macOS 对照）
-
-| Windows | macOS |
-|---|---|
-| ![Windows 监控页](docs/screenshots/windows-monitor-page.png) | ![macOS 监控页](docs/screenshots/macos-monitor-page.png) |
-
-### 控制页（Windows 专属）
-
-![Windows 控制页](docs/screenshots/windows-control-page.png)
-
-> 这张图是**离屏渲染**出来的：亮度行**不在**——这台机器的内置屏不支持 Dxva2 调亮度，
-> 产品按「该机不支持 ⇒ 整行不出现」处理（与夜灯同一口径），不留一对点了没反应的按钮。
-
-### 收起态 · 时间胶囊（**默认视图**，两端已统一）
-
-| Windows | macOS |
-|---|---|
-| ![Windows 收起态 clock](docs/screenshots/windows-clock.png) | ![macOS 收起态 clock](docs/screenshots/macos-clock.png) |
-
-> 2026-11-26 起两端**默认收起视图都是「时间胶囊」（clock）** —— 两端共用同一个 `Settings` 类，
-> 改一处即两端生效，两台机器首次打开观感一致。
->
-> 两端 clock 的**内容已对齐**：**时间 + 秒 + 日期 + 天气**（2026-11-26 Windows 补上秒与日期）。
-> 唯一差异是**上下行网速只有 Windows 有**（平台专属读数，不互相搬运）—— 见 `docs/capabilities.md` §7.6。
-
-### 收起态 · 读数带（dash）
-
-| Windows | macOS |
-|---|---|
-| ![Windows 收起态 dash](docs/screenshots/windows-dash.png) | ![macOS 收起态 dash](docs/screenshots/macos-dash.png) |
-
-> 两张图是**同一套读数项结构**：温度组 │ 占用组 │ 网速。两处已知差异是平台能力导致的
-> （Windows 另有「核心柱群」、mac 另有「电池环」）—— 见 `docs/capabilities.md` §7.3。
-> **外壳轮廓**两端刻意不同：mac 是刘海融合造型（它长在系统菜单栏里），
-> Windows 是液桥 + 水滴（它是贴屏幕边缘的独立浮窗）—— 见 §7.5。
-
-### 设备页（Windows）
-
-![Windows 设备页](docs/screenshots/windows-devices-page.png)
-
-> 除 `macos-capsule.png` 为实机截屏外，其余图片是**离屏渲染**产物 —— 由 `tools/visual-probe`（Windows）
-> 与 `tools/avalonia-probe`（macOS）直接渲染**产品源码**得到，不是设计稿，也不是另画的示意图。
-> Windows 侧的设计对照见 `branding/ref/`。
->
-> ⚠️ **macOS 两张图的顶栏只有「监控 / 剪贴板」**：这不是漏画 —— 「设备」「屏幕」两个页签需要 macOS 专属
-> 工具链（IOKit 探针 / DDC），产品按 `OperatingSystem.IsMacOS()` 在非 macOS 环境下按逻辑隐藏，
-> 离屏渲染如实复现了这个行为；**真机 Mac 上这两个页签存在**。
+- **双端统一悬浮胶囊**：
+  - `combo` 复合胶囊与 Mac 视觉 1:1 对齐：`时间 | (C)CPU% (M)MEM% (G)GPU% (D)DISK% | (C)CPU° (G)GPU° (D)SSD° (B)BATT%⚡ | ↓ ↑`
+  - 统一三档温度配色：`≤60°C` 绿色（`#2FD06B`）、`60°C–90°C` 黄色（`#F5C242`）、`≥90°C` 红色（`#FF453A`）
+  - 支持 5 套收起态视图（复合 / 系统 / 温控 / 媒体 / 时钟）滚轮切换与自动轮播
+- **工业级硬件监控与稳定性（参考 LiteMonitor 实践加固）**：
+  - `ThermalSensorGuard`：异常值过滤、`Distance to TjMax` 自动排除、多核/单核优先级仲裁、历史回退保护与系统休眠唤醒（`PowerModes.Resume`）自动恢复
+  - **温度采集链路**：基于微软签名的 **PawnIO** 驱动 + LibreHardwareMonitor（已彻底移除未签名 `inpoutx64` / SMN 直读路径），内置 `PawnIoDetector` 检测状态卡，并提供用户态 NVMe `IOCTL_STORAGE_QUERY_PROPERTY` 温度兜底与 WMI 热区回退
+  - **处理器与显卡**：支持真实 LHM CPU 频率/电压采集 + 原生 `powrprof` (`CallNtPowerInformation`) 频率兜底；多 GPU 优先策略（独显优先于虚拟/核显）
+  - **展开监控面板**：实时资源负载与温度、磁盘读写与占用、今日/会话双行累计流量、已开机时长、Top 进程榜、一键跳转任务管理器
+- **双端完整效率组件**：
+  - **媒体控制**：系统媒体会话播放控制与专辑封面显示（Windows SMTC / macOS 原生媒体服务）
+  - **剪贴板历史**：文本与图片记录、快速预览弹窗、一键粘回
+  - **文件中转站**：拖放暂存、快捷打开与复制
+  - **设备与快捷控制**：外设电量监控、WLAN / 蓝牙 / 亮度与音量控制；macOS 集成 Lunar DDC 外接显示器亮度/对比度/音量控制与内建屏守护
+  - **个性化与热键**：多套暗色科技预设主题、小形象互动、全屏避让/鼠标穿透、全局快捷键速查与自定义设置窗口
 
 ## 目录结构
 
+```text
+├── src/
+│   ├── Island.Core/       跨平台监控模型、三态 Reading<T>、ThermalSensorGuard
+│   ├── Island.Native/     Windows PDH / NVMe / powrprof / 全屏检测底层采样
+│   ├── Island.App/        Windows WPF 主应用（.NET 8）
+│   └── Island.Avalonia/   macOS Avalonia 11 主应用（含显示器控制与原生工具桥接）
+├── tests/Island.Tests/    零依赖单元测试套件（130 项断言全通过）
+├── packaging/             Windows 便携包 / 交叉构建脚本与 macOS .app 打包脚本
+├── installer/             Windows Inno Setup 安装包脚本（MyIsland.iss）
+├── tools/                 macOS 原生辅助工具源码（Swift / Objective-C）与图标生成工具
+└── branding/              产品图标与品牌资源
 ```
-├── src/                 Island.App(WPF/Windows) · Island.Avalonia(macOS) · Island.Core(模型) · Island.Native(PDH 采样)
-├── tests/Island.Tests/  零依赖测试门禁（自研 harness，失败即非零退出码）
-├── tools/               开发工具 + macOS 原生工具(Swift/ObjC)
-├── packaging/           macOS / Windows / 便携版 打包脚本
-├── branding/            品牌资产（Windows 图标 + mac/ 下的 macOS 图标）
-├── driver/              PawnIO 温度驱动安装器（内嵌进程序，GPL-2.0，见 COPYING）
-├── installer/           Inno Setup 安装包脚本
-└── docs/                设计文档、改进记录、实机截图
+
+## 快速构建与测试
+
+需要 **.NET 8 SDK**。
+
+### Windows
+
+```powershell
+# 编译完整解决方案（0 警告 0 错误）
+dotnet build Island.sln -c Release
+
+# 运行单元测试（130 项用例）
+dotnet run --project tests/Island.Tests -c Release
+
+# 发布 Windows 自包含产物
+dotnet publish src/Island.App/Island.App.csproj -c Release -r win-x64 --self-contained true
 ```
 
-## 验证与工具
+### macOS（Apple Silicon）
 
-改动都要过**门禁**，而且门禁覆盖到「看得见」这一层 —— 不只是「不崩」，还要像素级判定：
-
-| 命令 | 作用 |
-|---|---|
-| `dotnet build Island.sln -c Release` | 必须 **0 警告 0 错误** |
-| `dotnet run --project tests/Island.Tests -c Release` | 零依赖测试门禁，全过且退出码 0 |
-| `dotnet run --project tools/visual-probe -c Release` | Windows 端**离屏渲染**视觉回归（防全黑 / 栅格几何 / 文本越界 / 卡内不压字） |
-| `dotnet run --project tools/avalonia-probe -c Release` | macOS 端**离屏渲染**视觉回归（同一套判定口径） |
-| `dotnet run --project tools/hid-probe -c Release -- --selftest` | 外设协议表自检：表合法性 + 本机外设命中层 + 工具与产品两路复核 |
-| `powershell -ExecutionPolicy Bypass -File tools/verify-matrix.ps1` | 多机型验证矩阵（F1–F4 逐轴专项检查） |
-
-两端的读数口径、字段位顺序与主题 token 语义都有**唯一真相源**（`src/Island.Core/Capabilities/`），
-并由 `tests/Island.Tests` 的漂移检查守住 —— 清单改了、两端代码没跟着改，门禁立刻变红。
-对外的能力清单与两端差异见 [docs/capabilities.md](docs/capabilities.md)。
-
-### 还需要在别的机器上验证的
-
-| 要做什么 | 在哪跑 | 把什么发回来 |
-|---|---|---|
-| macOS 原生探针的三项核对（C1） | 你的 Mac：`bash tools/mac-selfcheck.sh` | 报告 `docs/verification/mac-<日期>.md` |
-| AMD / 台式机 / 核显+独显 / 其它 2.4G 接收器 | 对应机器：`powershell -ExecutionPolicy Bypass -File tools/verify-matrix.ps1` | 报告 `docs/verification/<机型>-<日期>.md` |
-
-每份报告里「已核对且通过 / 已核对但不通过 / 没法核对」是分开写的 —— 没法核对不会被写成通过。
-详见 [docs/verification/README.md](docs/verification/README.md)。
-
----
-## 构建
-
-需要 .NET 8 SDK。详细的 macOS 环境和原生工具说明见 [README-Mac.md](README-Mac.md)。
-
-macOS Apple Silicon 发布：
+详细步骤与原生工具编译说明见 [README-Mac.md](README-Mac.md)：
 
 ```bash
 bash packaging/macos/publish.sh
 bash packaging/macos/make-app.sh
 ```
 
-Windows 本机开发构建：
+## 安全与许可
 
-```powershell
-dotnet build src/Island.App/Island.App.csproj -c Release
-```
-
-Windows 免管理员安装包（需要 Inno Setup 7 + Windows SDK 的 signtool）：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File release.ps1
-```
-
-详见 [DISTRIBUTION.md](DISTRIBUTION.md)。
-
-Windows 便携版和单文件版也可在 macOS 上交叉构建：
-
-```bash
-bash packaging/win/build-win.sh
-```
-
-Windows 安装程序需在 Windows 上使用 Inno Setup 编译。Windows 包应在 Windows 设备上进行实际验证。
-
-## 安全说明
-
-- AMD SMN 直读属于实验功能，默认关闭；它会加载未签名内核驱动并映射 PCIe 物理内存。
-  项目**不分发**会安装未签名内核驱动的 `inpout` 二进制（`tools/inpout/*.dll` 已从版本库排除，
-  仅保留在本机源码目录供调试）。启用前请先阅读源码中的风险说明。
-- 温度读取走微软签名的 PawnIO 驱动：程序内嵌官方安装器，仅在以管理员运行且驱动缺失时静默安装。
-  许可证全文见 `driver/COPYING-PawnIO.txt`。
-- 发布包内会排除 `inpout*.dll` 与 `*.pdb`（见 `installer/MyIsland.iss` 的 `Excludes`）。
-- **安装包的签名是自签证书**（`CN=MyIsland`）：本机把该证书装进了 `CurrentUser\Root`，所以
-  `Get-AuthenticodeSignature` 返回 `Valid`；**未装该根证书的机器上会显示「未知发布者」**。
-  时间戳由公共 CA（DigiCert）签发，签名本身密码学有效，但**发布者身份没有公共 CA 背书**。
-  校验请以 `SHA256SUMS.txt` 的哈希为准（哈希与包内签名互相独立）。
-
-## 许可证
-
-本项目使用 MIT License。第三方代码保留各自许可证，见 `tools/display-tools/NOTICE.txt` 及相邻许可文件。
+- 本项目**不包含也不分发**任何未签名内核驱动（如 `inpoutx64.dll`），Windows 传感器底层依赖微软签名的 [PawnIO](https://pawnio.eu/) 驱动。
+- 全部监控数据本地采集，除天气功能（Open-Meteo）外零联网请求。
+- 第三方开源组件许可声明见 [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt)。
+- 本项目基于 [MIT License](LICENSE) 开源。

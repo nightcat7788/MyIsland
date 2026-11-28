@@ -18,10 +18,15 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 ROOT="$(pwd)"
-export DOTNET_ROOT="${DOTNET_ROOT:-$HOME/.dotnet}"
-DOTNET="$DOTNET_ROOT/dotnet"
+if [[ -n "${DOTNET_ROOT:-}" && -x "$DOTNET_ROOT/dotnet" ]]; then
+    DOTNET="$DOTNET_ROOT/dotnet"
+elif command -v dotnet >/dev/null 2>&1; then
+    DOTNET="$(command -v dotnet)"
+else
+    DOTNET="$HOME/.dotnet/dotnet"
+fi
 
-VERSION=$(grep -oE '<Version>[^<]+' Directory.Build.props | sed 's/<Version>//')
+VERSION=$(grep -oE '<Version>[^<]+' Directory.Build.props | head -n1 | sed 's/<Version>//')
 [[ -n "$VERSION" ]] || { echo "[error] 无法从 Directory.Build.props 读取版本号" >&2; exit 1; }
 OUT="$ROOT/publish/win-dist"
 PUB="$ROOT/publish/win-x64"
@@ -59,7 +64,7 @@ STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 # 用 rsync 的 --exclude 精确剔除（cp 做不到排除，find -exec 太啰嗦）
 rsync -a --exclude='*.pdb' --exclude='inpout*' --exclude='lhmprobe*' --exclude='LhmProbe*' "$PUB/" "$STAGE/"
-cp "$EXTRA/README.txt" "$EXTRA/run.ps1" "$EXTRA/MyIsland图标.png" "$EXTRA/启动 MyIsland.bat" "$STAGE/"
+cp "$EXTRA/README.txt" "$EXTRA/run.ps1" "$EXTRA/MyIsland图标.png" "$EXTRA/启动 MyIsland.bat" "$ROOT/THIRD-PARTY-NOTICES.txt" "$STAGE/"
 check_clean "$STAGE" "便携版暂存目录"
 PORTABLE="MyIsland-$VERSION-portable.zip"
 # 【不要用 macOS 自带的 zip 命令】它写入 UTF-8 文件名却不置 zip 规范的 UTF-8 标志位
@@ -101,6 +106,7 @@ trap 'rm -rf "$STAGE" "$SINGLE"' EXIT
 check_clean "$SINGLE" "单文件版输出"
 ONE="MyIsland-$VERSION.exe"
 cp "$SINGLE/Island.App.exe" "$OUT/$ONE"
+cp "$ROOT/THIRD-PARTY-NOTICES.txt" "$OUT/THIRD-PARTY-NOTICES.txt"
 echo "[ok] ${ONE}（$(du -h "$OUT/$ONE" | cut -f1)）"
 
 # ── 5. 汇总 ───────────────────────────────────────────────────────────────

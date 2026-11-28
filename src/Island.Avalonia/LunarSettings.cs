@@ -15,46 +15,55 @@ public static class LunarSettings
 {
     private const string Domain = "local.lunarcn.displaycontrol";
     private const string Key = "screenSettings.v1";
+    private static readonly object Gate = new();
     private static string PlistPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
         "Library", "Preferences", Domain + ".plist");
 
     public sealed record ScreenSetting(
         string Uuid, bool FollowBuiltin, int Min, int Max,
-        // 静音**不持久化**：显示器自己保存音量/静音状态（DDC 写入即生效），
-        // 本地再存一份反而可能和显示器实际状态不一致。
         double? Brightness, double? Contrast, double? Volume);
 
     /// <summary>
-    /// 读取 screenSettings.v1 的 JSON Data。注意 defaults read 对 Data 会截断成 "..."，
-    /// 必须走 plutil 转 XML 拿完整 base64（系统自带工具，无 python 依赖）。
+    /// 读取 screenSettings.v1 的 JSON Data。优先走 defaults export 从 cfprefsd 读取实时缓存，
+    /// 避免 defaults write 后 plist 尚未刷盘导致读回旧值；再用 XDocument 安全解析字典键值。
     /// </summary>
-    private static JsonObject? LoadDoc()
+    private static JsonObject? LoadDocUnlocked()
     {
+        if (!OperatingSystem.IsMacOS()) return null;
         try
         {
-            if (!File.Exists(PlistPath)) return null;
-            string xml = Run("plutil", "-convert", "xml1", "-o", "-", PlistPath);
+            string xml = "";
+            try { xml = Run("defaults", "export", Domain, "-"); }
+            catch
+            {
+                if (File.Exists(PlistPath))
+                    xml = Run("plutil", "-convert", "xml1", "-o", "-", PlistPath);
+            }
+            if (string.IsNullOrWhiteSpace(xml)) return null;
             using var sr = new StringReader(xml);
-            // plist XML 带 DOCTYPE，.NET XmlReader 默认禁止 DTD 会抛异常 → 必须 Ignore
             var settings = new System.Xml.XmlReaderSettings { DtdProcessing = System.Xml.DtdProcessing.Ignore };
             using var reader = System.Xml.XmlReader.Create(sr, settings);
-            bool inKey = false;
-            while (reader.Read())
+            var doc = System.Xml.Linq.XDocument.Load(reader);
+            var dict = doc.Root?.Element("dict");
+            if (dict is null) return null;
+            var elements = dict.Elements().ToList();
+            for (int i = 0; i + 1 < elements.Count; i++)
             {
-                if (reader.NodeType == System.Xml.XmlNodeType.Element && reader.Name == "key")
-                    inKey = reader.ReadElementContentAsString() == Key;
-                else if (inKey && reader.NodeType == System.Xml.XmlNodeType.Element && reader.Name == "data")
+                if (elements[i].Name.LocalName != "key") continue;
+                string k = elements[i].Value;
+                var valElem = elements[++i];
+                if (k == Key && valElem.Name.LocalName == "data")
                 {
-                    string b64 = reader.ReadElementContentAsString();
-                    byte[] bytes = Convert.FromBase64String(b64.Replace("\n", "").Replace("\r", "").Replace(" ", ""));
+                    string b64 = valElem.Value.Replace("\n", "").Replace("\r", "").Replace(" ", "").Replace("\t", "");
+                    if (b64.Length == 0) return null;
+                    byte[] bytes = Convert.FromBase64String(b64);
                     return JsonNode.Parse(Encoding.UTF8.GetString(bytes)) as JsonObject;
                 }
             }
         }
         catch (Exception ex)
         {
-            // plist 不存在/损坏：返回 null 让 UI 显示"未检测到"，但留日志便于排查
             if (File.Exists(PlistPath)) Console.Error.WriteLine($"[lunar-settings] load: {ex.Message}");
         }
         return null;
@@ -64,27 +73,31 @@ public static class LunarSettings
     public static List<ScreenSetting> Read()
     {
         var result = new List<ScreenSetting>();
-        var doc = LoadDoc();
-        if (doc is null) return result;
-        try
+        if (!OperatingSystem.IsMacOS()) return result;
+        lock (Gate)
         {
-            foreach (var kv in doc)
+            var doc = LoadDocUnlocked();
+            if (doc is null) return result;
+            try
             {
-                if (kv.Value is not JsonObject o) continue;
-                var range = o["range"] as JsonObject;
-                var preset = o["preset"] as JsonObject;
-                result.Add(new ScreenSetting(
-                    kv.Key,
-                    o["followBuiltin"]?.GetValue<bool>() ?? false,
-                    range?["minimum"]?.GetValue<int>() ?? 0,
-                    range?["maximum"]?.GetValue<int>() ?? 100,
-                    preset?["brightness"]?.GetValue<double>(),
-                    preset?["contrast"]?.GetValue<double>(),
-                    preset?["volume"]?.GetValue<double>()));
+                foreach (var kv in doc)
+                {
+                    if (kv.Value is not JsonObject o) continue;
+                    var range = o["range"] as JsonObject;
+                    var preset = o["preset"] as JsonObject;
+                    result.Add(new ScreenSetting(
+                        kv.Key,
+                        o["followBuiltin"]?.GetValue<bool>() ?? false,
+                        range?["minimum"]?.GetValue<int>() ?? 0,
+                        range?["maximum"]?.GetValue<int>() ?? 100,
+                        preset?["brightness"]?.GetValue<double>(),
+                        preset?["contrast"]?.GetValue<double>(),
+                        preset?["volume"]?.GetValue<double>()));
+                }
             }
+            catch (Exception ex) { Console.Error.WriteLine($"[lunar-settings] parse entry: {ex.Message}"); }
+            return result;
         }
-        catch (Exception ex) { Console.Error.WriteLine($"[lunar-settings] parse entry: {ex.Message}"); }
-        return result;
     }
 
     /// <summary>切换某块屏幕的"自动亮度·跟随内建屏"。</summary>
@@ -119,18 +132,22 @@ public static class LunarSettings
 
     private static bool Mutate(string uuid, Action<JsonObject> change)
     {
-        try
+        if (!OperatingSystem.IsMacOS()) return false;
+        lock (Gate)
         {
-            var doc = LoadDoc() ?? new JsonObject();
-            var target = doc[uuid] as JsonObject ?? new JsonObject();
-            change(target);
-            doc[uuid] = target;
-            string json = doc.ToJsonString();
-            Run("defaults", "write", Domain, Key, "-data",
-                Convert.ToHexString(Encoding.UTF8.GetBytes(json)));
-            return true;
+            try
+            {
+                var doc = LoadDocUnlocked() ?? new JsonObject();
+                var target = doc[uuid] as JsonObject ?? new JsonObject();
+                change(target);
+                doc[uuid] = target;
+                string json = doc.ToJsonString();
+                Run("defaults", "write", Domain, Key, "-data",
+                    Convert.ToHexString(Encoding.UTF8.GetBytes(json)));
+                return true;
+            }
+            catch (Exception ex) { Console.Error.WriteLine($"[lunar-settings] mutate {uuid}: {ex.Message}"); return false; }
         }
-        catch (Exception ex) { Console.Error.WriteLine($"[lunar-settings] mutate {uuid}: {ex.Message}"); return false; }
     }
 
     private static string Run(string file, params string[] args)
@@ -142,12 +159,17 @@ public static class LunarSettings
         };
         foreach (var a in args) psi.ArgumentList.Add(a);
         using var p = Process.Start(psi) ?? throw new InvalidOperationException($"无法启动 {file}");
-        // stdout/stderr 必须同时异步排空：plutil 若向 stderr 写超过管道缓冲(~4KB)会阻塞，
-        // 同步串行读会导致子进程卡死、线程池线程泄漏（审查 M-1）
         var outTask = p.StandardOutput.ReadToEndAsync();
         var errTask = p.StandardError.ReadToEndAsync();
-        if (!p.WaitForExit(3000)) { try { p.Kill(true); } catch { /* 失败降级：保留默认值/上次值 */ } }
-        errTask.Wait(200);
-        return outTask.Wait(500) ? outTask.Result : "";
+        if (!p.WaitForExit(3000))
+        {
+            try { p.Kill(true); } catch { }
+            throw new TimeoutException($"{file} 执行超时");
+        }
+        string err = errTask.Wait(200) ? errTask.Result.Trim() : "";
+        string output = outTask.Wait(500) ? outTask.Result : "";
+        if (p.ExitCode != 0)
+            throw new InvalidOperationException(string.IsNullOrEmpty(err) ? $"{file} 退出码 {p.ExitCode}" : err);
+        return output;
     }
 }

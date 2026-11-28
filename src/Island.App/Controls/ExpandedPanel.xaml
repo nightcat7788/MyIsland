@@ -1,733 +1,455 @@
 <UserControl x:Class="Island.App.Controls.ExpandedPanel"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:local="clr-namespace:Island.App.Controls">
+             xmlns:controls="clr-namespace:Island.App.Controls">
     <UserControl.Resources>
-        <ResourceDictionary>
-            <ResourceDictionary.MergedDictionaries>
-                <ResourceDictionary Source="/Island.App;component/Controls/PanelStyles.xaml"/>
-            </ResourceDictionary.MergedDictionaries>
+        <SolidColorBrush x:Key="PanelBg" Color="#F21C1C1E"/>
+        <SolidColorBrush x:Key="CardBg" Color="#252527"/>
+        <SolidColorBrush x:Key="Fg" Color="#F2F2F7"/>
+        <SolidColorBrush x:Key="FgDim" Color="#A3A3AA"/>
+        <SolidColorBrush x:Key="FgTertiary" Color="#8E9AB4"/>
+        <SolidColorBrush x:Key="Accent" Color="#0A84FF"/>
+        <SolidColorBrush x:Key="Track" Color="#3A3A3C"/>
+        <SolidColorBrush x:Key="Down" Color="#30D158"/>
+        <BooleanToVisibilityConverter x:Key="BoolVis"/>
+        <controls:InverseBoolToVis x:Key="InvVis"/>
+        <controls:MuteTextConverter x:Key="MuteText"/>
 
-            <!-- 默认值 = 深色主题；宿主在 IslandWindow.UpdatePanelResources 里按当前主题整体覆盖。 -->
-            <SolidColorBrush x:Key="Fg" Color="#F2F3F5"/>
-            <SolidColorBrush x:Key="FgDim" Color="#A9AEB9"/>
-            <SolidColorBrush x:Key="FgTertiary" Color="#7C828F"/>
-            <SolidColorBrush x:Key="Accent" Color="#2DD4BF"/>
-            <SolidColorBrush x:Key="OnAccent" Color="#08090D"/>
-            <SolidColorBrush x:Key="Track" Color="#1AFFFFFF"/>
-            <SolidColorBrush x:Key="Hairline" Color="#24FFFFFF"/>
-            <SolidColorBrush x:Key="CardFill" Color="#09FFFFFF"/>
-            <SolidColorBrush x:Key="Hover" Color="#14FFFFFF"/>
-            <SolidColorBrush x:Key="Pressed" Color="#1FFFFFFF"/>
-            <SolidColorBrush x:Key="FillStrong" Color="#2EFFFFFF"/>
-            <SolidColorBrush x:Key="Knob" Color="#FFFFFF"/>
-            <SolidColorBrush x:Key="KnobOn" Color="#FFFFFF"/>
-            <SolidColorBrush x:Key="ScrollThumb" Color="#30FFFFFF"/>
-            <!-- 圆角随主题：像素主题把这几项改成 2 / 2 / 0 / 3 -->
-            <CornerRadius x:Key="RadiusBtn">7</CornerRadius>
-            <CornerRadius x:Key="RadiusPill">11</CornerRadius>
-            <CornerRadius x:Key="RadiusTrack">2</CornerRadius>
-            <CornerRadius x:Key="RadiusCard">14</CornerRadius>
-
-            <BooleanToVisibilityConverter x:Key="BoolVis"/>
-            <local:InverseBoolToVis x:Key="InvVis"/>
-            <local:MuteTextConverter x:Key="MuteText"/>
-
-            <!-- 列表页的一行：图标 + 内容 + 右侧补充 -->
-            <Style x:Key="ListRow" TargetType="Grid">
-                <Setter Property="Height" Value="30"/>
-            </Style>
-            <!-- 控制页的一行：定宽标签列 + 状态/控件 + 右侧动作 -->
-            <Style x:Key="Row" TargetType="Grid">
-                <Setter Property="MinHeight" Value="30"/>
-            </Style>
-            <!-- 紧凑按钮（一排放五个的那种） -->
-            <Style x:Key="QuietBtnSm" TargetType="Button" BasedOn="{StaticResource QuietBtn}">
-                <Setter Property="Padding" Value="7,0"/>
-                <Setter Property="Margin" Value="0,0,4,0"/>
-            </Style>
-            <!-- 等宽的数据字体（顶栏时钟、列表里的时间 / 大小） -->
-            <Style x:Key="DataText" TargetType="TextBlock">
-                <Setter Property="FontFamily" Value="Consolas, Microsoft YaHei UI"/>
-                <Setter Property="Typography.NumeralAlignment" Value="Tabular"/>
-            </Style>
-
-            <!-- ===== 剪贴板页（对齐 mac 的 DrawClipsPage / DrawClipMenu）=====
-                 分类标签的彩点与行首类型彩点共用同一组色值（mac 的 ClipTagOf）：
-                 常用青 #5FD3A0 / 工作绿 #60C078 / 代码紫 #8E9BF5 -->
-            <SolidColorBrush x:Key="ClipDotCommon" Color="#5FD3A0"/>
-            <SolidColorBrush x:Key="ClipDotWork" Color="#60C078"/>
-            <SolidColorBrush x:Key="ClipDotCode" Color="#8E9BF5"/>
-            <!-- 删除项的文字色（mac 的 pal.Up 在深色底上的等价色） -->
-            <SolidColorBrush x:Key="ClipDanger" Color="#E5534B"/>
-            <!-- 浮层底色（右键浮层 / 详情浮层）：不透明的面板色 —— 浮在列表上，
-                 半透明会把底下的字透上来，读不清。主题在 ApplyTheme 里按 SurfaceAlt 覆写。 -->
-            <SolidColorBrush x:Key="OverlayBg" Color="#12141A"/>
-
-            <!-- 分类标签（mac：标签框高 22、圆角 7；激活底由代码按 18% 强调色写入） -->
-            <Style x:Key="ClipTabBtn" TargetType="Button">
-                <Setter Property="Cursor" Value="Hand"/>
-                <Setter Property="Focusable" Value="False"/>
-                <Setter Property="Height" Value="22"/>
-                <Setter Property="Padding" Value="7,0"/>
-                <Setter Property="Background" Value="Transparent"/>
-                <Setter Property="BorderThickness" Value="0"/>
-                <Setter Property="Template">
-                    <Setter.Value>
-                        <ControlTemplate TargetType="Button">
-                            <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="7"
-                                    Padding="{TemplateBinding Padding}">
-                                <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center" RecognizesAccessKey="False"/>
-                            </Border>
-                        </ControlTemplate>
-                    </Setter.Value>
-                </Setter>
-            </Style>
-
-            <!-- 列表行主体（mac：行高 30）：整行可点 = 恢复到系统剪贴板；悬停给一层底色 -->
-            <Style x:Key="ClipRowBody" TargetType="Button">
-                <Setter Property="Cursor" Value="Hand"/>
-                <Setter Property="Focusable" Value="False"/>
-                <Setter Property="Height" Value="30"/>
-                <Setter Property="Padding" Value="0"/>
-                <Setter Property="Background" Value="Transparent"/>
-                <Setter Property="BorderThickness" Value="0"/>
-                <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-                <Setter Property="Template">
-                    <Setter.Value>
-                        <ControlTemplate TargetType="Button">
-                            <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="6"
-                                    Padding="{TemplateBinding Padding}">
-                                <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Stretch" RecognizesAccessKey="False"/>
-                            </Border>
-                            <ControlTemplate.Triggers>
-                                <Trigger Property="IsMouseOver" Value="True">
-                                    <Setter Property="Background" Value="{DynamicResource Hover}" TargetName="bd"/>
-                                </Trigger>
-                            </ControlTemplate.Triggers>
-                        </ControlTemplate>
-                    </Setter.Value>
-                </Setter>
-            </Style>
-
-            <!-- 行尾删除 ×（mac：× 字形 12px；热区放大到 22×22，别难点中） -->
-            <Style x:Key="ClipDeleteBtn" TargetType="Button">
-                <Setter Property="Cursor" Value="Hand"/>
-                <Setter Property="Focusable" Value="False"/>
-                <Setter Property="Width" Value="22"/>
-                <Setter Property="Height" Value="22"/>
-                <Setter Property="Padding" Value="0"/>
-                <Setter Property="FontSize" Value="12"/>
-                <Setter Property="Foreground" Value="{DynamicResource FgDim}"/>
-                <Setter Property="Background" Value="Transparent"/>
-                <Setter Property="BorderThickness" Value="0"/>
-                <Setter Property="Template">
-                    <Setter.Value>
-                        <ControlTemplate TargetType="Button">
-                            <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="6">
-                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" RecognizesAccessKey="False"/>
-                            </Border>
-                            <ControlTemplate.Triggers>
-                                <Trigger Property="IsMouseOver" Value="True">
-                                    <Setter Property="Background" Value="{DynamicResource Hover}" TargetName="bd"/>
-                                    <Setter Property="Foreground" Value="{DynamicResource Fg}"/>
-                                </Trigger>
-                            </ControlTemplate.Triggers>
-                        </ControlTemplate>
-                    </Setter.Value>
-                </Setter>
-            </Style>
-
-            <!-- 头部的小动作（导出 / 清空）：mac 的头部动作同款，10.5px 次色 -->
-            <Style x:Key="ClipTinyBtn" TargetType="Button">
-                <Setter Property="Cursor" Value="Hand"/>
-                <Setter Property="Focusable" Value="False"/>
-                <Setter Property="Height" Value="22"/>
-                <Setter Property="Padding" Value="6,0"/>
-                <Setter Property="FontSize" Value="10.5"/>
-                <Setter Property="Foreground" Value="{DynamicResource FgDim}"/>
-                <Setter Property="Background" Value="Transparent"/>
-                <Setter Property="BorderThickness" Value="0"/>
-                <Setter Property="Template">
-                    <Setter.Value>
-                        <ControlTemplate TargetType="Button">
-                            <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="6"
-                                    Padding="{TemplateBinding Padding}">
-                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" RecognizesAccessKey="False"/>
-                            </Border>
-                            <ControlTemplate.Triggers>
-                                <Trigger Property="IsMouseOver" Value="True">
-                                    <Setter Property="Background" Value="{DynamicResource Hover}" TargetName="bd"/>
-                                    <Setter Property="Foreground" Value="{DynamicResource Fg}"/>
-                                </Trigger>
-                            </ControlTemplate.Triggers>
-                        </ControlTemplate>
-                    </Setter.Value>
-                </Setter>
-            </Style>
-
-            <!-- 正文按类型分渲染（mac 的 DrawClipsPage 里的 switch 分支）：
-                 普通文本 11px；链接 10.5px（host 用链接色，路径用第三级色）；
-                 代码 10.5px 等宽；颜色 10.5px + 14×14 色块；图片 10.5px + 14×14 缩略 -->
-            <DataTemplate x:Key="ClipTextBody">
-                <TextBlock Text="{Binding Preview}" FontSize="11" Foreground="{DynamicResource Fg}"
-                           TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
-            </DataTemplate>
-            <DataTemplate x:Key="ClipLinkBody">
-                <Grid>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
-                    <TextBlock Text="{Binding LinkHost}" FontSize="10.5" Foreground="{DynamicResource Accent}" VerticalAlignment="Center"/>
-                    <TextBlock Grid.Column="1" Text="{Binding LinkPath}" FontSize="10" Foreground="{DynamicResource FgTertiary}"
-                               Margin="4,0,0,0" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
-                </Grid>
-            </DataTemplate>
-            <DataTemplate x:Key="ClipCodeBody">
-                <TextBlock Text="{Binding Preview}" FontFamily="Consolas, Microsoft YaHei UI" FontSize="10.5"
-                           Foreground="{DynamicResource Fg}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
-            </DataTemplate>
-            <DataTemplate x:Key="ClipColorBody">
-                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <Border Width="14" Height="14" CornerRadius="3" Background="{Binding SwatchBrush}"
-                            BorderBrush="{DynamicResource Hairline}" BorderThickness="1"/>
-                    <TextBlock Text="{Binding Preview}" FontSize="10.5" Foreground="{DynamicResource Fg}" Margin="6,0,0,0"
-                               VerticalAlignment="Center"/>
-                </StackPanel>
-            </DataTemplate>
-            <DataTemplate x:Key="ClipImageBody">
-                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <Border Width="14" Height="14" CornerRadius="3" BorderBrush="{DynamicResource Hairline}" BorderThickness="1">
-                        <Image Source="{Binding Image}" Stretch="UniformToFill"/>
-                    </Border>
-                    <TextBlock Text="{Binding Preview}" FontSize="10.5" Foreground="{DynamicResource Fg}" Margin="6,0,0,0"
-                               VerticalAlignment="Center"/>
-                </StackPanel>
-            </DataTemplate>
-            <!-- 正文模板选择器（按条目类型挑上面那一套） -->
-            <local:ClipBodySelector x:Key="ClipBodySelector"/>
-        </ResourceDictionary>
+        <!-- BrimDeck 式扁平按钮 -->
+        <Style x:Key="FlatBtn" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="bd" Background="{TemplateBinding Background}"
+                                Padding="{TemplateBinding Padding}" CornerRadius="7">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="#1FFFFFFF" TargetName="bd"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter Property="Background" Value="#33FFFFFF" TargetName="bd"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </UserControl.Resources>
 
-    <!-- 面板整体：底色由岛体本体（IslandCanvas）画，这里只排内容
-         内容区内边距 = 左右 18 / 上 14 / 下 18（ExpandedPanelSpec.ContentPadX / ContentPadTop / ContentPadBottom），
-         code-behind 里再按常量覆写一次（XAML 读不到 const，规格类才是唯一事实来源）。 -->
-    <Grid x:Name="rootGrid" Margin="18,14,18,18" PreviewMouseDown="OnPanelPreviewMouseDown" PreviewKeyDown="OnPanelPreviewKeyDown">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-        </Grid.RowDefinitions>
+    <Border Background="Transparent" CornerRadius="22" Padding="2">
+        <Grid Margin="14,9,14,12">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
 
-        <!-- 顶栏（对齐 mac 的 IslandCanvas.DrawExpanded / Tab(...)）：左 页签（图标 + 文字）｜ 右 时间 + 设置齿轮 + 收起
-             顶栏高度 = 图标 14（TabIconSize）+ 上下各 5（TabPadY）= 24；顶栏到内容区 40（ContentTopOffset = 24 + 16）。
-             页签整体仍左对齐（mac 就是左对齐）；时钟靠右、排在齿轮左边 ——
-             Windows 专属的「设置齿轮 / 收起 ✕」保留（mac 靠移开鼠标收起）。 -->
-        <Grid x:Name="topBar" Grid.Row="0" Height="24" Margin="0,0,0,16">
-            <!-- 页签：图标 14（TabIconSize）+ 间距 5（TabIconGap）+ 文字 12（TabFontSize）；
-                 热区左右 7 / 上下 5（TabPadX / TabPadY），相邻间距 6（TabGap），左端离面板左边缘 20（TabLeftOffset）；
-                 激活底 = Accent 20%（TabActiveFillAlpha）+ 圆角 8（TabActiveCorner），由代码写入。
-                 XAML 读不到 const，上面这些数值在 code-behind 里按 ExpandedPanelSpec 再覆写一次。 -->
-            <StackPanel x:Name="tabBar" Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center"
-                        Margin="2,0,0,0">
-                <Grid Margin="0,0,6,0">
-                    <Border x:Name="tabFillMonitor" Background="Transparent" CornerRadius="8"/>
-                    <Button x:Name="btnMonitor" Tag="0" Click="OnPage" ToolTip="系统监控" Style="{StaticResource TabBtn}"
-                            Width="Auto" Height="Auto" Padding="7,5" Margin="0" Background="Transparent" BorderThickness="0">
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                            <local:GlyphIcon x:Name="tabIconMonitor" Kind="Monitor" Width="14" Height="14"
-                                             VerticalAlignment="Center" TextElement.Foreground="{DynamicResource FgDim}"/>
-                            <TextBlock x:Name="tabTextMonitor" Text="监控" FontSize="12" VerticalAlignment="Center"
-                                       Margin="5,0,0,0" Foreground="{DynamicResource FgDim}"/>
-                        </StackPanel>
-                    </Button>
-                </Grid>
-                <Grid Margin="0,0,6,0">
-                    <Border x:Name="tabFillShelf" Background="Transparent" CornerRadius="8"/>
-                    <Button x:Name="btnShelf" Tag="1" Click="OnPage" ToolTip="剪贴板 · 文件" Style="{StaticResource TabBtn}"
-                            Width="Auto" Height="Auto" Padding="7,5" Margin="0" Background="Transparent" BorderThickness="0">
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                            <local:GlyphIcon x:Name="tabIconShelf" Kind="Clipboard" Width="14" Height="14"
-                                             VerticalAlignment="Center" TextElement.Foreground="{DynamicResource FgDim}"/>
-                            <TextBlock x:Name="tabTextShelf" Text="剪贴板" FontSize="12" VerticalAlignment="Center"
-                                       Margin="5,0,0,0" Foreground="{DynamicResource FgDim}"/>
-                        </StackPanel>
-                    </Button>
-                </Grid>
-                <Grid Margin="0,0,6,0">
-                    <Border x:Name="tabFillDevices" Background="Transparent" CornerRadius="8"/>
-                    <Button x:Name="btnDevices" Tag="2" Click="OnPage" ToolTip="设备电量" Style="{StaticResource TabBtn}"
-                            Width="Auto" Height="Auto" Padding="7,5" Margin="0" Background="Transparent" BorderThickness="0">
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                            <local:GlyphIcon x:Name="tabIconDevices" Kind="Battery" Width="14" Height="14"
-                                             VerticalAlignment="Center" TextElement.Foreground="{DynamicResource FgDim}"/>
-                            <TextBlock x:Name="tabTextDevices" Text="设备" FontSize="12" VerticalAlignment="Center"
-                                       Margin="5,0,0,0" Foreground="{DynamicResource FgDim}"/>
-                        </StackPanel>
-                    </Button>
-                </Grid>
-                <Grid>
-                    <Border x:Name="tabFillControl" Background="Transparent" CornerRadius="8"/>
-                    <Button x:Name="btnControl" Tag="3" Click="OnPage" ToolTip="控制" Style="{StaticResource TabBtn}"
-                            Width="Auto" Height="Auto" Padding="7,5" Margin="0" Background="Transparent" BorderThickness="0">
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                            <local:GlyphIcon x:Name="tabIconControl" Kind="Sliders" Width="14" Height="14"
-                                             VerticalAlignment="Center" TextElement.Foreground="{DynamicResource FgDim}"/>
-                            <TextBlock x:Name="tabTextControl" Text="控制" FontSize="12" VerticalAlignment="Center"
-                                       Margin="5,0,0,0" Foreground="{DynamicResource FgDim}"/>
-                        </StackPanel>
-                    </Button>
-                </Grid>
-            </StackPanel>
-            <!-- 右侧一组：时钟 → 齿轮 → 收起。时钟 12 号 Regular 比例字体（去掉 DataText 的等宽体），
-                 颜色 FgDim，右侧留白 24（ClockRightMargin）。 -->
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-                <TextBlock x:Name="clockText" VerticalAlignment="Center" FontSize="12" FontWeight="Normal"
-                           Foreground="{DynamicResource FgDim}" Margin="0,0,24,0"/>
-                <!-- 设置齿轮（BrimDeck 顶栏同款：右端齿轮直达设置中心，不用退到托盘） -->
-                <Button x:Name="btnSettings" Click="OnSettings" ToolTip="设置中心" Style="{StaticResource TabBtn}" Margin="0,0,2,0">
-                    <local:GlyphIcon Kind="Gear" Width="15" Height="15"/>
-                </Button>
-                <Button x:Name="btnClose" Click="OnClose" ToolTip="收起" Style="{StaticResource TabBtn}">
-                    <local:GlyphIcon Kind="Close" Width="14" Height="14"/>
-                </Button>
-            </StackPanel>
-        </Grid>
-
-        <!-- 页面容器：一次只显示一页 -->
-        <Grid Grid.Row="1">
-
-            <!-- 页0：系统监控（自绘） -->
-            <local:MonitorPage x:Name="monitorPage"/>
-
-            <!-- 页1：剪贴板（对齐 mac 的单区结构：分类标签栏 → 头部 → 列表）
-                 Windows 独有的「文件」列保留在单区右侧（文件中转是平台专属能力，不互相搬运）。 -->
-            <Grid x:Name="pageShelf" Visibility="Collapsed">
-                <Grid.ColumnDefinitions>
-                    <!-- 剪贴板单区：列表列 246（mac 的列表列宽）+ 卡片内边距 20 + 描边 2 = 268 -->
-                    <ColumnDefinition Width="268"/>
-                    <ColumnDefinition Width="10"/>
-                    <!-- 文件列（Windows 独有） -->
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
-
-                <Border Grid.Column="0" Style="{StaticResource GroupCard}" Padding="10,8,10,6" Margin="0">
-                    <Grid>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>   <!-- 分类标签栏 -->
-                            <RowDefinition Height="Auto"/>   <!-- 头部：计数 + 导出 / 清空 -->
-                            <RowDefinition Height="*"/>      <!-- 列表 -->
-                            <RowDefinition Height="Auto"/>   <!-- 底部：还有 N 条 / 操作提示 -->
-                        </Grid.RowDefinitions>
-
-                        <!-- 分类标签栏（mac 的 DrawClipsPage：全部 / ●常用 / ●工作 / ●代码）
-                             标签文字 11px、标签框高 22、圆角 7、激活底 = 强调色 18%（代码里按常量覆写）；
-                             分类彩点 6px：常用青 #5FD3A0 / 工作绿 #60C078 / 代码紫 #8E9BF5 -->
-                        <StackPanel x:Name="clipTabBar" Grid.Row="0" Orientation="Horizontal" Height="22" Margin="0,0,0,6">
-                            <Grid Margin="0,0,2,0">
-                                <Border x:Name="clipFillAll" Background="Transparent" CornerRadius="7"/>
-                                <Button Tag="all" Click="OnClipFilter" Style="{StaticResource ClipTabBtn}">
-                                    <TextBlock x:Name="clipTextAll" Text="全部" FontSize="11" VerticalAlignment="Center"/>
-                                </Button>
-                            </Grid>
-                            <Grid Margin="0,0,2,0">
-                                <Border x:Name="clipFillCommon" Background="Transparent" CornerRadius="7"/>
-                                <Button Tag="common" Click="OnClipFilter" Style="{StaticResource ClipTabBtn}">
-                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                        <Ellipse Width="6" Height="6" Fill="{StaticResource ClipDotCommon}" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                                        <TextBlock x:Name="clipTextCommon" Text="常用" FontSize="11" VerticalAlignment="Center"/>
-                                    </StackPanel>
-                                </Button>
-                            </Grid>
-                            <Grid Margin="0,0,2,0">
-                                <Border x:Name="clipFillWork" Background="Transparent" CornerRadius="7"/>
-                                <Button Tag="work" Click="OnClipFilter" Style="{StaticResource ClipTabBtn}">
-                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                        <Ellipse Width="6" Height="6" Fill="{StaticResource ClipDotWork}" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                                        <TextBlock x:Name="clipTextWork" Text="工作" FontSize="11" VerticalAlignment="Center"/>
-                                    </StackPanel>
-                                </Button>
-                            </Grid>
-                            <Grid>
-                                <Border x:Name="clipFillCode" Background="Transparent" CornerRadius="7"/>
-                                <Button Tag="code" Click="OnClipFilter" Style="{StaticResource ClipTabBtn}">
-                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                        <Ellipse Width="6" Height="6" Fill="{StaticResource ClipDotCode}" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                                        <TextBlock x:Name="clipTextCode" Text="代码" FontSize="11" VerticalAlignment="Center"/>
-                                    </StackPanel>
-                                </Button>
-                            </Grid>
-                        </StackPanel>
-
-                        <!-- 头部：左侧计数「N 条」+ 右侧「导出」「清空」两个动作（mac 的头部是 导出全部 / 计数 / 垃圾桶） -->
-                        <Grid Grid.Row="1" Height="22" Margin="0,0,0,6">
-                            <TextBlock x:Name="clipCount" Text="0 条" FontSize="10.5" VerticalAlignment="Center"
-                                       Foreground="{DynamicResource FgTertiary}"/>
-                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-                                <Button Content="导出" Style="{StaticResource ClipTinyBtn}" Click="OnClipExport"
-                                        ToolTip="把剪贴板历史导出到「下载」目录"/>
-                                <Button Content="清空" Style="{StaticResource ClipTinyBtn}" Click="OnClipClear"
-                                        ToolTip="清空剪贴板历史"/>
+            <!-- 顶栏（对齐 macOS DrawExpanded）：左 矢量图标+中文页签胶囊 ｜ 中右 实时时间 + 设置齿轮 + 收起 -->
+            <Grid Grid.Row="0" Margin="2,0,2,10">
+                <Border HorizontalAlignment="Left" VerticalAlignment="Center"
+                        Background="{DynamicResource CardBg}" CornerRadius="10" Padding="3,2">
+                    <StackPanel Orientation="Horizontal">
+                        <!-- 0: 监控 -->
+                        <Button x:Name="btnMonitor" Tag="0" Click="OnPage" ToolTip="系统监控"
+                                Height="25" Padding="8,0" Style="{StaticResource FlatBtn}">
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <Path x:Name="icoMonitor" Width="13" Height="13" Stretch="Uniform"
+                                      Stroke="{DynamicResource FgDim}" StrokeThickness="1.5"
+                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                                      Data="M 1,8 L 4,8 L 6,3 L 8.5,13 L 10.5,6 L 12,8 L 15,8"/>
+                                <TextBlock x:Name="lblMonitor" Text="监控" FontSize="11.5" Margin="4,0,0,0"
+                                           VerticalAlignment="Center" Foreground="{DynamicResource FgDim}"/>
                             </StackPanel>
-                        </Grid>
-
-                        <!-- 列表（行高 30）：自绘滚动 —— 内容整体位移，不用系统 ScrollViewer
-                             （mac 的 DrawClipsPage 也是自己算偏移、自己画那条 3px 细条） -->
-                        <Grid Grid.Row="2" x:Name="clipListHost" ClipToBounds="True" Background="Transparent"
-                              PreviewMouseWheel="OnClipListWheel" SizeChanged="OnClipHostSizeChanged">
-                            <TextBlock x:Name="clipEmptyAll" Text="复制的内容会出现在这里" Style="{StaticResource EmptyHint}"
-                                       Visibility="Collapsed"/>
-                            <TextBlock x:Name="clipEmptyFilter" Text="这个分类下暂无记录" Style="{StaticResource EmptyHint}"
-                                       Visibility="Collapsed"/>
-                            <!-- 右边留出 11px 给自绘滚动条（行尾的 × 不被压在条下面） -->
-                            <ItemsControl x:Name="clipList" VerticalAlignment="Top" HorizontalAlignment="Stretch"
-                                          Margin="0,0,11,0">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <Grid Height="30" Background="Transparent" MouseRightButtonDown="OnClipRowRightDown">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="*"/>
-                                                    <ColumnDefinition Width="Auto"/>
-                                                </Grid.ColumnDefinitions>
-                                                <!-- 行主体：点一下恢复到系统剪贴板（mac 的 ClipPicked） -->
-                                                <Button Grid.Column="0" Style="{StaticResource ClipRowBody}" Click="OnRestoreClipboard"
-                                                        ToolTip="点击恢复到系统剪贴板；然后在目标窗口粘贴">
-                                                    <Grid>
-                                                        <Grid.ColumnDefinitions>
-                                                            <ColumnDefinition Width="Auto"/>
-                                                            <ColumnDefinition Width="*"/>
-                                                            <ColumnDefinition Width="Auto"/>
-                                                        </Grid.ColumnDefinitions>
-                                                        <!-- 行首类型彩点 5px（mac 的半径 2.5） -->
-                                                        <Ellipse Width="5" Height="5" Margin="0,0,7,0" VerticalAlignment="Center"
-                                                                 Fill="{Binding DotBrush}"/>
-                                                        <!-- 正文按类型分渲染（文本 11 / 代码 10.5 等宽 / 链接 10.5 链接色 / 其它 10.5） -->
-                                                        <ContentControl Grid.Column="1" Content="{Binding}"
-                                                                        ContentTemplateSelector="{StaticResource ClipBodySelector}"
-                                                                        VerticalAlignment="Center"/>
-                                                        <!-- 多行文本的额外行数（mac 的「+N 行」，9.5px） -->
-                                                        <TextBlock Grid.Column="2" Text="{Binding MoreText}" FontSize="9.5" Margin="6,0,0,0"
-                                                                   Foreground="{DynamicResource FgTertiary}" VerticalAlignment="Center"/>
-                                                    </Grid>
-                                                </Button>
-                                                <!-- 右侧：相对时间（9.5px 比例字体）+ 删除 ×（12px 字形，22×22 热区） -->
-                                                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                                                    <TextBlock Text="{Binding TimeText}" FontSize="9.5" VerticalAlignment="Center"
-                                                               Margin="0,0,4,0" Foreground="{DynamicResource FgTertiary}"/>
-                                                    <Button Content="×" Style="{StaticResource ClipDeleteBtn}" Tag="{Binding Item}"
-                                                            Click="OnDeleteClip" ToolTip="删除这条记录"/>
-                                                </StackPanel>
-                                            </Grid>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                            <!-- 自绘 3px 覆盖式滚动条（mac 的 DrawClipsPage 末尾：右侧竖条 3px、滑块最小 24、盖在内容上） -->
-                            <!-- 覆盖在列表右缘的 3px 细条（自绘）：不折叠，折叠了就没有高度可算；
-                                 内容装得下时只把轨道和滑块本身收起来。 -->
-                            <Grid x:Name="clipScrollBar" Width="11" HorizontalAlignment="Right" Background="Transparent"
-                                  PreviewMouseWheel="OnClipScrollWheel">
-                                <Rectangle x:Name="clipScrollTrack" Width="3" HorizontalAlignment="Right" VerticalAlignment="Stretch"
-                                           Margin="0,2,0,2" RadiusX="1.5" RadiusY="1.5"
-                                           Fill="{DynamicResource Hairline}" Opacity="0.5"/>
-                                <Rectangle x:Name="clipScrollThumb" Width="3" Height="24" HorizontalAlignment="Right"
-                                           VerticalAlignment="Top" RadiusX="1.5" RadiusY="1.5" Cursor="Hand"
-                                           Fill="{DynamicResource FgDim}" Opacity="0.45"
-                                           MouseLeftButtonDown="OnClipThumbDown" MouseMove="OnClipThumbMove"
-                                           MouseLeftButtonUp="OnClipThumbUp"/>
-                            </Grid>
-                        </Grid>
-
-                        <!-- 底部：还有 N 条没显示出来 / 操作提示（9.5px） -->
-                        <TextBlock x:Name="clipMore" Grid.Row="3" Text="" FontSize="9.5" Margin="0,4,0,0"
-                                   Foreground="{DynamicResource FgTertiary}" Visibility="Collapsed"/>
-                    </Grid>
+                        </Button>
+                        <!-- 1: 媒体 -->
+                        <Button x:Name="btnMedia" Tag="1" Click="OnPage" ToolTip="媒体播放"
+                                Height="25" Padding="8,0" Style="{StaticResource FlatBtn}">
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <Path x:Name="icoMedia" Width="12" Height="12" Stretch="Uniform"
+                                      Stroke="{DynamicResource FgDim}" StrokeThickness="1.5"
+                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                                      Data="M 5,12 L 5,3.5 L 13,2 L 13,10.5 M 5,12 A 2,2 0 1 1 1,12 A 2,2 0 1 1 5,12 M 13,10.5 A 2,2 0 1 1 9,10.5 A 2,2 0 1 1 13,10.5"/>
+                                <TextBlock x:Name="lblMedia" Text="媒体" FontSize="11.5" Margin="4,0,0,0"
+                                           VerticalAlignment="Center" Foreground="{DynamicResource FgDim}"/>
+                            </StackPanel>
+                        </Button>
+                        <!-- 2: 剪贴板 · 文件 -->
+                        <Button x:Name="btnShelf" Tag="2" Click="OnPage" ToolTip="剪贴板 · 文件中转"
+                                Height="25" Padding="8,0" Style="{StaticResource FlatBtn}">
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <Path x:Name="icoShelf" Width="12" Height="12" Stretch="Uniform"
+                                      Stroke="{DynamicResource FgDim}" StrokeThickness="1.5"
+                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                                      Data="M 5,2.5 L 11,2.5 L 11,4.5 L 5,4.5 Z M 5,3.5 L 3,3.5 L 3,14.5 L 13,14.5 L 13,3.5 L 11,3.5 M 5.5,8 L 10.5,8 M 5.5,11 L 9.5,11"/>
+                                <TextBlock x:Name="lblShelf" Text="剪贴板" FontSize="11.5" Margin="4,0,0,0"
+                                           VerticalAlignment="Center" Foreground="{DynamicResource FgDim}"/>
+                            </StackPanel>
+                        </Button>
+                        <!-- 3: 设备 -->
+                        <Button x:Name="btnDevices" Tag="3" Click="OnPage" ToolTip="设备电量"
+                                Height="25" Padding="8,0" Style="{StaticResource FlatBtn}">
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <Path x:Name="icoDevices" Width="13" Height="11" Stretch="Uniform"
+                                      Stroke="{DynamicResource FgDim}" StrokeThickness="1.5"
+                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                                      Data="M 1.5,3.5 L 12.5,3.5 L 12.5,10.5 L 1.5,10.5 Z M 14,5.5 L 14,8.5 M 4,6 L 9,6 L 9,8 L 4,8 Z"/>
+                                <TextBlock x:Name="lblDevices" Text="设备" FontSize="11.5" Margin="4,0,0,0"
+                                           VerticalAlignment="Center" Foreground="{DynamicResource FgDim}"/>
+                            </StackPanel>
+                        </Button>
+                        <!-- 4: 控制 -->
+                        <Button x:Name="btnControl" Tag="4" Click="OnPage" ToolTip="显示器 · 控制"
+                                Height="25" Padding="8,0" Style="{StaticResource FlatBtn}">
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <Path x:Name="icoControl" Width="12" Height="12" Stretch="Uniform"
+                                      Stroke="{DynamicResource FgDim}" StrokeThickness="1.5"
+                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                      Data="M 2,4.5 L 14,4.5 M 9,2.5 L 9,6.5 M 2,10.5 L 14,10.5 M 5,8.5 L 5,12.5"/>
+                                <TextBlock x:Name="lblControl" Text="控制" FontSize="11.5" Margin="4,0,0,0"
+                                           VerticalAlignment="Center" Foreground="{DynamicResource FgDim}"/>
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
                 </Border>
 
-                <Border Grid.Column="2" Style="{StaticResource GroupCard}" Padding="14,2,14,6" Margin="0">
-                    <Grid>
+                <!-- 右上角：时间 + 设置齿轮 + 收起按钮（与 macOS 展开顶栏一致） -->
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <TextBlock x:Name="clockText" VerticalAlignment="Center" Margin="0,0,8,0"
+                               FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource FgDim}"/>
+                    <Button x:Name="btnSettings" Click="OnSettings" ToolTip="打开设置中心"
+                            Width="28" Height="24" Margin="0,0,2,0" Style="{StaticResource FlatBtn}">
+                        <Path Width="13" Height="13" Stretch="Uniform"
+                              Stroke="{DynamicResource FgDim}" StrokeThickness="1.4"
+                              StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                              Data="M 8,5.2 A 2.8,2.8 0 1 1 7.99,5.2 M 8,1.5 L 8,3 M 8,13 L 8,14.5 M 1.5,8 L 3,8 M 13,8 L 14.5,8 M 3.4,3.4 L 4.5,4.5 M 11.5,11.5 L 12.6,12.6 M 12.6,3.4 L 11.5,4.5 M 4.5,11.5 L 3.4,12.6"/>
+                    </Button>
+                    <Button x:Name="btnClose" Click="OnClose" ToolTip="收起"
+                            Width="28" Height="24" Style="{StaticResource FlatBtn}">
+                        <Path Width="10" Height="10" Stretch="Uniform"
+                              Stroke="{DynamicResource FgDim}" StrokeThickness="1.5"
+                              StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                              Data="M 2,2 L 10,10 M 10,2 L 2,10"/>
+                    </Button>
+                </StackPanel>
+            </Grid>
+
+            <!-- 页面容器：一次只显示一页 -->
+            <Grid Grid.Row="1">
+
+                <!-- 页0：系统监控 -->
+                <controls:MonitorPage x:Name="monitorPage"/>
+
+                <!-- 页1：媒体播放 -->
+                <controls:MediaPage x:Name="mediaPage" Visibility="Collapsed"/>
+
+                <!-- 页2：剪贴板工作台 · 文件中转 -->
+                <Grid x:Name="pageShelf" Visibility="Collapsed" Margin="0,2,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="10"/>
+                        <ColumnDefinition Width="186"/>
+                    </Grid.ColumnDefinitions>
+
+                    <!-- 左栏：剪贴板分类筛选栏 + 富卡片列表 -->
+                    <Grid Grid.Column="0">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
-                        <TextBlock Grid.Row="0" Text="文件" Style="{StaticResource GroupLabel}"/>
-                        <TextBlock Grid.Row="1" Text="把文件拖到岛体上可暂存" Style="{StaticResource EmptyHint}" Margin="0,10,0,0"
-                                   Visibility="{Binding HasFiles, Converter={StaticResource InvVis}}"/>
-                        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
-                                      HorizontalContentAlignment="Stretch">
-                            <ItemsControl ItemsSource="{Binding Files}">
+
+                        <!-- 顶部分类胶囊 + 导出 / 清空 -->
+                        <DockPanel Grid.Row="0" Margin="0,0,0,6">
+                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                <Button Content="导出" Height="22" Padding="8,0" FontSize="10.5"
+                                        Foreground="{DynamicResource FgDim}" Style="{StaticResource FlatBtn}"
+                                        ToolTip="导出全部剪贴板条目到下载文件夹" Click="OnClipboardExport"/>
+                                <Button Content="清空" Height="22" Padding="8,0" Margin="2,0,0,0" FontSize="10.5"
+                                        Foreground="{DynamicResource FgDim}" Style="{StaticResource FlatBtn}"
+                                        ToolTip="清空非常驻记录" Click="OnClipboardClear"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal">
+                                <Button x:Name="fltAll" Tag="all" Content="全部" Height="22" Padding="8,0" Margin="0,0,3,0"
+                                        FontSize="10.5" Foreground="{DynamicResource Fg}" Style="{StaticResource FlatBtn}" Click="OnClipFilter"/>
+                                <Button x:Name="fltCommon" Tag="common" Content="常用" Height="22" Padding="8,0" Margin="0,0,3,0"
+                                        FontSize="10.5" Foreground="{DynamicResource FgDim}" Style="{StaticResource FlatBtn}" Click="OnClipFilter"/>
+                                <Button x:Name="fltLink" Tag="link" Content="链接" Height="22" Padding="8,0" Margin="0,0,3,0"
+                                        FontSize="10.5" Foreground="{DynamicResource FgDim}" Style="{StaticResource FlatBtn}" Click="OnClipFilter"/>
+                                <Button x:Name="fltCode" Tag="code" Content="代码" Height="22" Padding="8,0"
+                                        FontSize="10.5" Foreground="{DynamicResource FgDim}" Style="{StaticResource FlatBtn}" Click="OnClipFilter"/>
+                            </StackPanel>
+                        </DockPanel>
+
+                        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                            <ItemsControl ItemsSource="{Binding Clipboard}">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
-                                        <Grid Style="{StaticResource ListRow}" ToolTip="{Binding Full}">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="18"/>
-                                                <ColumnDefinition Width="*"/>
-                                                <ColumnDefinition Width="Auto"/>
-                                            </Grid.ColumnDefinitions>
-                                            <local:GlyphIcon Width="13" Height="13" VerticalAlignment="Center" Kind="File"
-                                                             TextElement.Foreground="{DynamicResource FgDim}" Opacity="0.8"/>
-                                            <TextBlock Grid.Column="1" Text="{Binding Name}" FontSize="12" VerticalAlignment="Center"
-                                                       Foreground="{DynamicResource Fg}" TextTrimming="CharacterEllipsis"/>
-                                            <TextBlock Grid.Column="2" Text="{Binding Size}" FontSize="10.5" VerticalAlignment="Center" Margin="10,0,0,0"
-                                                       Style="{StaticResource DataText}" Foreground="{DynamicResource FgTertiary}"/>
-                                        </Grid>
+                                        <Border Background="{DynamicResource CardBg}" CornerRadius="9" Cursor="Hand"
+                                                Padding="9,6" Margin="0,0,0,5" ToolTip="{Binding ToolTipText}"
+                                                MouseLeftButtonUp="OnClipboardItemClick"
+                                                MouseRightButtonUp="OnClipboardItemRightClick">
+                                            <DockPanel>
+                                                <!-- 右侧：相对时间 + 常驻星标 + 删除 × -->
+                                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center" Margin="6,0,0,0">
+                                                    <TextBlock Text="{Binding LinesBadge}" Visibility="{Binding HasLinesBadge}"
+                                                               FontSize="9" Foreground="{DynamicResource FgTertiary}"
+                                                               VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                                    <TextBlock Text="{Binding RelTime}" FontSize="9"
+                                                               Foreground="{DynamicResource FgTertiary}" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                                    <Button Content="{Binding PinGlyph}" Opacity="{Binding PinOpacity}"
+                                                            Width="20" Height="20" FontSize="11" ToolTip="标记/取消常驻（不被自动淘汰）"
+                                                            Foreground="{DynamicResource Accent}" Style="{StaticResource FlatBtn}"
+                                                            Click="OnClipboardPinClick"/>
+                                                    <Button Content="✕" Width="20" Height="20" FontSize="9.5" ToolTip="删除此条记录"
+                                                            Foreground="{DynamicResource FgDim}" Style="{StaticResource FlatBtn}"
+                                                            Click="OnClipboardDeleteClick"/>
+                                                </StackPanel>
+
+                                                <!-- 左侧：分类圆点 + 可选颜色块/图片缩略图 + 文本预览 -->
+                                                <Ellipse DockPanel.Dock="Left" Width="6" Height="6" Fill="{Binding DotBrush}"
+                                                         VerticalAlignment="Center" Margin="0,0,7,0"/>
+                                                <Border DockPanel.Dock="Left" Width="14" Height="14" CornerRadius="3"
+                                                        Background="{Binding ColorSwatch}" Visibility="{Binding HasSwatch}"
+                                                        BorderBrush="#44FFFFFF" BorderThickness="0.8"
+                                                        VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                                <Border DockPanel.Dock="Left" Width="34" Height="22" CornerRadius="4"
+                                                        Visibility="{Binding HasThumb}" ClipToBounds="True"
+                                                        VerticalAlignment="Center" Margin="0,0,7,0">
+                                                    <Image Source="{Binding Thumb}" Stretch="UniformToFill"/>
+                                                </Border>
+                                                <TextBlock Text="{Binding Preview}" FontFamily="{Binding Font}" FontSize="11"
+                                                           Foreground="{DynamicResource Fg}" VerticalAlignment="Center"
+                                                           TextTrimming="CharacterEllipsis"/>
+                                            </DockPanel>
+                                        </Border>
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
                         </ScrollViewer>
+
+                        <TextBlock Grid.Row="2" x:Name="shelfHint"
+                                   Text="点击条目写回剪贴板（支持文本与图片）· 星标常驻 · 右键也可置顶"
+                                   Foreground="{DynamicResource FgDim}" FontSize="9.5"
+                                   HorizontalAlignment="Left" Margin="2,4,0,0"/>
                     </Grid>
-                </Border>
-            </Grid>
 
-            <!-- 页2：设备电量（整页自绘，铺满页面高度，不套滚动条） -->
-            <Grid x:Name="pageDevices" Visibility="Collapsed">
-                <local:DevicesPage x:Name="devicesPage"/>
-            </Grid>
-
-            <!-- 页3：控制。左右两栏、每组一块卡片，全部控制项一屏读完（不用滚动） -->
-            <Grid x:Name="pageControl" Visibility="Collapsed">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="10"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
-
-                <!-- 左栏：显示 / 声音 -->
-                <StackPanel Grid.Column="0">
-                    <Border Style="{StaticResource GroupCard}">
+                    <!-- 右栏：文件中转 -->
+                    <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto">
                         <StackPanel>
-                            <TextBlock Text="显示" Style="{StaticResource GroupLabel}"/>
-                            <!-- 亮度（该机不支持时整行不出现 —— 与夜灯同一口径） -->
-                            <Grid Style="{StaticResource Row}" Visibility="{Binding HasBrightness, Converter={StaticResource BoolVis}}">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="56"/>
-                                    <ColumnDefinition Width="*"/>
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="亮度" Style="{StaticResource RowLabel}"/>
-                                <Grid Grid.Column="1" VerticalAlignment="Center">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto"/>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="Auto"/>
-                                        <ColumnDefinition Width="Auto"/>
-                                    </Grid.ColumnDefinitions>
-                                    <Button Content="&#x2212;" Style="{StaticResource StepBtn}" Command="{Binding BrightnessDown}" Margin="0,0,8,0"/>
-                                    <ProgressBar Grid.Column="1" Style="{StaticResource ThinProgress}" Maximum="1"
-                                                 Value="{Binding BrightnessValue, Mode=OneWay}"/>
-                                    <TextBlock Grid.Column="2" Text="{Binding Brightness}" Style="{StaticResource RowValue}" Width="46" TextAlignment="Right"/>
-                                    <Button Grid.Column="3" Content="+" Style="{StaticResource StepBtn}" Command="{Binding BrightnessUp}" Margin="6,0,0,0"/>
-                                </Grid>
-                            </Grid>
-                            <!-- 夜灯（不支持时不显示） -->
-                            <Grid Style="{StaticResource Row}" Visibility="{Binding HasNightLight, Converter={StaticResource BoolVis}}">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="56"/>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="夜灯" Style="{StaticResource RowLabel}"/>
-                                <CheckBox Grid.Column="2" Style="{StaticResource ToggleSwitch}" IsChecked="{Binding NightLightOn}"
-                                          Checked="OnNightLightToggle" Unchecked="OnNightLightToggle"/>
-                            </Grid>
-                            <Grid Style="{StaticResource Row}">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="56"/>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="浅色模式" Style="{StaticResource RowLabel}"/>
-                                <CheckBox Grid.Column="2" Style="{StaticResource ToggleSwitch}" IsChecked="{Binding IsLightTheme}"
-                                          Checked="OnLightThemeToggle" Unchecked="OnLightThemeToggle"/>
-                            </Grid>
-                            <!-- 鼠标穿透（只显示不拦截，游戏适用） -->
-                            <Grid Style="{StaticResource Row}">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="56"/>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="鼠标穿透" Style="{StaticResource RowLabel}"/>
-                                <TextBlock Grid.Column="1" Text="游戏时不拦截点击" Style="{StaticResource RowState}"/>
-                                <CheckBox Grid.Column="2" Style="{StaticResource ToggleSwitch}" IsChecked="{Binding ClickThrough}"
-                                          Checked="OnClickThroughToggle" Unchecked="OnClickThroughToggle"/>
-                            </Grid>
+                            <TextBlock Text="文件中转（拖入岛体暂存）" FontSize="10.5" FontWeight="SemiBold"
+                                       Foreground="{DynamicResource Fg}" Margin="2,2,0,2"/>
+                            <TextBlock Text="点击定位 · 按住拖出 · 右键移除" FontSize="9.5"
+                                       Foreground="{DynamicResource FgDim}" Margin="2,0,0,6"/>
+                            <ItemsControl ItemsSource="{Binding Files}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Background="{DynamicResource CardBg}" CornerRadius="9" Cursor="Hand"
+                                                Padding="9,6" Margin="0,0,0,5" ToolTip="{Binding Full}"
+                                                MouseLeftButtonDown="OnFileItemMouseDown"
+                                                MouseMove="OnFileItemMouseMove"
+                                                MouseLeftButtonUp="OnFileItemClick"
+                                                MouseRightButtonUp="OnFileItemRightClick">
+                                            <StackPanel>
+                                                <TextBlock Text="{Binding Name}" FontSize="11"
+                                                           Foreground="{DynamicResource Fg}" TextTrimming="CharacterEllipsis"/>
+                                                <TextBlock Text="{Binding Size}" FontSize="9"
+                                                           Foreground="{DynamicResource FgDim}"/>
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
                         </StackPanel>
-                    </Border>
-                    <Border Style="{StaticResource GroupCard}" Margin="0">
-                        <StackPanel>
-                            <TextBlock Text="声音" Style="{StaticResource GroupLabel}"/>
-                            <Grid Style="{StaticResource Row}">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="56"/>
-                                    <ColumnDefinition Width="*"/>
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="音量" Style="{StaticResource RowLabel}"/>
-                                <Slider Grid.Column="1" Style="{StaticResource ThinSlider}" Minimum="0" Maximum="1" TickFrequency="0.05"
-                                        Value="{Binding VolumeValue, Mode=OneWay}" ValueChanged="OnVolumeSlider"
-                                        ToolTip="滚轮悬停岛体也可调节"/>
-                            </Grid>
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="56"/>
-                                    <ColumnDefinition Width="*"/>
-                                </Grid.ColumnDefinitions>
-                                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
-                                    <Button x:Name="btnMic" Style="{StaticResource QuietBtn}" Content="麦克风"
+                    </ScrollViewer>
+                </Grid>
+
+                <!-- 页3：设备电量 -->
+                <ScrollViewer x:Name="pageDevices" Visibility="Collapsed"
+                              VerticalScrollBarVisibility="Auto" Margin="0,4,0,0">
+                    <controls:DevicesPage x:Name="devicesPage" Height="330"/>
+                </ScrollViewer>
+
+                <!-- 页4：多显示器无级 DDC/CI 控制 + 系统控制 -->
+                <ScrollViewer x:Name="pageControl" Visibility="Collapsed"
+                              VerticalScrollBarVisibility="Auto" Margin="0,4,0,0">
+                    <StackPanel>
+                        <!-- 多显示器控制区（对齐 LunarCN / Mac 版 screens 页：每台屏幕独立亮度/对比度/音量滑杆） -->
+                        <StackPanel x:Name="displayCardsHost"/>
+
+                        <!-- 系统主音量（滑杆 + 静音 + 麦克风） -->
+                        <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Left" Text="系统音量" FontSize="12"
+                                           Foreground="{DynamicResource Fg}" VerticalAlignment="Center" Width="68"/>
+                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                    <Button x:Name="btnMic" Width="60" Height="26" Style="{StaticResource FlatBtn}"
+                                            Foreground="{DynamicResource Fg}" FontSize="11" Content="麦克风"
                                             ToolTip="切换麦克风静音" Click="OnMicToggle" Margin="0,0,6,0"/>
-                                    <Button Style="{StaticResource QuietBtn}" Content="{Binding IsMuted, Converter={StaticResource MuteText}}"
+                                    <Button Width="66" Height="26" Style="{StaticResource FlatBtn}"
+                                            Foreground="{DynamicResource Fg}" FontSize="11"
+                                            Content="{Binding IsMuted, Converter={StaticResource MuteText}}"
                                             Click="OnMuteToggle"/>
                                 </StackPanel>
-                            </Grid>
-                        </StackPanel>
-                    </Border>
-                    <!-- 硬件传感器（2026-11-26 task4）：只读窗口的入口。
-                         LHM 枚举到的传感器里，绝大部分（各电压轨 / 各风扇转速 / 每颗内存的温度 /
-                         主板 SuperIO 温度……）此前没有任何入口能看到 ⇒ 这里开一扇只读的门。
-                         入口放在控制页签内（Windows 专属），**不新增展开页签**（页签集合是能力清单的产品决策）。 -->
-                    <Border Style="{StaticResource GroupCard}" Margin="0">
-                        <StackPanel>
-                            <TextBlock Text="硬件" Style="{StaticResource GroupLabel}"/>
-                            <Grid Style="{StaticResource Row}" MinHeight="26">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="56"/>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="传感器" Style="{StaticResource RowLabel}"/>
-                                <TextBlock x:Name="sensorEntryHint" Grid.Column="1" Text="全部硬件读数" Style="{StaticResource RowState}" Margin="0,0,6,0"/>
-                                <Button Grid.Column="2" Content="查看" Style="{StaticResource QuietBtn}" Click="OnShowHardwareSensors"
-                                        ToolTip="打开只读的硬件传感器列表"/>
-                            </Grid>
-                        </StackPanel>
-                    </Border>
-                </StackPanel>
+                                <Slider Minimum="0" Maximum="1" TickFrequency="0.05"
+                                        Value="{Binding VolumeValue, Mode=OneWay}"
+                                        ValueChanged="OnVolumeSlider"
+                                        VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            </DockPanel>
+                        </Border>
 
-                <!-- 右栏：连接 / 电源 / 系统 -->
-                <StackPanel Grid.Column="2">
-                    <Border Style="{StaticResource GroupCard}">
-                        <StackPanel>
-                            <TextBlock Text="连接" Style="{StaticResource GroupLabel}"/>
-                            <Grid Style="{StaticResource Row}">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="56"/>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="WLAN" Style="{StaticResource RowLabel}"/>
-                                <!-- 连接状态与适配器开关是两回事（"开着没连热点" vs "已关闭"），分两行显示 -->
-                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                                    <TextBlock Text="{Binding WlanState}" Style="{StaticResource RowState}"/>
-                                    <TextBlock Text="{Binding WlanAdapterState}" Style="{StaticResource RowState}" FontSize="10"/>
+                        <!-- 电源计划 -->
+                        <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
+                            <DockPanel>
+                                <StackPanel DockPanel.Dock="Left">
+                                    <TextBlock Text="电源计划" FontSize="12" Foreground="{DynamicResource Fg}"/>
+                                    <TextBlock Text="平衡 / 高性能 / 节能（即时切换）" FontSize="10"
+                                               Foreground="{DynamicResource FgDim}"/>
                                 </StackPanel>
-                                <Button Grid.Column="2" Content="切换" Style="{StaticResource QuietBtn}" Command="{Binding ToggleWlan}"
-                                        VerticalAlignment="Center" Margin="0,0,6,0"/>
-                            </Grid>
-                            <Grid Style="{StaticResource Row}">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="56"/>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="蓝牙" Style="{StaticResource RowLabel}"/>
-                                <TextBlock Grid.Column="1" Text="{Binding BtState}" Style="{StaticResource RowState}"/>
-                                <Button Grid.Column="2" Content="切换" Style="{StaticResource QuietBtn}" Command="{Binding ToggleBt}"
-                                        VerticalAlignment="Center" Margin="0,0,6,0"/>
-                            </Grid>
-                        </StackPanel>
-                    </Border>
-                    <Border Style="{StaticResource GroupCard}">
-                        <StackPanel>
-                            <TextBlock Text="电源" Style="{StaticResource GroupLabel}"/>
-                            <Grid Style="{StaticResource Row}">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="56"/>
-                                    <ColumnDefinition Width="*"/>
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="电源计划" Style="{StaticResource RowLabel}"/>
-                                <!-- 电源计划按钮由代码铺（powercfg 枚举，当前项是实心强调色 + 辉光） -->
-                                <WrapPanel Grid.Column="1" x:Name="powerPlanHost" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                            </Grid>
-                            <Grid Style="{StaticResource Row}">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="56"/>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="电源" Style="{StaticResource RowLabel}"/>
-                                <!-- 睡眠：这台机器没有传统睡眠（S0 新型待机）时按钮**不出现**，
-                                     同行说明原因 —— 与亮度同一口径，不留一个点了没反应的按钮。 -->
-                                <TextBlock Grid.Column="1" Text="{Binding SleepNote}" Style="{StaticResource RowState}"
-                                           VerticalAlignment="Center" Margin="0,0,6,0" TextWrapping="Wrap"/>
-                                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                                    <Button Content="锁屏" Style="{StaticResource QuietBtn}" Command="{Binding LockCommand}" Margin="0,0,6,0"/>
-                                    <Button Content="睡眠" Style="{StaticResource QuietBtn}" Command="{Binding SleepCommand}"
-                                            Visibility="{Binding SupportsSleep, Converter={StaticResource BoolVis}}"/>
+                                <WrapPanel DockPanel.Dock="Right" x:Name="powerPlanHost"
+                                           HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- WLAN -->
+                        <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
+                            <DockPanel>
+                                <StackPanel DockPanel.Dock="Left">
+                                    <TextBlock Text="WLAN" FontSize="12" Foreground="{DynamicResource Fg}"/>
+                                    <TextBlock Text="{Binding WlanState}" FontSize="10" Foreground="{DynamicResource FgDim}"/>
+                                    <TextBlock Text="{Binding WlanAdapterState}" FontSize="10" Foreground="{DynamicResource FgDim}"/>
                                 </StackPanel>
-                            </Grid>
-                        </StackPanel>
-                    </Border>
-                    <Border Style="{StaticResource GroupCard}" Margin="0">
-                        <StackPanel>
-                            <TextBlock Text="系统" Style="{StaticResource GroupLabel}"/>
-                            <!-- 内存清理：按钮点击即清，结果显示在行内 -->
-                            <Grid Style="{StaticResource Row}">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="56"/>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="内存清理" Style="{StaticResource RowLabel}"/>
-                                <TextBlock x:Name="memCleanResult" Grid.Column="1" Text="释放闲置内存" Style="{StaticResource RowState}" Margin="0,0,6,0"/>
-                                <Button Grid.Column="2" Content="清理" Style="{StaticResource QuietBtn}" Click="OnCleanMemory"/>
-                            </Grid>
-                            <!-- Windows 设置的快捷入口 -->
-                            <WrapPanel Margin="0,6,0,4">
-                                <Button Content="网络" Style="{StaticResource QuietBtnSm}" Command="{Binding OpenSettingsCommand}" CommandParameter="network"/>
-                                <Button Content="声音" Style="{StaticResource QuietBtnSm}" Command="{Binding OpenSettingsCommand}" CommandParameter="sound"/>
-                                <Button Content="显示" Style="{StaticResource QuietBtnSm}" Command="{Binding OpenSettingsCommand}" CommandParameter="display"/>
-                                <Button Content="电源" Style="{StaticResource QuietBtnSm}" Command="{Binding OpenSettingsCommand}" CommandParameter="power"/>
-                                <Button Content="蓝牙" Style="{StaticResource QuietBtnSm}" Command="{Binding OpenBtSettings}" Margin="0"/>
-                            </WrapPanel>
-                        </StackPanel>
-                    </Border>
-                </StackPanel>
+                                <Button DockPanel.Dock="Right" Content="切换" Width="52" Height="26"
+                                        Style="{StaticResource FlatBtn}" Foreground="{DynamicResource Fg}" FontSize="11"
+                                        Command="{Binding ToggleWlan}" HorizontalAlignment="Right"/>
+                                <TextBlock Text="（切换需管理员确认）" FontSize="9" Foreground="{DynamicResource FgDim}"
+                                           HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- 蓝牙 -->
+                        <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
+                            <DockPanel>
+                                <StackPanel DockPanel.Dock="Left">
+                                    <TextBlock Text="蓝牙" FontSize="12" Foreground="{DynamicResource Fg}"/>
+                                    <TextBlock Text="{Binding BtState}" FontSize="10" Foreground="{DynamicResource FgDim}"/>
+                                </StackPanel>
+                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
+                                    <Button Content="切换" Width="52" Height="26" Style="{StaticResource FlatBtn}"
+                                            Foreground="{DynamicResource Fg}" FontSize="11"
+                                            Command="{Binding ToggleBt}" Margin="0,0,6,0"/>
+                                    <Button Content="设置" Width="52" Height="26" Style="{StaticResource FlatBtn}"
+                                            Foreground="{DynamicResource Fg}" FontSize="11"
+                                            Command="{Binding OpenBtSettings}"/>
+                                </StackPanel>
+                                <TextBlock Text="bthserv 服务开关" FontSize="9" Foreground="{DynamicResource FgDim}"
+                                           HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- 系统浅色模式 -->
+                        <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
+                            <DockPanel>
+                                <StackPanel DockPanel.Dock="Left">
+                                    <TextBlock Text="系统浅色模式" FontSize="12" Foreground="{DynamicResource Fg}"/>
+                                    <TextBlock Text="切换 Windows 应用深/浅色（即时生效）" FontSize="10"
+                                               Foreground="{DynamicResource FgDim}"/>
+                                </StackPanel>
+                                <CheckBox DockPanel.Dock="Right" IsChecked="{Binding IsLightTheme}"
+                                          Checked="OnLightThemeToggle" Unchecked="OnLightThemeToggle"
+                                          VerticalAlignment="Center" HorizontalAlignment="Right"/>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- 夜灯 -->
+                        <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8"
+                                Visibility="{Binding HasNightLight, Converter={StaticResource BoolVis}}">
+                            <DockPanel>
+                                <StackPanel DockPanel.Dock="Left">
+                                    <TextBlock Text="夜灯（夜间模式）" FontSize="12" Foreground="{DynamicResource Fg}"/>
+                                    <TextBlock Text="暖色温护眼，数秒内生效" FontSize="10"
+                                               Foreground="{DynamicResource FgDim}"/>
+                                </StackPanel>
+                                <CheckBox DockPanel.Dock="Right" IsChecked="{Binding NightLightOn}"
+                                          Checked="OnNightLightToggle" Unchecked="OnNightLightToggle"
+                                          VerticalAlignment="Center" HorizontalAlignment="Right"/>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- 鼠标穿透 -->
+                        <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
+                            <DockPanel>
+                                <StackPanel DockPanel.Dock="Left">
+                                    <TextBlock Text="鼠标穿透" FontSize="12" Foreground="{DynamicResource Fg}"/>
+                                    <TextBlock Text="岛体只显示不拦截点击；悬停不展开，适合游戏" FontSize="10"
+                                               Foreground="{DynamicResource FgDim}"/>
+                                </StackPanel>
+                                <CheckBox DockPanel.Dock="Right" IsChecked="{Binding ClickThrough}"
+                                          Checked="OnClickThroughToggle" Unchecked="OnClickThroughToggle"
+                                          VerticalAlignment="Center" HorizontalAlignment="Right"/>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- 内存清理 -->
+                        <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
+                            <DockPanel>
+                                <StackPanel DockPanel.Dock="Left">
+                                    <TextBlock Text="内存清理" FontSize="12" Foreground="{DynamicResource Fg}"/>
+                                    <TextBlock x:Name="memCleanResult" Text="清空各进程工作集，释放可用内存" FontSize="10"
+                                               Foreground="{DynamicResource FgDim}"/>
+                                </StackPanel>
+                                <Button DockPanel.Dock="Right" Content="立即清理" Width="66" Height="26"
+                                        Style="{StaticResource FlatBtn}" Foreground="{DynamicResource Fg}" FontSize="11"
+                                        Click="OnCleanMemory" HorizontalAlignment="Right"/>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- 锁屏 / 睡眠 -->
+                        <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Left" Text="电源" FontSize="12"
+                                           Foreground="{DynamicResource Fg}" VerticalAlignment="Center" Width="60"/>
+                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                    <Button Content="锁屏" Width="56" Height="26" Style="{StaticResource FlatBtn}"
+                                            Foreground="{DynamicResource Fg}" FontSize="11"
+                                            Command="{Binding LockCommand}" Margin="0,0,6,0"/>
+                                    <Button Content="睡眠" Width="56" Height="26" Style="{StaticResource FlatBtn}"
+                                            Foreground="{DynamicResource Fg}" FontSize="11"
+                                            Command="{Binding SleepCommand}"/>
+                                </StackPanel>
+                            </DockPanel>
+                        </Border>
+
+                        <!-- 系统设置快捷链接 -->
+                        <Border Background="{DynamicResource CardBg}" CornerRadius="12" Padding="14,10" Margin="0,0,0,8">
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Left" Text="系统设置" FontSize="12"
+                                           Foreground="{DynamicResource Fg}" VerticalAlignment="Center" Width="60"/>
+                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                    <Button Content="网络" Width="50" Height="26" Style="{StaticResource FlatBtn}"
+                                            Foreground="{DynamicResource Fg}" FontSize="11"
+                                            Command="{Binding OpenSettingsCommand}" CommandParameter="network" Margin="0,0,4,0"/>
+                                    <Button Content="声音" Width="50" Height="26" Style="{StaticResource FlatBtn}"
+                                            Foreground="{DynamicResource Fg}" FontSize="11"
+                                            Command="{Binding OpenSettingsCommand}" CommandParameter="sound" Margin="0,0,4,0"/>
+                                    <Button Content="显示" Width="50" Height="26" Style="{StaticResource FlatBtn}"
+                                            Foreground="{DynamicResource Fg}" FontSize="11"
+                                            Command="{Binding OpenSettingsCommand}" CommandParameter="display" Margin="0,0,4,0"/>
+                                    <Button Content="电源" Width="50" Height="26" Style="{StaticResource FlatBtn}"
+                                            Foreground="{DynamicResource Fg}" FontSize="11"
+                                            Command="{Binding OpenSettingsCommand}" CommandParameter="power"/>
+                                </StackPanel>
+                            </DockPanel>
+                        </Border>
+
+                        <TextBlock Text="滚轮切收起视图 · Ctrl+Alt+Space 展开/收起 · Ctrl+Alt+D 切样式 · Ctrl+Alt+S 切页签" FontSize="9.5"
+                                   Foreground="{DynamicResource FgDim}" HorizontalAlignment="Center" Margin="0,4,0,0"/>
+                    </StackPanel>
+                </ScrollViewer>
             </Grid>
         </Grid>
-
-        <!-- 浮层宿主（自绘右键浮层 + 详情浮层）：画在最上层 ——
-             mac 的 DrawClipMenu 也是在最后画的（浮层不能被列表压住）。
-             菜单项在代码里生成（条目随选中项变化：链接才有「打开链接」）。 -->
-        <Grid x:Name="overlayHost" Grid.RowSpan="2" Visibility="Collapsed">
-            <!-- 右键浮层（mac：项高 26、宽 152、圆角 9；浮层比面板更亮 + 描边） -->
-            <Border x:Name="clipMenu" Width="152" HorizontalAlignment="Left" VerticalAlignment="Top"
-                    Background="{DynamicResource OverlayBg}" BorderBrush="{DynamicResource Hairline}" BorderThickness="1"
-                    CornerRadius="9" Padding="5" Visibility="Collapsed">
-                <StackPanel x:Name="clipMenuItems" Orientation="Vertical"/>
-            </Border>
-
-            <!-- 详情浮层：Windows 侧没有独立的 ClipDetailWindow 窗口（那是 mac 工程的文件），
-                 这里在面板内自绘一个等价的详情层（全文可滚动 / 图片预览）。 -->
-            <Border x:Name="clipDetail" Width="320" HorizontalAlignment="Center" VerticalAlignment="Center"
-                    Background="{DynamicResource OverlayBg}" BorderBrush="{DynamicResource Hairline}" BorderThickness="1"
-                    CornerRadius="9" Padding="12" Visibility="Collapsed">
-                <Grid>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
-                    </Grid.RowDefinitions>
-                    <Grid Margin="0,0,0,8">
-                        <TextBlock Text="剪贴板详情" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"
-                                   Foreground="{DynamicResource Fg}"/>
-                        <Button Content="×" Style="{StaticResource ClipDeleteBtn}" HorizontalAlignment="Right"
-                                Click="OnCloseClipDetail"/>
-                    </Grid>
-                    <Grid Grid.Row="1" MaxHeight="220">
-                        <TextBox x:Name="clipDetailText" IsReadOnly="True" TextWrapping="Wrap" FontSize="11"
-                                 VerticalScrollBarVisibility="Auto" Background="Transparent" BorderThickness="0"
-                                 Foreground="{DynamicResource Fg}"/>
-                        <Image x:Name="clipDetailImage" Stretch="Uniform" MaxHeight="220" Visibility="Collapsed"/>
-                    </Grid>
-                </Grid>
-            </Border>
-        </Grid>
-    </Grid>
+    </Border>
 </UserControl>

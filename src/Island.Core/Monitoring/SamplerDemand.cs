@@ -31,3 +31,15 @@ public enum SamplerDemand : int
     /// <summary>展开到监控页时的全部项。</summary>
     MonitorPage = Collapsed | Gpu | Processes | CpuFrequency | Uptime,
 }
+
+/// <summary>
+/// 采样器防重入门禁。System.Timers.Timer 可在线程池并发触发，慢采样必须跳过而不是叠加。
+/// 测试工程链接本文件，可直接验证并发入口只有一个。
+/// </summary>
+internal sealed class SamplerReentrancyGuard
+{
+    private int _active;
+
+    public bool TryEnter() => Interlocked.CompareExchange(ref _active, 1, 0) == 0;
+    public void Exit() => Interlocked.Exchange(ref _active, 0);
+}

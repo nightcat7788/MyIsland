@@ -26,9 +26,9 @@ public static class LiquidGeometry
     {
         var g = new StreamGeometry();
         double x = r.X, y = r.Y, w = r.Width, h = r.Height;
-        double m = Math.Min(w, h) / 2;
-        tl = Math.Clamp(tl, 0, m); tr = Math.Clamp(tr, 0, m);
-        br = Math.Clamp(br, 0, m); bl = Math.Clamp(bl, 0, m);
+        double m = Math.Max(0, Math.Min(w, h) / 2);
+        tl = Easing.Clamp(tl, 0, m); tr = Easing.Clamp(tr, 0, m);
+        br = Easing.Clamp(br, 0, m); bl = Easing.Clamp(bl, 0, m);
         using (var c = g.Open())
         {
             c.BeginFigure(new Point(x + tl, y), true, true);
@@ -67,7 +67,7 @@ public static class LiquidGeometry
         if (strength <= 0.01 || gap <= 0.5) return null;
         Point M(double u, double v) => EdgeMap(edge, line, u, v);
         double half = length / 2;
-        double tc = Math.Clamp(t, 0, 1);
+        double tc = Easing.Clamp(t, 0, 1);
         double ts = Math.Sqrt(tc);
         double wz = Easing.Lerp(half, Math.Max(2.5, Math.Min(7.0, length * 0.035)), ts);
         wz = Easing.Lerp(1.0, wz, strength);

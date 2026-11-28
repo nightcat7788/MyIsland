@@ -5,14 +5,31 @@ using Island.App.Controls;
 namespace Island.App.Animation;
 
 /// <summary>
-/// 原创发光双眼小形象。用弹簧驱动视线、眼睑、表情形变。
+/// 原创发光双眼小形象。用弹簧驱动视线、眼睑、挤压回弹、表情形变。
 /// 移植自 wisland/ui/compact.py 的 PetFace，改用 WPF DrawingContext 绘制。
-/// 表情：default/happy/wink/love/star/shy/pout/squint/surprise。
+/// 表情：default/happy/wink/love/star/shy/pout/squint/laugh/surprise。
 /// </summary>
 public sealed class PetFace
 {
-    // 心情表：8 款，与 mac 版 src/Island.Avalonia/PetFaceAv.cs 一一对应（mac 多一个 laugh）。
+    private static readonly Dictionary<uint, RadialGradientBrush> _glowBrushes = new();
+    private static RadialGradientBrush GlowBrush(Color glow)
+    {
+        uint k = (uint)(glow.A << 24 | glow.R << 16 | glow.G << 8 | glow.B);
+        if (_glowBrushes.TryGetValue(k, out var b)) return b;
+        b = new RadialGradientBrush(glow, Colors.Transparent)
+        {
+            Center = new Point(0.5, 0.5),
+            RadiusX = 0.5,
+            RadiusY = 0.5,
+        };
+        b.Freeze();
+        if (_glowBrushes.Count > 64) _glowBrushes.Clear();
+        return _glowBrushes[k] = b;
+    }
+
     private static readonly string[] Moods = { "happy", "wink", "love", "star", "shy", "pout", "squint", "laugh" };
+    private static readonly int[] TwoSides = { -1, 1 };
+    private static readonly int[] OneSide = { 0 };
 
     private readonly Spring _ex = new(0, 140, 0.8, 0.01);   // 视线 x
     private readonly Spring _ey = new(0, 140, 0.8, 0.01);   // 视线 y
@@ -22,52 +39,29 @@ public sealed class PetFace
     private readonly Spring _wide = new(0, 220, 0.45, 0.003);
     private readonly Spring _morph = new(0, 200, 0.7, 0.003);
     private readonly Spring _blush = new(0, 120, 0.9, 0.003);
-    // 下面三个是 mac 的动效骨架（呼吸之外的位移/形变），Windows 侧此前没有，本轮补上（参数与 mac 逐条一致）
-    private readonly Spring _squash = new(0, 260, 0.45, 0.003);  // 挤压回弹
-    private readonly Spring _bob = new(0, 185, 0.72, 0.004);     // 上下弹跳
-    private readonly Spring _sway = new(0, 95, 0.82, 0.004);     // 左右摆
-
-    // ---------- 每帧复用（2026-11-24）----------
-    // Draw/Step 在 pet 视图下每帧都跑。这里的数组/列表/字型以前每帧 new 一遍（sides、弹簧数组、
-    // centers、FontFamily+Typeface），现在只建一次：静止的 pet 视图每帧不再为它们分配。
-    private static readonly int[] TwoSides = { -1, 1 };
-    private static readonly int[] MonoSides = { 0 };
-    private readonly Spring[] _springs;              // Step 每帧整体推进一遍
-    private readonly List<Point> _centers = new(2);  // 各眼中心（腮红 / 汗滴 / Zzz 取用）
-
-    // 困倦 "z" 的粗体字型：缓存一份（原来每帧 new FontFamily + new Typeface，一帧三只 z）
-    private static readonly Typeface ZzzFace = new(
-        new FontFamily("Segoe UI, Microsoft YaHei UI"), FontStyles.Normal, FontWeights.Bold, FontStretches.Normal);
-
-    public PetFace()
-    {
-        _springs = new[] { _ex, _ey, _lh, _rh, _tired, _wide, _morph, _blush, _squash, _bob, _sway };
-    }
+    private readonly Spring _squash = new(0, 260, 0.45, 0.003);
+    private readonly Spring[] _springs;
+    public PetFace() { _springs = new[] { _ex, _ey, _lh, _rh, _tired, _wide, _morph, _blush, _squash }; }
 
     private string _mood = "default";
     private string _lastMood = "";
     private bool _near;
     private double _lastAttention = Now;
     private double _surpriseUntil = 0;
-    private string _reactMood = "surprise";                       // 连环反应的当前表情
+    private string _reactMood = "surprise";
     private double _blinkAt = Now + 2.5;
-    private double _nextIdleGlance = Now + 2.2;                   // 下次闲置扫视
-    private double _idleGlanceUntil;                             // 扫视持续到什么时候
-    private double _idleLookX, _idleLookY;                       // 扫视落点
-    private double _nextIdleMotion = Now + 3.0;                   // 下次闲置小动作（弹跳/侧摆）
-    private double _nextIdleWink = Now + Random.Shared.NextDouble() * 10 + 5;  // 下次闲置眨眼
-    private double _idleWinkUntil;                               // 闲置眨眼持续到什么时候
+    private bool _doubleBlink;
+    private double _nextIdleGlance = Now + 2.2;
+    private double _idleGlanceUntil;
+    private double _idleLookX, _idleLookY;
+    private double _nextIdleWink = Now + Random.Shared.NextDouble() * 10 + 5;
+    private double _idleWinkUntil;
     private double _t = Now;
 
     public double Spread { get; set; } // 被按压时两眼额外分开
     public double Tilt { get; set; }   // 被按压时每只眼倾斜角
 
-    /// <summary>
-    /// 款式（8 款，与 mac 版 src/Island.Avalonia/PetFaceAv.cs 一一对应）：
-    /// classic 经典双眼 / mono 独眼 / cat 猫咪（耳朵+胡须）/ robot 机器人（方眼+天线）/ pixel 像素；
-    /// alien 外星人（第 6 款，圆眼+高光微眸+触角）/ ghost 幽灵（第 7 款，独立分支 DrawGhost）/
-    /// frog 青蛙（第 8 款，圆眼+瞳孔+平嘴）。
-    /// </summary>
+    /// <summary>款式：classic/mono/cat/robot/pixel/alien/ghost/frog。</summary>
     public string Style { get; set; } = "classic";
 
     // ---------- 情境感知（拓麻歌子式：对系统状态有反应；宿主每秒注入，纯读取零采集） ----------
@@ -77,13 +71,8 @@ public sealed class PetFace
     public double DiskActive { get; set; }
     /// <summary>眼睑遮罩色 = 本体表面色（宿主每帧注入，跟随主题）。</summary>
     public Color SurfaceColor { get; set; } = Color.FromRgb(16, 18, 24);
-    /// <summary>
-    /// 眼睛 / 嘴 / 天线的线色（宿主注入）。深色主题是亮白；浅色主题是深色 ——
-    /// 2026-11-24 视觉重做发现：浅色主题下眼睛是写死的亮白，整个融进白色玻璃里，小形象等于隐形。
-    /// </summary>
-    public Color EyeColor { get; set; } = Color.FromRgb(240, 244, 255);
 
-    /// <summary>当前心情：惊讶 > 互动 > 情境（高温/晕眩/深夜困倦）> 默认。</summary>
+    /// <summary>当前心情：惊讶/点击反馈 > 互动 > 情境（高温/晕眩/深夜困倦）> 默认。</summary>
     private string CurrentMood(double now, bool near)
     {
         if (now < _surpriseUntil) return _reactMood;
@@ -91,7 +80,7 @@ public sealed class PetFace
         if (CpuTemp is >= 85) return "hot";
         if (DiskActive >= 95) return "dizzy";
         if ((DateTime.Now.Hour >= 23 || DateTime.Now.Hour < 6) && now - _lastAttention > 30) return "sleepy";
-        if (now < _idleWinkUntil) return "wink";   // 闲置随机眨眼（优先级低于情境表情）
+        if (now < _idleWinkUntil) return "wink";
         return "default";
     }
 
@@ -103,22 +92,17 @@ public sealed class PetFace
         _lastAttention = now;
         if (kind == "surprise")
         {
-            // 连环反应：surprise → laugh → love → star → surprise（mac 版 PetFaceAv.cs L117-L130）
             _reactMood = now < _surpriseUntil
                 ? _reactMood switch { "surprise" => "laugh", "laugh" => "love", "love" => "star", _ => "surprise" }
                 : "surprise";
             _surpriseUntil = now + 1.4;
-            _wide.Kick(9);                                   // 睁大眼
-            _squash.Kick(-7.5);                              // 压扁一下
-            _bob.Kick(-34);                                  // 弹起来
-            _sway.Kick(Random.Shared.NextDouble() * 18 - 9);  // 随机侧摆
+            _wide.Kick(9);
+            _squash.Kick(-7.5);
         }
     }
 
     private void PickMood()
     {
-        // 与 mac 版一致：常态从前 7 个里随机挑；抽到与上次相同的就落到最后一个（laugh）。
-        // 这样 laugh 有明确来源（连续两次抽中同一表情），而不是凭空塞进来。
         int idx = Random.Shared.Next(Moods.Length - 1);
         string pick = Moods[idx];
         if (pick == _lastMood) pick = Moods[^1];
@@ -134,9 +118,7 @@ public sealed class PetFace
         if (near && !_near)
         {
             PickMood();
-            _squash.Kick(-4.2);                                  // 靠近时轻压一下
-            _bob.Kick(-20);                                      // 轻轻弹一下
-            _sway.Kick(Math.Clamp(look.X / 18, -1, 1) * 10);      // 视线方向带一点侧摆
+            _squash.Kick(-4.2);
         }
         else if (!near && _near) _mood = "default";
         _near = near;
@@ -147,21 +129,13 @@ public sealed class PetFace
         {
             _idleLookX = Random.Shared.NextDouble() * 1.2 - 0.6;
             _idleLookY = Random.Shared.NextDouble() * 0.56 - 0.28;
-            _idleGlanceUntil = now + 0.22 + Random.Shared.NextDouble() * 0.28;   // 持续 0.22–0.5s
-            _nextIdleGlance = now + 3.0 + Random.Shared.NextDouble() * 4.0;      // 每 3–7s 一次
+            _idleGlanceUntil = now + 0.22 + Random.Shared.NextDouble() * 0.28;
+            _nextIdleGlance = now + 3.0 + Random.Shared.NextDouble() * 4.0;
         }
-        // 闲置随机眨眼（wink）
         if (!near && now >= _nextIdleWink)
         {
-            _idleWinkUntil = now + 0.42;                                          // 持续 0.42s
-            _nextIdleWink = now + 11.0 + Random.Shared.NextDouble() * 15.0;       // 每 11–26s 一次
-        }
-        // 闲置时的小幅弹跳 / 侧摆
-        if (!near && now >= _nextIdleMotion)
-        {
-            _bob.Kick(-8 - Random.Shared.NextDouble() * 7);
-            _sway.Kick(Random.Shared.NextDouble() * 22 - 11);
-            _nextIdleMotion = now + 5.0 + Random.Shared.NextDouble() * 5.0;
+            _idleWinkUntil = now + 0.42;
+            _nextIdleWink = now + 11.0 + Random.Shared.NextDouble() * 15.0;
         }
 
         string m = CurrentMood(now, near);
@@ -169,7 +143,6 @@ public sealed class PetFace
         double tx, ty;
         if (!near && Math.Abs(look.X) > 420)
         {
-            // 扫视期间保持落点，结束后回正；只叠加很轻的呼吸式眼动。
             bool glancing = now < _idleGlanceUntil;
             tx = (glancing ? _idleLookX : 0) + Math.Sin(now * 0.43) * 0.025;
             ty = (glancing ? _idleLookY : 0) + Math.Sin(now * 0.31) * 0.016;
@@ -184,90 +157,80 @@ public sealed class PetFace
         _wide.To(m switch { "star" => 0.3, "surprise" => 0.35, _ => 0 });
         _morph.To(m is "love" or "squint" or "pout" ? 1 : 0);
         _blush.To(m switch { "shy" => 1, "love" => 0.8, "happy" => 0.5, "laugh" => 0.6, "wink" => 0.5, _ => 0 });
-        _squash.To(0);   // 挤压弹簧只在被 Kick 时动，其余时间回 0
+        _squash.To(0);
         foreach (var sp in _springs) sp.Step(dt);
 
         double dur = 0.16 + 0.18 * _tired.Value;
         if (now >= _blinkAt + dur)
         {
-            double gap = 2.4 + (Math.Sin(now * 12.9898) * 0.5 + 0.5) * 3.2;
-            _blinkAt = now + gap * (_tired.Value > 0.3 ? 1.6 : 1.0);
+            if (!_doubleBlink && (m is "default" or "pout" or "shy" or "star") && Random.Shared.NextDouble() < 0.22)
+            {
+                _doubleBlink = true;
+                _blinkAt = now + 0.14;
+            }
+            else
+            {
+                _doubleBlink = false;
+                double gap = 2.4 + (Math.Sin(now * 12.9898) * 0.5 + 0.5) * 3.2;
+                _blinkAt = now + gap * (_tired.Value > 0.3 ? 1.6 : 1.0);
+            }
         }
         if (m is "default" or "pout" or "shy" or "star" && _blinkAt <= now && now < _blinkAt + dur)
             return Math.Sin((now - _blinkAt) / dur * Math.PI);
         return 0;
     }
 
-    /// <summary>
-    /// 画小形象。2026-11-24 起画刷/画笔全部取自 RenderKit 的冻结缓存，几何用完即 Freeze：
-    /// 录制绘制指令时，未冻结的 Freezable 会被原样再克隆一份挂进指令流（一帧十几个画刷/画笔/几何
-    /// 各克隆一次，全是只活一帧的垃圾）；冻结后录制直接引用缓存里的那一份，每帧零画刷/画笔分配。
-    /// 离屏分层窗口探针实测（2026-11-24，pet-classic）：整块重绘一帧的分配 31.1KB → 27.6KB。
-    /// 画法与参数未动。
-    /// </summary>
     public void Draw(DrawingContext dc, double cx, double cy, double s, double alpha, Point look, bool near)
     {
         double blink = Step(look, near);
-        string m = nowSurprise();
-        double now = Now;   // 本帧时间戳：新增的三款（alien/ghost/frog）动效用它
+        double now = Now;
+        string m = CurrentMood(now, _near);
         double tired = Easing.Clamp(_tired.Value, 0, 1);
         double wide = Easing.Clamp(_wide.Value, -0.3, 1);
         double morph = Easing.Clamp(_morph.Value, 0, 1);
-
-        // ---- 动效骨架（对齐 mac 版 PetFaceAv.cs L262-L283）----
-        // 挤压回弹：横向压扁、纵向拉长（mac：scaleX = 1 - sq*0.14，scaleY = 1 + sq*0.16）
         double sq = Easing.Clamp(_squash.Value, -0.45, 0.55);
         double scaleX = 1.0 - sq * 0.14;
         double scaleY = 1.0 + sq * 0.16;
-        // 呼吸起伏：2.2/s，困倦时放慢到 1.1/s
+
         double breathRate = m == "sleepy" ? 1.1 : 2.2;
         double breath = Math.Sin(now * breathRate);
         double breathY = breath * (m == "sleepy" ? 0.9 : 0.55) * s;
-        // 上下弹跳（弹簧）+ 大笑时的额外抖动；高温时整体高频抖动
-        double bounce = _bob.Value * s + (m == "laugh" ? Math.Sin(now * 12) * 0.8 * s : 0);
+        double bounce = m == "laugh" ? Math.Sin(now * 16) * 1.6 * s : 0;
         double jitterX = m == "hot" ? Math.Sin(now * 28) * 0.35 * s : 0;
-        double faceX = cx + jitterX + _sway.Value * s;   // 左右摆
+        double faceX = cx + jitterX;
         double faceY = cy + breathY + bounce;
-        double headParallax = _ex.Value * 2.2 * s;      // 头部视差（刘海 / 触角 / 天线共用）
+        double headParallax = _ex.Value * 2.2 * s;
 
         double baseW = 11 * s * scaleX * (1 + breath * 0.006);
         double baseH = 15 * s * scaleY * (1 + breath * 0.012);
         double gap = 15 * s * scaleX;
-        var eyeColor = Color.FromArgb((byte)(255 * alpha), EyeColor.R, EyeColor.G, EyeColor.B);   // 线色跟随主题
-        var glow = new Color { A = (byte)(90 * alpha), R = 120, G = 180, B = 255 };
+        var eyeColor = Color.FromArgb((byte)(255 * alpha), 240, 244, 255);
+        var glow = Color.FromArgb((byte)(90 * alpha), 120, 180, 255);
         var pink = Color.FromArgb((byte)(255 * alpha), 255, 92, 138);
-        var eyeBrush = RenderKit.BrushOf(eyeColor);   // 本帧用得最多的画刷，取一次
-        var centers = _centers;
-        centers.Clear();
+        Point leftC = default, rightC = default;
+        int cCount = 0;
 
-        // 款式参数：mono 单只大眼；robot 方眼角；cat 圆眼角 + 耳朵胡须；pixel 纯方块无光晕
-        int[] sides = Style == "mono" ? MonoSides : TwoSides;
+        var sides = Style == "mono" ? OneSide : TwoSides;
         double eyeW = baseW * (Style == "mono" ? 1.5 : 1);
         double eyeH = baseH * (Style == "mono" ? 1.15 : 1);
-        // 圆角半径系数：radFactor（圆角半径 = min(宽,高) × 系数）。
-        // alien / frog 是正圆眼 ⇒ 0.5（mac 版 PetFaceAv.cs L250-L259）。
-        // pixel 是纯方块眼 ⇒ 0（mac 版同值；Windows 原为 0.04，本轮对齐）。
         double radFactor = Style switch
         {
             "robot" => 0.18,
             "cat" => 0.5,
             "mono" => 0.46,
             "pixel" => 0,
-            "alien" => 0.5,   // mac 版第 6 款：正圆眼
-            "frog" => 0.5,    // mac 版第 8 款：正圆眼
+            "alien" => 0.5,
+            "frog" => 0.5,
             _ => 0.42,
         };
 
-        // 幽灵款（mac 版第 7 款）：不是"眼睛主体循环"里的变体，而是**整只形象单独画**，
-        // mac 侧同样是独立分支 PetFaceAv.cs L262-L266 → DrawGhost（L609-L714）。Windows 侧照此结构新建。
         if (Style == "ghost")
         {
             DrawGhost(dc, faceX, faceY, baseW, baseH, s, alpha, eyeColor, pink, m, blink, _ex.Value, _ey.Value, now);
             return;
         }
 
-        // 机器人天线（先画，压在眼睛后面）：顶灯呼吸闪烁；高温改橙红快闪；
-        // 惊讶或高温时从顶灯发散信号波环（mac 版 PetFaceAv.cs L268-L292）。
+        // 机器人天线（顶灯呼吸闪烁；高温或点击时发散信号波，高温改橙红快闪）
         if (Style == "robot")
         {
             var antPen = RenderKit.PenOf(eyeColor, 1.3 * s);
@@ -285,7 +248,7 @@ public sealed class PetFace
             if (now < _surpriseUntil || m == "hot")
             {
                 double waveT = (now * 2.2) % 1.0;
-                double wr = (2.8 + waveT * 5.2) * s;      // 半径 2.8s → 8.0s
+                double wr = (2.8 + waveT * 5.2) * s;
                 var wColor = m == "hot"
                     ? Color.FromArgb((byte)(170 * alpha * (1 - waveT)), 255, 120, 80)
                     : Color.FromArgb((byte)(160 * alpha * (1 - waveT)), 140, 200, 255);
@@ -293,32 +256,28 @@ public sealed class PetFace
             }
         }
 
-        // 外星人触角（mac 版第 6 款，PetFaceAv.cs L294-L310）：左右各一根，
-        // 随视线摆动 + 自呼吸式摆动，顶端一颗外晕 + 内芯的小灯。
+        // 外星人触角：随视线轻微摆动 + 顶端微光
         if (Style == "alien")
         {
             var apen = RenderKit.PenOf(eyeColor, 1.1 * s);
-            double sway = (_ex.Value * 0.9 + Math.Sin(now * 2.4) * 0.45) * s;   // 视线摆 + 呼吸式摆动
-            double pulse = 0.7 + 0.3 * Math.Sin(now * 3.6);                    // 顶端灯的呼吸
-            // headParallax 用 Draw 层的全局值（mac 侧同样取自整套视差系统）。
+            double sway = (_ex.Value * 0.9 + Math.Sin(now * 2.4) * 0.45) * s;
+            double pulse = 0.7 + 0.3 * Math.Sin(now * 3.6);
             foreach (int sd in TwoSides)
             {
-                double ax = faceX + headParallax + sd * baseW * 0.42;   // 根部
+                double ax = faceX + headParallax + sd * baseW * 0.42;
                 double ay = faceY - baseH * 0.62;
-                var tip = new Point(ax + sd * 2.2 * s + sway, ay - 4.4 * s);   // 终点（向外斜上）
+                var tip = new Point(ax + sd * 2.2 * s + sway, ay - 4.4 * s);
                 dc.DrawLine(apen, new Point(ax, ay), tip);
-                // 外晕（RGB 140,255,200，α = 110×alpha×pulse）+ 内芯（眼色）
                 dc.DrawEllipse(RenderKit.BrushOf(Color.FromArgb((byte)(110 * alpha * pulse), 140, 255, 200)),
                     null, new Point(tip.X, tip.Y - 0.8 * s), 2.3 * s, 2.3 * s);
                 dc.DrawEllipse(RenderKit.BrushOf(eyeColor), null, new Point(tip.X, tip.Y - 0.8 * s), 1.3 * s, 1.3 * s);
             }
         }
 
-        // 像素风：刘海 5 块（保留视差，mac 版 PetFaceAv.cs L312-L323）
+        // 像素风：刘海
         if (Style == "pixel")
         {
-            // ⚠️ mac 这里是写死的亮白；Windows 的线色由宿主按主题注入，这里用 EyeColor 跟随主题
-            var brow = RenderKit.BrushOf(Color.FromArgb((byte)(230 * alpha), EyeColor.R, EyeColor.G, EyeColor.B));
+            var brow = RenderKit.BrushOf(Color.FromArgb((byte)(230 * alpha), 240, 244, 255));
             for (int i = 0; i < 5; i++)
             {
                 double bx = faceX + headParallax - baseW * 0.95 + i * baseW * 0.48;
@@ -328,7 +287,6 @@ public sealed class PetFace
             }
         }
 
-        // 猫咪耳朵抖动：悬停 / 惊讶 / 开心时轻微抽动（mac 版 PetFaceAv.cs L326-L328）
         double earTwitch = (Style == "cat" && (near || m is "surprise" or "happy" or "laugh"))
             ? Math.Sin(now * 10) * 0.9 * s * (0.4 + Math.Min(1, Math.Abs(wide)))
             : 0;
@@ -337,22 +295,26 @@ public sealed class PetFace
         {
             double rx = faceX + side * (gap / 2 + baseW / 2 + Spread * s / 2) + _ex.Value * 5 * s;
             double ry = faceY + _ey.Value * 3 * s;
-            centers.Add(new Point(rx, ry));
-            double curious = 1 + 0.22 * Math.Max(0, _ex.Value * side);
+            if (cCount == 0) leftC = new Point(rx, ry);
+            else rightC = new Point(rx, ry);
+            cCount++;
+
+            double curious = 1 + 0.20 * Math.Max(0, _ex.Value * side) - 0.07 * Math.Max(0, -_ex.Value * side);
             double w = eyeW * (1 + 0.12 * wide) * (1 + 0.25 * blink);
             double h = eyeH * curious * (1 + 0.18 * wide) * (1 - 0.88 * blink);
             var eyeRect = RenderKit.SafeRect(rx - w / 2, ry - h / 2, w, Math.Max(1.6 * s, h));
 
-            // 光晕（像素款不要光晕——点阵屏没有渐变）。径向渐变按光晕色缓存（RenderKit.RadialBrushOf），
-            // 两只眼共用同一份：渐变是相对包围盒映射的，几何各画各的，不受共用影响
+            // 光晕（像素款不要光晕——点阵屏没有渐变；缓存画刷避免每帧 GC）
             if (Style != "pixel")
-                dc.DrawEllipse(RenderKit.RadialBrushOf(glow), null,
+            {
+                dc.DrawEllipse(GlowBrush(glow), null,
                     new Point(eyeRect.X + w / 2, eyeRect.Y + h / 2), w * 0.95, h * 0.75 + 3 * s);
+            }
 
-            // 猫咪耳朵（先于眼睛主体，与心情无关始终在场；带视差偏移与抽动）
+            // 猫咪耳朵（悬停/开心/惊讶时微抖，带视差）
             if (Style == "cat")
             {
-                double earShift = -_ex.Value * 1.4 * s;   // 随视线平移
+                double earShift = -_ex.Value * 1.4 * s;
                 var ear = new StreamGeometry();
                 using (var ctx = ear.Open())
                 {
@@ -361,14 +323,12 @@ public sealed class PetFace
                     ctx.LineTo(new Point(rx - w * 0.34 + earShift + side * earTwitch, eyeRect.Top - 6 * s - Math.Abs(earTwitch) * 0.5), true, false);
                 }
                 ear.Freeze();
-                dc.DrawGeometry(eyeBrush, null, ear);
+                dc.DrawGeometry(RenderKit.BrushOf(eyeColor), null, ear);
             }
 
             if (m == "love" && morph > 0.05)
             {
-                // 爱心眼：双跳心跳脉冲（mac 版 PetFaceAv.cs L378-L381）
-                double beat = Math.Pow(Math.Max(0, Math.Sin(now * 4.5)), 4) * 0.14
-                            + Math.Pow(Math.Max(0, Math.Sin(now * 4.5 - 0.55)), 6) * 0.09;
+                double beat = Math.Pow(Math.Max(0, Math.Sin(now * 4.5)), 4) * 0.14 + Math.Pow(Math.Max(0, Math.Sin(now * 4.5 - 0.55)), 6) * 0.09;
                 var heart = HeartPath(rx, ry, 15 * s * (1 + beat) * (0.6 + 0.4 * morph));
                 dc.DrawGeometry(RenderKit.BrushOf(pink), null, heart);
                 continue;
@@ -387,43 +347,24 @@ public sealed class PetFace
                 dc.DrawGeometry(null, RenderKit.PenOf(eyeColor, 2.6 * s), seg);
                 continue;
             }
-            // 晕眩（磁盘打满）：× 形眼
+            // 晕眩（磁盘打满）：旋转 × 形眼
             if (m == "dizzy")
             {
                 var xp = RenderKit.PenOf(eyeColor, 2.2 * s);
-                double ex = w * 0.28, ey = Math.Max(1.6 * s, h) * 0.28;
-                dc.DrawLine(xp, new Point(rx - ex, ry - ey), new Point(rx + ex, ry + ey));
-                dc.DrawLine(xp, new Point(rx + ex, ry - ey), new Point(rx - ex, ry + ey));
+                double ang = now * 5.0 * side;
+                double r = Math.Min(w, Math.Max(1.6 * s, h)) * 0.34;
+                double c1 = Math.Cos(ang + Math.PI * 0.25) * r, s1 = Math.Sin(ang + Math.PI * 0.25) * r;
+                double c2 = Math.Cos(ang + Math.PI * 0.75) * r, s2 = Math.Sin(ang + Math.PI * 0.75) * r;
+                dc.DrawLine(xp, new Point(rx - c1, ry - s1), new Point(rx + c1, ry + s1));
+                dc.DrawLine(xp, new Point(rx - c2, ry - s2), new Point(rx + c2, ry + s2));
                 continue;
             }
 
-            // 眼睛主体（圆角矩形，圆角随款式；radFactor = 0 的款式（pixel）画纯方块）
+            // 眼睛主体（直接画 RoundedRectangle）
             double rad = Math.Min(w, eyeRect.Height) * radFactor;
-            if (rad < 0.01)
-            {
-                dc.DrawRectangle(eyeBrush, null, eyeRect);
-            }
-            else
-            {
-                var eye = new StreamGeometry();
-                using (var ctx = eye.Open())
-                {
-                    ctx.BeginFigure(new Point(eyeRect.X + rad, eyeRect.Y), true, true);
-                    // 用 RoundedRect 生成后合并太复杂，这里直接画圆角矩形近似
-                    ctx.LineTo(new Point(eyeRect.Right - rad, eyeRect.Y), true, false);
-                    ctx.ArcTo(new Point(eyeRect.Right, eyeRect.Y + rad), new Size(rad, rad), 0, false, SweepDirection.Clockwise, true, false);
-                    ctx.LineTo(new Point(eyeRect.Right, eyeRect.Bottom - rad), true, false);
-                    ctx.ArcTo(new Point(eyeRect.Right - rad, eyeRect.Bottom), new Size(rad, rad), 0, false, SweepDirection.Clockwise, true, false);
-                    ctx.LineTo(new Point(eyeRect.X + rad, eyeRect.Bottom), true, false);
-                    ctx.ArcTo(new Point(eyeRect.X, eyeRect.Bottom - rad), new Size(rad, rad), 0, false, SweepDirection.Clockwise, true, false);
-                    ctx.LineTo(new Point(eyeRect.X, eyeRect.Y + rad), true, false);
-                    ctx.ArcTo(new Point(eyeRect.X + rad, eyeRect.Y), new Size(rad, rad), 0, false, SweepDirection.Clockwise, true, false);
-                }
-                eye.Freeze();
-                dc.DrawGeometry(eyeBrush, null, eye);
-            }
+            dc.DrawRoundedRectangle(RenderKit.BrushOf(eyeColor), null, eyeRect, rad, rad);
 
-            // 机器人：屏幕微扫描线（mac 版 PetFaceAv.cs L410-L416）
+            // 机器人：屏幕微扫描线
             if (Style == "robot" && eyeRect.Height > 5 * s)
             {
                 double scanY = eyeRect.Y + ((now * 14 * s) % eyeRect.Height);
@@ -431,7 +372,7 @@ public sealed class PetFace
                     new Point(eyeRect.X + 1.2 * s, scanY), new Point(eyeRect.Right - 1.2 * s, scanY));
             }
 
-            // 青蛙：跟随视线的深色瞳孔 + 白色高光点（mac 版第 8 款，PetFaceAv.cs L413-L423）
+            // 青蛙：跟随视线的瞳孔 + 高光点
             if (Style == "frog" && eyeRect.Height > 3.5 * s)
             {
                 double px = rx + _ex.Value * w * 0.16;
@@ -439,23 +380,18 @@ public sealed class PetFace
                 double pr = Math.Max(1.2 * s, w * 0.18);
                 dc.DrawEllipse(RenderKit.BrushOf(Color.FromArgb((byte)(235 * alpha), 28, 32, 42)), null,
                     new Point(px, py), pr, pr);
-                double hr = Math.Max(0.6 * s, pr * 0.32);
                 dc.DrawEllipse(RenderKit.BrushOf(Color.FromArgb((byte)(230 * alpha), 255, 255, 255)), null,
-                    new Point(px - pr * 0.35, py - pr * 0.35), hr, hr);
+                    new Point(px - pr * 0.35, py - pr * 0.35), Math.Max(0.6 * s, pr * 0.32), Math.Max(0.6 * s, pr * 0.32));
             }
-            // 独眼 / 外星人：高光微眸随视线微移（mac 版第 2/6 款共用同一段，PetFaceAv.cs L424-L431）。
-            else if ((Style == "mono" || Style == "alien") && eyeRect.Height > 5 * s)
+            else if (Style is "mono" or "alien" && eyeRect.Height > 5 * s)
             {
                 double hx = rx + _ex.Value * w * 0.14 - w * 0.14;
                 double hy = ry + _ey.Value * eyeRect.Height * 0.12 - eyeRect.Height * 0.18;
-                double hr = Math.Max(1.0 * s, w * 0.11);
                 dc.DrawEllipse(RenderKit.BrushOf(Color.FromArgb((byte)(150 * alpha), 160, 215, 255)), null,
-                    new Point(hx, hy), hr, hr);
+                    new Point(hx, hy), Math.Max(1.0 * s, w * 0.11), Math.Max(1.0 * s, w * 0.11));
             }
 
-            // 眼睑遮罩拆成两块（mac 版 PetFaceAv.cs L436-L452）：
-            // ① 困倦自上往下盖：高度 0.52×眼高，圆角 2；
-            // ② 开心自下往上顶：高度 0.44×眼高，圆角 w×0.46（弯弯笑眼）。
+            // 眼睑：困倦从上往下盖，开心/wink 从下往上顶出弯弯笑眼
             var lidBrush = RenderKit.BrushOf(Color.FromArgb((byte)(240 * alpha), SurfaceColor.R, SurfaceColor.G, SurfaceColor.B));
             if (tired > 0.01)
             {
@@ -472,9 +408,9 @@ public sealed class PetFace
                     dc.DrawRoundedRectangle(lidBrush, null,
                         RenderKit.SafeRect(eyeRect.X - 1, eyeRect.Bottom - cheekH, w + 2, cheekH + 1), w * 0.46, w * 0.46);
             }
+
             if (m == "star" && eyeRect.Height > 6 * s)
             {
-                // 星星眼：双星交替闪烁（mac 版 PetFaceAv.cs L454-L461）
                 double tw1 = 0.8 + 0.28 * Math.Sin(now * 9.0);
                 double tw2 = 0.8 + 0.28 * Math.Cos(now * 9.0);
                 dc.DrawGeometry(RenderKit.BrushOf(Color.FromArgb((byte)(220 * alpha), 20, 20, 26)), null,
@@ -484,56 +420,27 @@ public sealed class PetFace
             }
         }
 
-        // 情境附加：高温汗滴（右眼旁，循环下落）/ 深夜困倦 Zzz（右上飘升）
-        // 抽成独立方法：幽灵款走自己的绘制分支，但要复用同一套情境反应
-        // （mac 侧同样是 DrawContextEffects，PetFaceAv.cs L493-L552）。
-        DrawContextEffects(dc, centers, s, alpha, eyeColor, pink, m);
+        Point lastC = cCount > 1 ? rightC : leftC;
+        if (cCount > 0) DrawContextEffects(dc, leftC, lastC, s, alpha, eyeColor, pink, m, now);
 
-        // 腮红（两眼各一点；mono 款只有一只眼 ⇒ 只画第一点，与原来 centers.Zip({-1,1}) 的配对结果一致）
+        // 腮红
         double bl = Easing.Clamp(_blush.Value, 0, 1);
-        if (bl > 0.02)
+        if (bl > 0.02 && cCount > 0)
         {
             var blushBrush = RenderKit.BrushOf(Color.FromArgb((byte)(150 * bl * alpha), 255, 124, 162));
-            for (int i = 0; i < centers.Count && i < TwoSides.Length; i++)
-                dc.DrawEllipse(blushBrush, null,
-                    new Point(centers[i].X + TwoSides[i] * 7.5 * s, centers[i].Y + baseH * 0.55), 4.4 * s, 2.4 * s);
+            dc.DrawEllipse(blushBrush, null, new Point(leftC.X - 7.5 * s, leftC.Y + baseH * 0.55), 4.4 * s, 2.4 * s);
+            if (cCount > 1)
+                dc.DrawEllipse(blushBrush, null, new Point(rightC.X + 7.5 * s, rightC.Y + baseH * 0.55), 4.4 * s, 2.4 * s);
         }
 
-        // 嘴
+        // 动态嘴型
         double mx = faceX + _ex.Value * 3.8 * s, my = faceY + baseH * 0.66 + _ey.Value * 3 * s;
-        var mouth = new StreamGeometry();
-        using (var ctx = mouth.Open())
-        {
-            // 青蛙嘴更宽（13*s，其余款式 7*s）；mac 版第 8 款，PetFaceAv.cs L571。
-            double mw = (Style == "frog" ? 13 : 7) * s;
-            if (Style == "cat" && (m == "default" || m == "happy" || m == "shy" || m == "wink"))
-            {
-                // 猫咪经典 ω 嘴：两段二次贝塞尔（mac 版 PetFaceAv.cs L583-L588）
-                ctx.BeginFigure(new Point(mx - mw * 0.52, my - 0.3 * s), false, false);
-                ctx.QuadraticBezierTo(new Point(mx - mw * 0.26, my + 3.2 * s), new Point(mx, my + 0.2 * s), true, false);
-                ctx.QuadraticBezierTo(new Point(mx + mw * 0.26, my + 3.2 * s), new Point(mx + mw * 0.52, my - 0.3 * s), true, false);
-            }
-            else if (Style == "frog" && (m == "default" || m == "shy"))
-            {
-                // 青蛙：平直横线嘴（mac 版第 8 款，PetFaceAv.cs L590-L594）
-                ctx.BeginFigure(new Point(mx - mw / 2, my), false, false);
-                ctx.LineTo(new Point(mx + mw / 2, my), true, false);
-            }
-            else
-            {
-                // 其余款式（含外星人）：通用二次贝塞尔嘴（大笑更深）
-                ctx.BeginFigure(new Point(mx - mw / 2, my), false, false);
-                ctx.QuadraticBezierTo(new Point(mx, my + (m == "laugh" ? 7.8 : 4.2) * s),
-                                      new Point(mx + mw / 2, my), true, false);
-            }
-        }
-        mouth.Freeze();
-        dc.DrawGeometry(null, RenderKit.PenOf(eyeColor, 1.8 * s), mouth);
+        DrawMouth(dc, mx, my, s, eyeColor, m, now);
 
-        // 猫咪胡须（嘴角两侧各两根）；透明度 0.67×alpha（mac 版 PetFaceAv.cs L490）
+        // 猫咪胡须（嘴角两侧各两根）
         if (Style == "cat")
         {
-            var wp = RenderKit.PenOf(Color.FromArgb((byte)(170 * alpha), eyeColor.R, eyeColor.G, eyeColor.B), 1.1 * s);
+            var wp = RenderKit.PenOf(eyeColor, 1.1 * s, 0.67 * alpha);
             foreach (int side in TwoSides)
             {
                 double wx = faceX + side * (gap / 2 + baseW + 3 * s);
@@ -543,26 +450,14 @@ public sealed class PetFace
         }
     }
 
-    /// <summary>
-    /// 情境附加反应（对齐 mac 版 PetFaceAv.cs 的 DrawContextEffects L517-L556）：
-    /// 高温流汗（眼旁循环下落的汗滴）/ 深夜困倦 Zzz（右上飘升）/
-    /// 晕眩黄色星屑（头顶绕圈）/ 上浮爱心 / 浮空星屑。
-    /// 从主绘制流程里抽成独立方法，幽灵款（独立分支）复用同一套反应。
-    /// </summary>
-    private void DrawContextEffects(DrawingContext dc, List<Point> centers, double s, double alpha, Color eyeColor, Color pink, string m)
+    private static void DrawContextEffects(DrawingContext dc, Point lp, Point rp, double s, double alpha, Color eyeColor, Color pink, string m, double now)
     {
-        double now = Now;
-        if (centers.Count == 0) return;
-        Point lp = centers[0];    // 左眼（mono 只有一只，两端取同一个）
-        Point rp = centers[^1];   // 右眼
         if (m == "hot")
         {
             double fall = (now % 1.6) / 1.6;
             double dropX = rp.X + 8 * s, dropY = rp.Y - 12 * s + fall * 9 * s;
-            // 透明度随 fall 连续变：按颜色走缓存即可（整段下落不到 90 种透明度，够不到缓存上限）
             var dropColor = Color.FromArgb((byte)(220 * alpha * (1 - fall * 0.4)), 130, 205, 255);
-            var dropBrush = RenderKit.BrushOf(dropColor);
-            dc.DrawEllipse(dropBrush, null, new Point(dropX, dropY), 2.2 * s, 2.4 * s);
+            dc.DrawEllipse(RenderKit.BrushOf(dropColor), null, new Point(dropX, dropY), 2.2 * s, 2.4 * s);
             var tip = new StreamGeometry();
             using (var ctx = tip.Open())
             {
@@ -571,7 +466,7 @@ public sealed class PetFace
                 ctx.LineTo(new Point(dropX + 1.9 * s, dropY - 0.8 * s), true, false);
             }
             tip.Freeze();
-            dc.DrawGeometry(dropBrush, null, tip);
+            dc.DrawGeometry(RenderKit.BrushOf(dropColor), null, tip);
         }
         else if (m == "sleepy")
         {
@@ -580,10 +475,9 @@ public sealed class PetFace
                 double zt = ((now / 2.4) + i * 0.33) % 1;
                 double zx = rp.X + 12 * s + i * 5.5 * s + Math.Sin(now * 2 + i) * 1.2 * s;
                 double zy = rp.Y - 12 * s - zt * 12 * s;
-                // 字号随 zt 连续变，FormattedText 没法缓存（每帧仍建 3 个）；字型和画刷不再每帧建
                 var zt2 = new FormattedText("z", System.Globalization.CultureInfo.CurrentCulture,
                     FlowDirection.LeftToRight,
-                    ZzzFace,
+                    new Typeface(new FontFamily("Segoe UI"), FontStyles.Normal, FontWeights.Bold, FontStretches.Normal),
                     (6 + 4 * zt) * s,
                     RenderKit.BrushOf(Color.FromArgb((byte)(200 * alpha * (1 - zt * 0.5)), eyeColor.R, eyeColor.G, eyeColor.B)), 1);
                 dc.DrawText(zt2, new Point(zx, zy));
@@ -591,7 +485,6 @@ public sealed class PetFace
         }
         else if (m == "dizzy")
         {
-            // 晕眩：头顶两颗黄色星屑绕圈转（mac 版 PetFaceAv.cs L536-L544）
             double midX = (lp.X + rp.X) * 0.5, topY = Math.Min(lp.Y, rp.Y) - 12.5 * s;
             for (int i = 0; i < 2; i++)
             {
@@ -604,7 +497,6 @@ public sealed class PetFace
         }
         else if (m == "love")
         {
-            // 上浮爱心（mac 版 PetFaceAv.cs L545-L551）
             double t1 = (now * 0.9) % 1.0;
             double hx = rp.X + 9 * s + Math.Sin(now * 4) * 1.4 * s;
             double hy = rp.Y - 4 * s - t1 * 11 * s;
@@ -613,28 +505,71 @@ public sealed class PetFace
         }
         else if (m == "star")
         {
-            // 浮空星屑（mac 版 PetFaceAv.cs L552-L556）
             double tw = 0.6 + 0.4 * Math.Sin(now * 8);
             var sc = Color.FromArgb((byte)(195 * alpha * tw), 255, 235, 145);
             dc.DrawGeometry(RenderKit.BrushOf(sc), null, SparklePath(rp.X + 10 * s, rp.Y - 8 * s, 2.2 * s * tw));
         }
     }
 
-    /// <summary>
-    /// 幽灵款（mac 版第 7 款）：无头无四肢的单块填充轮廓 + 深墨色小圆眼。
-    /// 对应 mac 源码 src/Island.Avalonia/PetFaceAv.cs 的 DrawGhost（L609-L714）——
-    /// mac 侧在 Draw 开头就 return，Windows 侧照此结构新建一个等价分支。
-    /// </summary>
+    private void DrawMouth(DrawingContext dc, double mx, double my, double s, Color eyeColor, string m, double now)
+    {
+        var pen = RenderKit.PenOf(eyeColor, 1.8 * s);
+        if (m == "surprise")
+        {
+            dc.DrawEllipse(null, pen, new Point(mx, my + 1.2 * s), 2.2 * s, 2.6 * s);
+            return;
+        }
+        if (m == "sleepy")
+        {
+            double yawn = 0.5 + 0.5 * Math.Sin(now * 1.6);
+            dc.DrawEllipse(null, pen, new Point(mx, my + 1.2 * s), 1.6 * s, (1.0 + 1.4 * yawn) * s);
+            return;
+        }
+        var mouth = new StreamGeometry();
+        using (var ctx = mouth.Open())
+        {
+            double mw = Style == "frog" ? 13 * s : 7 * s;
+            if (m == "pout")
+            {
+                ctx.BeginFigure(new Point(mx - mw * 0.45, my + 2 * s), false, false);
+                ctx.QuadraticBezierTo(new Point(mx, my - 2.2 * s), new Point(mx + mw * 0.45, my + 2 * s), true, false);
+            }
+            else if (m is "hot" or "dizzy")
+            {
+                ctx.BeginFigure(new Point(mx - mw * 0.5, my + 0.5 * s), false, false);
+                ctx.QuadraticBezierTo(new Point(mx - mw * 0.25, my - 1.5 * s), new Point(mx, my + 0.5 * s), true, false);
+                ctx.QuadraticBezierTo(new Point(mx + mw * 0.25, my + 2.5 * s), new Point(mx + mw * 0.5, my + 0.5 * s), true, false);
+            }
+            else if (Style == "cat" && m is "default" or "happy" or "shy" or "wink")
+            {
+                ctx.BeginFigure(new Point(mx - mw * 0.52, my - 0.3 * s), false, false);
+                ctx.QuadraticBezierTo(new Point(mx - mw * 0.26, my + 3.2 * s), new Point(mx, my + 0.2 * s), true, false);
+                ctx.QuadraticBezierTo(new Point(mx + mw * 0.26, my + 3.2 * s), new Point(mx + mw * 0.52, my - 0.3 * s), true, false);
+            }
+            else if (Style == "frog" && m is "default" or "shy")
+            {
+                ctx.BeginFigure(new Point(mx - mw / 2, my), false, false);
+                ctx.LineTo(new Point(mx + mw / 2, my), true, false);
+            }
+            else
+            {
+                double depth = m == "laugh" ? 7.8 * s : 4.2 * s;
+                ctx.BeginFigure(new Point(mx - mw / 2, my), false, false);
+                ctx.QuadraticBezierTo(new Point(mx, my + depth), new Point(mx + mw / 2, my), true, false);
+            }
+        }
+        mouth.Freeze();
+        dc.DrawGeometry(null, pen, mouth);
+    }
+
     private void DrawGhost(DrawingContext dc, double cx, double cy, double baseW, double baseH,
         double s, double alpha, Color eyeColor, Color pink, string mood, double blink, double ex, double ey, double now)
     {
         double w = baseW * 2.05, h = baseH * 1.15;
-        double floatY = Math.Sin(now * 2.5) * 1.4 * s;          // 整体上下浮动
+        double floatY = Math.Sin(now * 2.5) * 1.4 * s;
         double top = cy - h * 0.62 + floatY;
         double by = top + h * 0.62;
 
-        // 身体：上半圆脑袋 + 3 段流动波浪底边（实心、无描边）
-        // ⚠️ 身体色是固定色 RGB(240,244,255)（α = 235×alpha），不跟随主题——与 mac 侧一致。
         var body = new StreamGeometry();
         using (var c = body.Open())
         {
@@ -644,34 +579,33 @@ public sealed class PetFace
             for (int i = 0; i < 3; i++)
             {
                 double xEnd = cx + w / 2 - (i + 1) * seg;
-                double waveY = by + Math.Sin(now * 4.5 + i * 1.6) * 1.1 * s;   // 流动起伏
+                double waveY = by + Math.Sin(now * 4.5 + i * 1.6) * 1.1 * s;
                 c.ArcTo(new Point(xEnd, i == 2 ? by : waveY), new Size(seg / 2, seg * 0.42), 0, false, SweepDirection.Clockwise, true, false);
             }
         }
         body.Freeze();
         dc.DrawGeometry(RenderKit.BrushOf(Color.FromArgb((byte)(235 * alpha), 240, 244, 255)), null, body);
 
-        // 两只深墨色小圆眼（眨眼压扁 + 困倦/晕眩/爱心/星星/眯眼的表情替换）
         double wide = Easing.Clamp(_wide.Value, -0.3, 1);
         double erX = 2.2 * s * (1 + 0.15 * wide) * (1 + 0.2 * blink);
         double erY = Math.Max(0.8 * s, 2.2 * s * (1 + 0.2 * wide) * (1 - 0.85 * blink));
         double exo = ex * 3 * s, eyo = ey * 2.2 * s;
         var darkInk = Color.FromArgb((byte)(235 * alpha), 40, 46, 62);
         var inkPen = RenderKit.PenOf(darkInk, 1.3 * s);
-        var centers = _centers;
+        Point firstEye = default, lastEye = default;
+        int idx = 0;
         foreach (int sd in TwoSides)
         {
             double rx = cx + sd * baseW * 0.48 + exo;
             double ry = top + h * 0.34 + eyo;
-            centers.Add(new Point(rx, ry));
+            if (idx++ == 0) firstEye = new Point(rx, ry);
+            lastEye = new Point(rx, ry);
             if (mood == "sleepy")
             {
-                // 困倦：水平线
                 dc.DrawLine(inkPen, new Point(rx - erX, ry), new Point(rx + erX, ry));
             }
             else if (mood == "dizzy")
             {
-                // 晕眩：旋转 × 形
                 double ang = now * 5.0 * sd;
                 double r = erX * 1.15;
                 double c1 = Math.Cos(ang + Math.PI * 0.25) * r, s1 = Math.Sin(ang + Math.PI * 0.25) * r;
@@ -681,31 +615,26 @@ public sealed class PetFace
             }
             else if (mood == "love")
             {
-                // 爱心（心跳脉冲）
                 double beat = Math.Pow(Math.Max(0, Math.Sin(now * 4.5)), 4) * 0.14;
                 dc.DrawGeometry(RenderKit.BrushOf(pink), null, HeartPath(rx, ry, 5.2 * s * (1 + beat)));
             }
             else if (mood == "star")
             {
-                // 四芒星（闪烁）
                 double tw = 0.85 + 0.25 * Math.Sin(now * 9.0);
                 dc.DrawGeometry(RenderKit.BrushOf(darkInk), null, SparklePath(rx, ry, 2.8 * s * tw));
             }
             else if (mood == "squint")
             {
-                // 眯眼：折线
                 int d = -sd; double k = 2.0 * s;
                 dc.DrawLine(inkPen, new Point(rx - d * k, ry - k), new Point(rx + d * k, ry));
                 dc.DrawLine(inkPen, new Point(rx + d * k, ry), new Point(rx - d * k, ry + k));
             }
             else
             {
-                // 默认：填充椭圆
                 dc.DrawEllipse(RenderKit.BrushOf(darkInk), null, new Point(rx, ry), erX, erY);
             }
         }
 
-        // 腮红（左右各一点）
         double bl = Easing.Clamp(_blush.Value, 0, 1);
         if (bl > 0.02)
         {
@@ -714,7 +643,6 @@ public sealed class PetFace
             dc.DrawEllipse(blushBrush, null, new Point(cx + baseW * 0.65 + exo, top + h * 0.48 + eyo), 2.8 * s, 1.5 * s);
         }
 
-        // 小嘴：惊讶 → 小椭圆；其余 → 二次贝塞尔（pout 上翘 / laugh 大笑 / 默认浅弧）
         if (mood == "surprise")
         {
             dc.DrawEllipse(null, inkPen, new Point(cx + exo, top + h * 0.50 + eyo), 1.6 * s, 2.0 * s);
@@ -734,11 +662,8 @@ public sealed class PetFace
             dc.DrawGeometry(null, inkPen, mouth);
         }
 
-        // 情境反应（高温汗滴 / 深夜 Zzz）与主流程共用
-        DrawContextEffects(dc, centers, s, alpha, eyeColor, pink, mood);
+        DrawContextEffects(dc, firstEye, new Point(lastEye.X + 4 * s, lastEye.Y), s, alpha, eyeColor, pink, mood, now);
     }
-
-    private string nowSurprise() => CurrentMood(Now, _near);
 
     private static StreamGeometry HeartPath(double cx, double cy, double size)
     {

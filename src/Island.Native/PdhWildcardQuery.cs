@@ -20,6 +20,7 @@ namespace Island.Native;
 /// 之后每次读再 collect 一次，差分即为速率。
 /// 一个查询只在一个线程里用（采样线程），不是线程安全的。
 /// </summary>
+[System.Runtime.Versioning.SupportedOSPlatform("windows")]
 internal sealed class PdhWildcardQuery : IDisposable
 {
     private IntPtr _query;
@@ -32,6 +33,12 @@ internal sealed class PdhWildcardQuery : IDisposable
     /// <summary>打开查询并加入一个通配符计数器路径（英文计数器名，如 `\GPU Engine(*)\Utilization Percentage`）。</summary>
     public bool Open(string wildcardPath)
     {
+        if (_query != IntPtr.Zero)
+        {
+            PdhCloseQuery(_query);
+            _query = IntPtr.Zero;
+            _counter = IntPtr.Zero;
+        }
         if (PdhOpenQueryW(null, IntPtr.Zero, out _query) != 0) { _query = IntPtr.Zero; return false; }
         if (PdhAddEnglishCounterW(_query, wildcardPath, IntPtr.Zero, out _counter) != 0)
         {
@@ -307,7 +314,7 @@ internal sealed class PdhWildcardQuery : IDisposable
         finally { if (buf != IntPtr.Zero) Marshal.FreeHGlobal(buf); }
     }
 
-    /// <summary>把一批实例名拼成宽字符串缓冲区，返回每个名字的指针。</summary>
+    /// <summary>把一批实例名拼成以 NUL 结尾的宽字符串缓冲区，返回每个名字的指针。</summary>
     private static IntPtr[] BuildNameBuffer(string[] names, out IntPtr buf)
     {
         int bytes = 2;
@@ -318,10 +325,13 @@ internal sealed class PdhWildcardQuery : IDisposable
         for (int i = 0; i < names.Length; i++)
         {
             ptrs[i] = buf + off;
-            for (int k = 0; k < names[i].Length; k++)
-                Marshal.WriteInt16(buf, off + k * 2, (short)names[i][k]);
-            off += (names[i].Length + 1) * 2;
+            string s = names[i] ?? "";
+            for (int k = 0; k < s.Length; k++)
+                Marshal.WriteInt16(buf, off + k * 2, (short)s[k]);
+            Marshal.WriteInt16(buf, off + s.Length * 2, 0);
+            off += (s.Length + 1) * 2;
         }
+        Marshal.WriteInt16(buf, off, 0);
         return ptrs;
     }
 
@@ -385,10 +395,60 @@ internal sealed class PdhWildcardQuery : IDisposable
         return list;
     }
 
+    /// <summary>零分配读取以非负整数命名的实例（如逻辑核 0..N-1），跳过 "_Total" 等非数字项。</summary>
+    public bool ReadIndexed(double[] target, double cap)
+    {
+        if (!IsOpen || target.Length == 0) return false;
+        if (PdhCollectQueryData(_query) != 0) return false;
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            uint size = _capacity;
+            uint status = PdhGetFormattedCounterArrayW(_counter, FormatDouble | FormatNoCap100, ref size, out uint count, _buffer);
+            if (status == MoreData) { Grow(size + 4096); continue; }
+            if (status != 0) return false;
+            Array.Clear(target, 0, target.Length);
+            bool any = false;
+            for (uint i = 0; i < count; i++)
+            {
+                int at = (int)(i * ItemSize);
+                uint itemStatus = (uint)Marshal.ReadInt32(_buffer, at + StatusOffset);
+                if (itemStatus is not (ValidData or NewData)) continue;
+                double value = BitConverter.Int64BitsToDouble(Marshal.ReadInt64(_buffer, at + ValueOffset));
+                if (!double.IsFinite(value)) continue;
+                if (!TryParseIndex(Marshal.ReadIntPtr(_buffer, at), out int idx)) continue;
+                if ((uint)idx >= (uint)target.Length) continue;
+                target[idx] = Math.Clamp(value, 0, cap);
+                any = true;
+            }
+            return any;
+        }
+        return false;
+    }
+
+    private static bool TryParseIndex(IntPtr text, out int index)
+    {
+        index = 0;
+        if (text == IntPtr.Zero) return false;
+        int acc = 0;
+        int digits = 0;
+        for (int i = 0; ; i++)
+        {
+            char c = (char)Marshal.ReadInt16(text, i * 2);
+            if (c == '\0') break;
+            if (c < '0' || c > '9' || digits >= 9) return false;
+            acc = acc * 10 + (c - '0');
+            digits++;
+        }
+        if (digits == 0) return false;
+        index = acc;
+        return true;
+    }
+
     /// <summary>宽字符串里找子串（大小写不敏感），不解码字符串 → 零分配。</summary>
     private static bool NameHas(IntPtr text, string needle)
     {
         if (text == IntPtr.Zero) return false;
+        if (string.IsNullOrEmpty(needle)) return true;
         int n = needle.Length;
         for (int i = 0; ; i++)
         {
@@ -420,8 +480,13 @@ internal sealed class PdhWildcardQuery : IDisposable
     private void Grow(uint size)
     {
         if (size <= _capacity) return;
-        if (_buffer != IntPtr.Zero) Marshal.FreeHGlobal(_buffer);
-        _buffer = Marshal.AllocHGlobal((int)size);
+        if (_buffer != IntPtr.Zero)
+        {
+            Marshal.FreeHGlobal(_buffer);
+            _buffer = IntPtr.Zero;
+            _capacity = 0;
+        }
+        _buffer = Marshal.AllocHGlobal((nint)size);
         _capacity = size;
     }
 

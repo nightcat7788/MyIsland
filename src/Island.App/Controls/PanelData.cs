@@ -1,49 +1,177 @@
+using System;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.IO;
+using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Windows;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using Island.App.Services;
 
 namespace Island.App.Controls;
 
-/// <summary>展开面板的 ViewModel：剪贴板/文件/控制（监控页、设备页均自绘直取服务，不走绑定）。</summary>
+/// <summary>展开面板的 ViewModel：剪贴板工作台 / 文件中转 / 控制页。</summary>
 public sealed class PanelData : INotifyPropertyChanged
 {
-    // ---------- 剪贴板历史 ----------
-    private System.Collections.ObjectModel.ObservableCollection<ClipboardRow> _clipboard = new();
-    public System.Collections.ObjectModel.ObservableCollection<ClipboardRow> Clipboard
+    // ---------- 剪贴板工作台（对齐 macOS 版分类筛选 / 缩略图 / 色块 / 常驻 / 单条删除） ----------
+    private ObservableCollection<ClipboardRow> _clipboard = new();
+    public ObservableCollection<ClipboardRow> Clipboard
     { get => _clipboard; set => Set(ref _clipboard, value); }
 
-    public sealed record ClipboardRow(string Time, string Preview, string Full, bool IsText)
+    private string _clipFilter = "all"; // all / common / link / code
+    public string ClipFilter
     {
-        public System.Windows.Media.Imaging.BitmapSource? Image { get; init; }
-        public ClipboardItem? Item { get; init; }
+        get => _clipFilter;
+        set
+        {
+            if (_clipFilter == value) return;
+            _clipFilter = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ClipFilter)));
+            UpdateClipboard(force: true);
+        }
+    }
+
+    public sealed class ClipboardRow
+    {
+        public required ClipboardItem Raw { get; init; }
+        public required string RelTime { get; init; }
+        public required string Preview { get; init; }
+        public required string Full { get; init; }
+        public required string Category { get; init; }
+        public required Brush DotBrush { get; init; }
+        public required FontFamily Font { get; init; }
+        public string LinesBadge { get; init; } = "";
+        public Visibility HasLinesBadge => string.IsNullOrEmpty(LinesBadge) ? Visibility.Collapsed : Visibility.Visible;
+        public bool Pinned { get; init; }
+        public string PinGlyph => Pinned ? "★" : "☆";
+        public double PinOpacity => Pinned ? 1.0 : 0.48;
+        public bool IsImage => Raw.Kind == "image";
+        public BitmapSource? Thumb { get; init; }
+        public Visibility HasThumb => Thumb is not null ? Visibility.Visible : Visibility.Collapsed;
+        public Brush? ColorSwatch { get; init; }
+        public Visibility HasSwatch => ColorSwatch is not null ? Visibility.Visible : Visibility.Collapsed;
+        public string ToolTipText => Raw.Kind == "image" ? Preview : (Full.Length > 600 ? Full[..600] + "\n…" : Full);
+    }
+
+    private static readonly FontFamily UiFont = new("Segoe UI, Microsoft YaHei UI");
+    private static readonly FontFamily MonoFont = new("Consolas, Microsoft YaHei UI");
+    private static readonly SolidColorBrush CommonDot = FrozenBrush(0x4F, 0xE3, 0xD7);
+    private static readonly SolidColorBrush LinkDot = FrozenBrush(0x30, 0xD1, 0x58);
+    private static readonly SolidColorBrush CodeDot = FrozenBrush(0xBD, 0x93, 0xF9);
+    private static readonly SolidColorBrush ImageDot = FrozenBrush(0x2E, 0x9B, 0xFF);
+
+    private static SolidColorBrush FrozenBrush(byte r, byte g, byte b)
+    {
+        var br = new SolidColorBrush(Color.FromRgb(r, g, b));
+        br.Freeze();
+        return br;
     }
 
     private DateTime _lastClipboardAt;
     private string _clipboardSig = "";
 
-    public void UpdateClipboard()
+    public void UpdateClipboard(bool force = false)
     {
-        if ((DateTime.Now - _lastClipboardAt).TotalSeconds < 2) return;
+        if (!force && (DateTime.Now - _lastClipboardAt).TotalSeconds < 2) return;
         _lastClipboardAt = DateTime.Now;
-        var items = Services.ClipboardService.Items;
-        if (items.Count == 0 && Clipboard.Count == 0) return;
-        // 签名（条数+最新一条）：无变化不重建集合，防闪烁
-        string sig = items.Count + "|" + (items.Count > 0 ? items[0].Preview + items[0].At.Ticks : "");
-        if (sig == _clipboardSig) return;
+        var items = ClipboardService.Items;
+        string sig = _clipFilter + "|" + items.Count + "|"
+            + string.Join(';', items.Take(8).Select(x => $"{x.Sequence}:{x.Pinned}:{x.At.Ticks}"));
+        if (!force && sig == _clipboardSig) return;
         _clipboardSig = sig;
+
+        // 常驻置顶排在前面，其余按时间倒序
+        var filtered = items
+            .Where(it => _clipFilter switch
+            {
+                "common" => it.Category is "common" or "color" or "image",
+                "link" => it.Category == "link",
+                "code" => it.Category == "code",
+                _ => true,
+            })
+            .OrderByDescending(it => it.Pinned)
+            .ThenByDescending(it => it.At)
+            .ToList();
+
         Clipboard.Clear();
-        foreach (var i in items)
-            Clipboard.Add(new ClipboardRow(i.At.ToString("HH:mm"), i.Preview, i.Full, i.Kind == "text") { Image = i.Image, Item = i });
+        foreach (var i in filtered)
+        {
+            Brush? swatch = null;
+            if (i.Category == "color" && !string.IsNullOrEmpty(i.HexColor))
+            {
+                try
+                {
+                    if (ColorConverter.ConvertFromString(i.HexColor) is Color hc)
+                    {
+                        var sb = new SolidColorBrush(hc);
+                        sb.Freeze();
+                        swatch = sb;
+                    }
+                }
+                catch { }
+            }
+
+            BitmapSource? thumb = null;
+            if (i.Kind == "image" && i.ImagePng is { Length: > 0 } png)
+            {
+                try
+                {
+                    using var ms = new MemoryStream(png);
+                    var bmp = new BitmapImage();
+                    bmp.BeginInit();
+                    bmp.CacheOption = BitmapCacheOption.OnLoad;
+                    bmp.DecodePixelWidth = 96;
+                    bmp.StreamSource = ms;
+                    bmp.EndInit();
+                    bmp.Freeze();
+                    thumb = bmp;
+                }
+                catch { }
+            }
+
+            Brush dot = i.Category switch
+            {
+                "link" => LinkDot,
+                "code" => CodeDot,
+                "image" => ImageDot,
+                "color" => swatch ?? CommonDot,
+                _ => CommonDot,
+            };
+
+            Clipboard.Add(new ClipboardRow
+            {
+                Raw = i,
+                RelTime = FormatRelTime(i.At),
+                Preview = i.Preview,
+                Full = i.Full,
+                Category = i.Category,
+                DotBrush = dot,
+                Font = i.Category == "code" ? MonoFont : UiFont,
+                LinesBadge = i.Lines > 1 && i.Kind == "text" ? $"+{i.Lines - 1} 行" : "",
+                Pinned = i.Pinned,
+                Thumb = thumb,
+                ColorSwatch = swatch,
+            });
+        }
         HasClipboard = items.Count > 0;
+    }
+
+    private static string FormatRelTime(DateTime at)
+    {
+        var d = DateTime.Now - at;
+        if (d.TotalSeconds < 60) return "刚刚";
+        if (d.TotalMinutes < 60) return $"{Math.Max(1, (int)d.TotalMinutes)}分钟前";
+        if (d.TotalHours < 24) return $"{(int)d.TotalHours}小时前";
+        return $"{(int)d.TotalDays}天前";
     }
 
     private bool _hasClipboard;
     public bool HasClipboard { get => _hasClipboard; set => Set(ref _hasClipboard, value); }
 
     // ---------- 文件中转 ----------
-    private System.Collections.ObjectModel.ObservableCollection<FileRow> _files = new();
-    public System.Collections.ObjectModel.ObservableCollection<FileRow> Files
+    private ObservableCollection<FileRow> _files = new();
+    public ObservableCollection<FileRow> Files
     { get => _files; set => Set(ref _files, value); }
 
     public sealed record FileRow(string Name, string Size, string Full);
@@ -51,19 +179,25 @@ public sealed class PanelData : INotifyPropertyChanged
     private DateTime _lastFileAt;
     private string _filesSig = "";
 
-    public void UpdateFiles()
+    public void UpdateFiles(bool force = false)
     {
-        if ((DateTime.Now - _lastFileAt).TotalSeconds < 2) return;
+        if (!force && (DateTime.Now - _lastFileAt).TotalSeconds < 2) return;
         _lastFileAt = DateTime.Now;
-        var items = Services.FileTrayService.Items;
-        if (items.Count == 0 && Files.Count == 0) return;
+        var items = FileTrayService.Items;
+        if (!force && items.Count == 0 && Files.Count == 0) return;
         string sig = string.Join('|', items.Select(f => f.Path + f.Bytes));
-        if (sig == _filesSig) return;
+        if (!force && sig == _filesSig) return;
         _filesSig = sig;
         Files.Clear();
         foreach (var f in items)
-            Files.Add(new FileRow(f.Name, Services.FileTrayService.FormatBytes(f.Bytes), f.Path));
+            Files.Add(new FileRow(f.Name, FileTrayService.FormatBytes(f.Bytes), f.Path));
         HasFiles = items.Count > 0;
+    }
+
+    public void ForceRefreshShelf()
+    {
+        UpdateClipboard(force: true);
+        UpdateFiles(force: true);
     }
 
     private bool _hasFiles;
@@ -72,17 +206,13 @@ public sealed class PanelData : INotifyPropertyChanged
     // ---------- 控制页 ----------
     private string _brightness = "--", _wlan = "--", _wlanAdapter = "--", _bt = "--";
     public string Brightness { get => _brightness; set => Set(ref _brightness, value); }
-    /// <summary>Wi-Fi 连接状态：已连接 / 未连接 / 状态未知（三态）。</summary>
     public string WlanState { get => _wlan; set => Set(ref _wlan, value); }
-    /// <summary>Wi-Fi 适配器开关状态：Wi-Fi 已开启 / Wi-Fi 已关闭 / Wi-Fi 状态未知（三态）。</summary>
     public string WlanAdapterState { get => _wlanAdapter; set => Set(ref _wlanAdapter, value); }
     public string BtState { get => _bt; set => Set(ref _bt, value); }
-    /// <summary>亮度进度条绑定值：必须走 Set() 发通知，否则面板上的进度条不会跟着「＋/－」刷新
-    /// （OneWay 绑定只在建立时取一次值，不实现 INPC 的属性不会再通知）。</summary>
+
     private double _brightnessValue;
     public double BrightnessValue { get => _brightnessValue; set => Set(ref _brightnessValue, value); }
 
-    // 音量 / 深色模式（宿主回调，面板不直接持有服务引用）
     private double _volumeValue;
     public double VolumeValue { get => _volumeValue; set => Set(ref _volumeValue, value); }
     private bool _isMuted;
@@ -92,7 +222,6 @@ public sealed class PanelData : INotifyPropertyChanged
     public void ApplyVolume(double v) { VolumeValue = v; OnSetVolume?.Invoke(v); }
     public void ApplyToggleMute() { IsMuted = !IsMuted; OnToggleMute?.Invoke(); }
 
-    // 麦克风静音（YASB Microphone 同款）
     private bool _micMuted;
     public bool MicMuted { get => _micMuted; set => Set(ref _micMuted, value); }
     public Action? OnToggleMicMute;
@@ -103,14 +232,12 @@ public sealed class PanelData : INotifyPropertyChanged
     public Action<bool>? OnSetLightTheme;
     public void ApplyLightTheme(bool light) { IsLightTheme = light; OnSetLightTheme?.Invoke(light); }
 
-    // 夜灯（不支持时卡片隐藏）
     private bool _nightLightOn, _hasNightLight;
     public bool NightLightOn { get => _nightLightOn; set => Set(ref _nightLightOn, value); }
     public bool HasNightLight { get => _hasNightLight; set => Set(ref _hasNightLight, value); }
     public Action<bool>? OnSetNightLight;
     public void ApplyNightLight(bool on) { NightLightOn = on; OnSetNightLight?.Invoke(on); }
 
-    // 鼠标穿透
     private bool _clickThrough;
     public bool ClickThrough { get => _clickThrough; set => Set(ref _clickThrough, value); }
     public Action<bool>? OnSetClickThrough;
@@ -125,7 +252,6 @@ public sealed class PanelData : INotifyPropertyChanged
     public System.Windows.Input.ICommand SleepCommand { get; private set; } = null!;
     public System.Windows.Input.ICommand OpenSettingsCommand { get; private set; } = null!;
 
-    /// <summary>接控制命令（App 侧注入，避免 PanelData 直接依赖 ControlService 不可测）。</summary>
     public void BindControls(
         System.Windows.Input.ICommand brightUp, System.Windows.Input.ICommand brightDown,
         System.Windows.Input.ICommand wlan, System.Windows.Input.ICommand bt,
@@ -138,46 +264,18 @@ public sealed class PanelData : INotifyPropertyChanged
         LockCommand = lockCmd; SleepCommand = sleepCmd; OpenSettingsCommand = openSettings;
     }
 
-    /// <summary>
-    /// 该机是否支持调亮度（不支持时**整行不出现** —— 与夜灯同一口径）。
-    /// 为什么要有这个：Dxva2 的亮度接口只对外接显示器/部分驱动有效，**笔记本内置屏读不到**；
-    /// 以前那一行照旧显示「不支持」+ 一对看起来能点的 −/+ 按钮，点了却静默失败。
-    /// </summary>
-    private bool _hasBrightness;
-    public bool HasBrightness { get => _hasBrightness; set => Set(ref _hasBrightness, value); }
-
-    /// <summary>
-    /// 本机是否支持传统睡眠（S3）。不支持（新型待机 S0 机器）时**「睡眠」按钮不出现**，
-    /// 同行给出原因 —— 与亮度的处理同一口径：不留一个点了没反应的按钮。
-    /// </summary>
-    private bool _supportsSleep;
-    public bool SupportsSleep { get => _supportsSleep; set => Set(ref _supportsSleep, value); }
-
-    /// <summary>睡眠那一行的行内说明（不支持时给出原因；空则不占位）。</summary>
-    private string _sleepNote = "";
-    public string SleepNote { get => _sleepNote; set => Set(ref _sleepNote, value); }
-
     public void UpdateControls()
     {
-        SupportsSleep = Services.ControlService.SupportsClassicSleep;
-        SleepNote = SupportsSleep ? "" : "本机为新型待机（S0）：无传统睡眠，空闲后系统会自动进入待机。";
-        var b = Services.ControlService.GetBrightness();
-        HasBrightness = b is not null;
+        var b = ControlService.GetBrightness();
         Brightness = b is null ? "不支持" : $"{b}%";
         if (b is { } v) BrightnessValue = v / 100.0;
         UpdateWlan();
-        // 这里读的是 bthserv 服务状态，不是 Win11 的蓝牙无线电开关，文案按"蓝牙服务"说
-        BtState = Services.ControlService.BluetoothEnabled ? "蓝牙服务运行中" : "蓝牙服务未运行";
+        BtState = ControlService.BluetoothEnabled ? "蓝牙服务运行中" : "蓝牙服务未运行";
     }
 
-    /// <summary>
-    /// Wi-Fi 状态：连接状态与适配器开关分开显示。
-    /// 以前直接渲染 WlanEnabled（那是适配器的"管理状态"），
-    /// "Wi-Fi 开着但没连热点"会被显示成"已连接"。
-    /// </summary>
     private void UpdateWlan()
     {
-        var (adapter, connected) = Services.ControlService.GetWlanState();
+        var (adapter, connected) = ControlService.GetWlanState();
         WlanState = connected switch { true => "已连接", false => "未连接", _ => "状态未知" };
         WlanAdapterState = adapter switch
         {
@@ -194,7 +292,4 @@ public sealed class PanelData : INotifyPropertyChanged
         field = value;
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
-
-    private static string FormatTokens(long n) =>
-        n >= 1_000_000 ? $"{n / 1e6:F1}M" : n >= 1000 ? $"{n / 1000:F0}K" : n.ToString();
 }

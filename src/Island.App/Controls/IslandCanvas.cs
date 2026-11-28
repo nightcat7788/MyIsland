@@ -3,31 +3,42 @@ using System.Windows.Media;
 using Island.App.Animation;
 using Island.App.Services;
 using Island.App.Themes;
-using Island.Core.Capabilities;
 using Island.Core.Monitoring;
 
 namespace Island.App.Controls;
 
 /// <summary>
-/// 液态岛自绘控件：画外形（胶囊+液桥+水滴）、毛玻璃底、收起态内容（时钟/小形象/信息胶囊/监控）。
-/// 所有尺寸/形变由宿主的弹簧驱动，本控件只按当前值渲染，不做布局。
-/// 本体位置由宿主以 BodyRect（窗口 DIP 坐标）注入。
-///
-/// 渲染层参考 BrimDeck（MoFeng2223/BrimDeck）的 MonitorDraw/MonitorStrip 手法：
-/// - FormattedText/Brush/Pen 全部按内容缓存并 Freeze，每帧只画不建（文本排版是重绘最贵部分）；
-/// - 读数数字按"最宽样本"预留宽度（"100%"/"125°"/"9.9M"），数值跳动时布局不动；
-/// - CPU/MEM/GPU 用 270° 开口表盘 + 字母（BrimDeck 的签名式 gauge）；
-/// - 走势图用 Catmull-Rom 平滑 + 16% 透明填充；
-/// - 读数分级配色：≥70% Warning、≥90% Critical（Up），正常保持文本色；
-/// - 小形象单独画在子级图层里（2026-11-24）：眼睛动画每帧只重画这一小块，不再牵动外壳重绘（见 InvalidatePet）。
+/// 灵动岛自绘控件（与 macOS 版 Island.Avalonia 视觉对齐）：
+/// - 外壳：默认启用 Vibe Island 式「刘海融合造型」（不透明底 + 顶部内凹圆弧 + 凹口描边 + 双耳微高光），
+///   关闭时退回不透明纯圆角药丸胶囊；
+/// - 时间胶囊（clock）：大号时间 + 基线对齐秒数 │ 日期·星期 │ 矢量天气图标 + 温度 + 城市；
+/// - 信息胶囊（combo）：时间 + C/M/G/D 360° 标识环与数字主角百分比 │ 温度组 │ 单行上下行网速；
+/// - 仪表盘（dash）：CPU 历史蓝青频谱柱 │ 剪贴板条数 │ 温度组 │ 占用环组 │ 电池 │ 设备电量环 │ 网速；
+/// - 同时保留 Windows 端扩展收起视图（pet / monitor / devices / clipboard / window）与音量/高温活动浮条。
 /// </summary>
 public sealed class IslandCanvas : FrameworkElement
 {
-    /// <summary>
-    /// 当前胶囊外壳的四角半径（贴边侧随液桥收缩成"近方角"）。
-    /// 视图自己画的胶囊底必须用同一套半径，否则两层轮廓不重合 ⇒ 贴边侧会露出一圈多余描边。
-    /// </summary>
-    private (double TL, double TR, double BR, double BL) _capsuleRadii;
+    // ============ 收起态统一四级字号阶梯（与 macOS 版一致） ============
+    private const double FontHero = 22;      // 主数值：时间胶囊的大号时间
+    private const double FontValue = 13;     // 数值：百分比 / 温度 / 网速 / 日期
+    private const double FontBody = 11.5;    // 正文：秒数 / 副标题
+    private const double FontLabel = 10;     // 标签：城市名 / 缩写
+
+    private const double ClockPadX = 18;
+    private const double ClockColGap = 14;
+    private const double ClockCityMaxW = 132;
+
+    private const double ComboPadX = 16;
+    private const double CompactIconBox = 12 * 0.9;
+    private const double CompactIconGap = 4;
+    private const double CompactTempGap = 10;
+    private const double TempLabelGap = 3;
+    private const double TempValueMinW = 22;
+    private const double CompactGroupGap = 11;
+
+    private const double DashPadX = 14;
+    private const double DashRing = 16;
+    private const double DashItemGap = 14;
 
     public static readonly DependencyProperty PaletteProperty =
         DependencyProperty.Register(nameof(Palette), typeof(Palette), typeof(IslandCanvas),
@@ -39,8 +50,7 @@ public sealed class IslandCanvas : FrameworkElement
 
     public static readonly DependencyProperty CompactViewProperty =
         DependencyProperty.Register(nameof(CompactView), typeof(string), typeof(IslandCanvas),
-            new FrameworkPropertyMetadata("pet", FrameworkPropertyMetadataOptions.AffectsRender,
-                (d, _) => ((IslandCanvas)d).ResetCompactMeasurement()));
+            new FrameworkPropertyMetadata("combo", FrameworkPropertyMetadataOptions.AffectsRender));
 
     public static readonly DependencyProperty SnapshotProperty =
         DependencyProperty.Register(nameof(Snapshot), typeof(MonitorSnapshot), typeof(IslandCanvas),
@@ -51,7 +61,7 @@ public sealed class IslandCanvas : FrameworkElement
     public string CompactView { get => (string)GetValue(CompactViewProperty); set => SetValue(CompactViewProperty, value); }
     public MonitorSnapshot? Snapshot { get => (MonitorSnapshot?)GetValue(SnapshotProperty); set => SetValue(SnapshotProperty, value); }
 
-    // 宿主注入的液态参数
+    // 宿主注入的形态与装饰参数
     public Rect BodyRect { get; set; }              // 窗口 DIP 坐标
     public double NeckStrength { get; set; } = 1;
     public double NeckStretch { get; set; }
@@ -60,186 +70,52 @@ public sealed class IslandCanvas : FrameworkElement
     public string Edge { get; set; } = "top";
     public Point LookPoint { get; set; }
     public bool PointerNear { get; set; }
-    public Brush? BackdropBrush { get; set; }      // 毛玻璃纹理（宿主按屏幕区域构造）
-    public bool IsIndicator { get; set; }          // 指示条模式（窗口最大化时）：只画呼吸底
+    public Brush? BackdropBrush { get; set; }
+    public bool IsIndicator { get; set; }
 
-    // 天气（收起态 clock 视图右缘）：宿主注入
-    public Services.WeatherInfo? Weather { get; set; }
+    /// <summary>收起态贴顶刘海造型（默认 false = 与 macOS 时间胶囊一致的悬浮纯圆角胶囊；true = 贴顶肩角刘海）。</summary>
+    public bool DecorNotch { get; set; } = false;
+    /// <summary>环内显示 C/M/G/D 字母标识（关=12×12 矢量图标）。</summary>
+    public bool DecorLetters { get; set; } = true;
+    /// <summary>信息胶囊数字主角样式（true=17px 粗体数字主角；false=经典同级版）。</summary>
+    public bool ComboNumericHero { get; set; } = true;
 
-    // 温度（收起态 dash 视图）：宿主注入（最近一次热快照）
-    public Services.ThermalSnapshot? Thermal { get; set; }
+    /// <summary>CPU 历史序列（0..1，供 dash 频谱柱渲染）。</summary>
+    public double[]? CpuHistory { get; set; }
+    public int CpuHistoryCount { get; set; }
 
-    /// <summary>前台窗口（进程名 + 标题，宿主每秒注入；活动窗口视图消费）。</summary>
+    /// <summary>当前系统媒体会话快照与实时音频律动频谱（供 media 胶囊渲染）。</summary>
+    public MediaSnapshot? Media { get; set; }
+    public double[]? AudioBars { get; set; }
+
+    public WeatherInfo? Weather { get; set; }
+    public ThermalSnapshot? Thermal { get; set; }
     public (string Proc, string Title)? ActiveWindow { get; set; }
-
-    /// <summary>麦克风使用中（宿主每秒注入）：收起态右上角画隐私绿点（L4 隐私点同款）。</summary>
     public bool MicActive { get; set; }
-
-    // 临时活动（音量指示等）：带过期时间，优先级最高
     public ActivityView? Activity { get; set; }
 
-    // dash 显示项过滤（null = 全部显示；宿主由 Settings.DashItems 注入）
     public HashSet<string>? DashItems { get; set; }
     private bool Want(string key) => DashItems is null || DashItems.Contains(key);
 
-    // combo 信息胶囊显示项过滤（rings/dials/clock/net）
     public HashSet<string>? ComboItems { get; set; }
     private bool WantCombo(string key) => ComboItems is null || ComboItems.Contains(key);
-
-    /// <summary>信息胶囊样式：true = 数字主角（时钟降为次级文字）。与设置中心的「数字主角」开关同源（mac 同名开关）。</summary>
-    public bool ComboNumericHero { get; set; }
 
     private readonly PetFace _pet = new();
     public PetFace Pet => _pet;
 
-    // ---------- 小形象图层（2026-11-24 渲染分层） ----------
-    // 小形象的眼睛按 24fps 连续动，外壳（液态玻璃）和其它输入却不动。以前每帧 InvalidateVisual()
-    // 把整块画布重录一遍：640×124 的分层窗口每帧都要把外壳的几何/渐变/毛玻璃底连同内容重新栅格化。
-    // 现在小形象单独画进子级 DrawingVisual，每帧只重录这一小块；外壳只在它自己的输入真的变了时才重画。
-    // 离屏分层窗口探针实测（2026-11-24，pet-classic，300 帧 × 4 轮取中位数，进程绑定单核）：
-    // 每帧 UI 线程的渲染通道 0.40ms → 0.17ms，每帧分配 31.1KB → 23.5KB。
-    // ⚠️ 子级永远画在父级内容之上：小形象不该露面的状态（切到别的视图 / 展开 / 指示条 / 临时活动
-    //    压在收起态内容上）必须显式把图层清空，否则旧的小形象会浮在新内容（如音量条）上面。
-    private readonly DrawingVisual _petLayer = new();
-    private bool _petLayerActive;          // 图层里此刻有小形象（false = 空绘制）
-    private bool _petDrawnSinceRender;     // 上次整块重绘之后，InvalidatePet 已经直接重画过图层
-    private static readonly Color _defaultEyeColor = Color.FromRgb(240, 244, 255);   // 深色主题下小形象的亮白线色
-
-    /// <summary>小形象的输入快照（位置 + 影响表情的量）：两次快照相同，图层就不必重画。</summary>
-    private (Point Center, Color Surface, Point Look, bool Near, string? Style, double Spread, double Tilt,
-        double? CpuTemp, double DiskActive) _petInputs;
-
-    /// <summary>
-    /// 外壳输入的快照：整块重绘（OnRender）时记一份，InvalidatePet 每次比对，全等才敢只重画小形象。
-    /// 这里列的都是普通 CLR 属性（不像 AffectsRender 的依赖属性会自动触发重绘）——宿主若只调
-    /// InvalidatePet()，漏掉任何一个，外壳就会停在旧的一帧（弹簧运动中 / 首帧本体矩形刚注入 / 临时活动刚过期）。
-    /// </summary>
-    private (Rect Body, double Squash, double Neck, double Stretch, double Drip, string? Edge,
-        bool Indicator, bool Mic, bool Overlay, ActivityView? Activity, Brush? Backdrop, double W, double H) _shellInputs;
-    private bool _rendered;                // 至少整块重绘过一次（之前快照无意义）
-
-    public IslandCanvas()
+    private double Ppd
     {
-        // AddVisualChild 只登记父子关系（DrawingVisual 不是 UIElement，布局/测量不碰它，所以不用 Remove）。
-        // 少了这一步，命中测试从图层沿 GetParent 上溯不到本控件，鼠标事件的路由源就不是本控件了。
-        AddVisualChild(_petLayer);
-    }
-
-    protected override int VisualChildrenCount => 1;
-    protected override Visual GetVisualChild(int index)
-        => index == 0 ? _petLayer : throw new ArgumentOutOfRangeException(nameof(index));
-
-    /// <summary>临时活动（音量/高温）此刻是否压在收起态内容上（带过期时间）。</summary>
-    private bool OverlayVisible => Activity is { } a && DateTime.Now < a.Until;
-
-    /// <summary>
-    /// 此刻小形象该不该露面：pet 视图、收起、非指示条、没有临时活动压在上面，且本体矩形已注入。
-    /// 最后一组条件与 OnRender 开头两处提前 return 同条件：外壳不画的时候，小形象更不能单独画出来
-    ///（否则首帧会看到一双眼睛悬在窗口左上角）。
-    /// </summary>
-    private bool PetShown(bool overlay)
-        => CompactView == "pet" && !IsExpanded && !IsIndicator && !overlay
-           && !(ActualWidth <= 0 || ActualHeight <= 0 || BodyRect.Width <= 0 || BodyRect.Height <= 0);
-
-    /// <summary>
-    /// 小形象帧：只重画小形象图层，不重画外壳（宿主在 pet 视图、收起、弹簧静止时每帧调它）。
-    /// 外壳的输入和上次整块重绘一致，才走"只重画图层"这条路；否则必须整块重绘，见方法内注释。
-    /// </summary>
-    public void InvalidatePet()
-    {
-        bool overlay = OverlayVisible;
-
-        if (!_rendered || ShellInputs(overlay) != _shellInputs)
+        get
         {
-            // 外壳的输入自上次整块重绘后变了（弹簧还在动 / 本体矩形刚注入 / 临时活动刚出现或刚过期）。
-            // 这时不能只补画小形象：子级压在父级内容之上，旧外壳或过期的音量条还留在画面上，
-            // 小形象会叠在它们上面。改为请求整块重绘，OnRender 会顺带把小形象同步进图层。
-            InvalidateVisual();
-            return;
+            try
+            {
+                double v = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+                return double.IsFinite(v) && v > 0 ? v : 1.0;
+            }
+            catch { return 1.0; }
         }
-
-        if (!PetShown(overlay))
-        {
-            // 小形象此刻不该露面（视图不是 pet / 展开 / 指示条 / 临时活动在前）：图层保持空白。
-            ClearPetLayer();
-            return;
-        }
-
-        DrawPetLayer(Palette ?? Palette.Dark);
     }
 
-    /// <summary>
-    /// 整块重绘时同步小形象图层：该露面就补画，不该露面就清空。
-    /// 刚被 InvalidatePet 用同一组输入直接重画过的不重画——宿主在弹簧运动期间会同时调
-    /// InvalidateVisual() + InvalidatePet()，这样一帧里小形象只前进一次
-    ///（PetFace.Draw 每调一次就按真实时间推一步弹簧，一帧推两步等于让眼睛走得偏快）。
-    /// </summary>
-    private void SyncPetLayer(Palette pal, bool overlay)
-    {
-        _shellInputs = ShellInputs(overlay);
-        _rendered = true;
-
-        if (!PetShown(overlay))
-        {
-            ClearPetLayer();
-            return;
-        }
-
-        if (!_petLayerActive || !_petDrawnSinceRender || PetInputs(pal) != _petInputs)
-            DrawPetLayer(pal);
-        _petDrawnSinceRender = false;
-    }
-
-    private (Rect Body, double Squash, double Neck, double Stretch, double Drip, string? Edge,
-        bool Indicator, bool Mic, bool Overlay, ActivityView? Activity, Brush? Backdrop, double W, double H)
-        ShellInputs(bool overlay)
-        => (BodyRect, Squash, NeckStrength, NeckStretch, DripRadius, Edge,
-            IsIndicator, MicActive, overlay, Activity, BackdropBrush, ActualWidth, ActualHeight);
-
-    private (Point Center, Color Surface, Point Look, bool Near, string? Style, double Spread, double Tilt,
-        double? CpuTemp, double DiskActive) PetInputs(Palette pal)
-    {
-        var r = SqueezedBody();
-        return (new Point(r.X + r.Width / 2, r.Y + r.Height / 2), pal.Surface, LookPoint, PointerNear,
-            _pet.Style, _pet.Spread, _pet.Tilt, _pet.CpuTemp, _pet.DiskActive);
-    }
-
-    /// <summary>
-    /// 本体矩形按挤压（Squash）缩放后的结果：高度按 Squash 缩放，保持中心。
-    /// 外壳、收起态内容、小形象图层共用这一个算法，三者才在同一套坐标上（挤压时小形象跟着本体居中）。
-    /// </summary>
-    private Rect SqueezedBody()
-    {
-        var r = BodyRect;
-        double squeezed = r.Height * Easing.Clamp(Squash, 0.5, 1.2);
-        return RenderKit.SafeRect(r.X, r.Y + (r.Height - squeezed) / 2, r.Width, squeezed);
-    }
-
-    /// <summary>把小形象重画进图层：替换的只有 _petLayer 这一个子级的绘制内容，外壳的绘制内容不动。</summary>
-    private void DrawPetLayer(Palette pal)
-    {
-        var r = SqueezedBody();
-        using (var dc = _petLayer.RenderOpen())
-        {
-            _pet.SurfaceColor = pal.Surface;   // 眼睑遮罩跟随主题
-            _pet.EyeColor = pal.IsDark ? _defaultEyeColor : pal.Text;   // 浅色主题下亮白的眼睛会融进玻璃里
-            _pet.Draw(dc, r.X + r.Width / 2, r.Y + r.Height / 2, 1.0, 1, LookPoint, PointerNear);
-        }
-        _petInputs = PetInputs(pal);
-        _petLayerActive = true;
-        _petDrawnSinceRender = true;
-    }
-
-    /// <summary>图层清空（空绘制）：小形象不该露面的每个转场都走这里，不清就是旧画面残留在新内容之上。</summary>
-    private void ClearPetLayer()
-    {
-        if (!_petLayerActive) return;
-        using (_petLayer.RenderOpen()) { }
-        _petLayerActive = false;
-    }
-
-    // ---------- 渲染助手：统一转发到 RenderKit（与展开页 MonitorPage 共享实现与缓存） ----------
-    private double Ppd => VisualTreeHelper.GetDpi(this).PixelsPerDip;
     private static Color LevelColor(double pct, Color normal, Palette pal) => RenderKit.LevelColor(pct, normal, pal);
     private static SolidColorBrush BrushOf(Color c) => RenderKit.BrushOf(c);
     private static SolidColorBrush Faint(Color c, double opacity) => RenderKit.Faint(c, opacity);
@@ -251,424 +127,290 @@ public sealed class IslandCanvas : FrameworkElement
     private static void Baseline(DrawingContext dc, FormattedText t, double x, double baseline)
         => RenderKit.Baseline(dc, t, x, baseline);
 
-    // ---------- 表盘 / 走势图：转发 RenderKit ----------
-    private static void Dial(DrawingContext dc, Point center, double size, double ring,
-        double? share, Color track, Color arc, Color letterColor, string letter, double ppd)
-        => RenderKit.Dial(dc, center, size, ring, share, track, arc, letterColor, letter, ppd);
+    // ---- 资源色与浅色主题 WCAG 对比度校正（与 macOS 版一致） ----
+    private static readonly Color CpuC = Color.FromRgb(0x2E, 0x9B, 0xFF);
+    private static readonly Color MemC = Color.FromRgb(0x4F, 0xE3, 0xD7);
+    private static readonly Color GpuC = Color.FromRgb(0xF2, 0x72, 0xA8);
+    private static readonly Color DiskC = Color.FromRgb(0x5F, 0xD3, 0xA0);
+    private static readonly Color BattC = Color.FromRgb(0x3F, 0xB8, 0xFF);
+    private static readonly Color NetC = Color.FromRgb(0x6F, 0xB8, 0xFF);
+    private static readonly Color DownC = Color.FromRgb(0x60, 0xC0, 0x78);
+    private static readonly Color UpC = Color.FromRgb(0xD8, 0x90, 0x78);
+
+    private enum Res { Cpu, Mem, Gpu, Disk, Batt, Net }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(Color, Palette), Color> _readableCache = new();
+
+    private static Color ResColor(Res r, Palette pal) => r switch
+    {
+        Res.Cpu => ReadableCached(CpuC, pal),
+        Res.Mem => ReadableCached(MemC, pal),
+        Res.Gpu => ReadableCached(GpuC, pal),
+        Res.Disk => ReadableCached(DiskC, pal),
+        Res.Batt => ReadableCached(BattC, pal),
+        _ => ReadableCached(NetC, pal),
+    };
+
+    private static Color ReadableCached(Color c, Palette pal)
+        => _readableCache.GetOrAdd((c, pal), static k => Readable(k.Item1, k.Item2));
+
+    private static Color Readable(Color c, Palette pal, double min = 3.0)
+    {
+        if (pal.IsDark) return c;
+        double bg = RelativeLuminance(pal.Surface);
+        if (ContrastRatio(RelativeLuminance(c), bg) >= min) return c;
+        var hsv = ColorToHsv(c);
+        for (int i = 1; i <= 12; i++)
+        {
+            double v = hsv.v * (1 - i * 0.07);
+            double s = Math.Min(1, hsv.s + i * 0.03);
+            var cand = ColorFromHsv(hsv.h, s, Math.Max(0.08, v));
+            if (ContrastRatio(RelativeLuminance(cand), bg) >= min) return cand;
+        }
+        return ColorFromHsv(hsv.h, Math.Min(1, hsv.s + 0.3), 0.15);
+    }
+
+    private static double RelativeLuminance(Color c)
+    {
+        static double Lin(byte b) { double x = b / 255.0; return x <= 0.03928 ? x / 12.92 : Math.Pow((x + 0.055) / 1.055, 2.4); }
+        return 0.2126 * Lin(c.R) + 0.7152 * Lin(c.G) + 0.0722 * Lin(c.B);
+    }
+
+    private static double ContrastRatio(double l1, double l2)
+    {
+        double a = Math.Max(l1, l2), b = Math.Min(l1, l2);
+        return (a + 0.05) / (b + 0.05);
+    }
+
+    private static (double h, double s, double v) ColorToHsv(Color c)
+    {
+        double r = c.R / 255.0, g = c.G / 255.0, b = c.B / 255.0;
+        double max = Math.Max(r, Math.Max(g, b)), min = Math.Min(r, Math.Min(g, b)), d = max - min;
+        double h = 0;
+        if (d > 0)
+        {
+            if (max == r) h = ((g - b) / d) % 6;
+            else if (max == g) h = (b - r) / d + 2;
+            else h = (r - g) / d + 4;
+            h *= 60; if (h < 0) h += 360;
+        }
+        return (h, max == 0 ? 0 : d / max, max);
+    }
+
+    private static Color ColorFromHsv(double h, double s, double v)
+    {
+        double c = v * s, x = c * (1 - Math.Abs((h / 60) % 2 - 1)), m = v - c;
+        (double r, double g, double b) = h switch
+        {
+            < 60 => (c, x, 0.0), < 120 => (x, c, 0.0), < 180 => (0.0, c, x),
+            < 240 => (0.0, x, c), < 300 => (x, 0.0, c), _ => (c, 0.0, x),
+        };
+        return Color.FromRgb(
+            (byte)Math.Clamp(Math.Round((r + m) * 255), 0, 255),
+            (byte)Math.Clamp(Math.Round((g + m) * 255), 0, 255),
+            (byte)Math.Clamp(Math.Round((b + m) * 255), 0, 255));
+    }
+
+    private static Color Mute(Color c, Color toward, double towardShare)
+        => Color.FromRgb(
+            (byte)Math.Clamp(Math.Round(c.R + (toward.R - c.R) * towardShare), 0, 255),
+            (byte)Math.Clamp(Math.Round(c.G + (toward.G - c.G) * towardShare), 0, 255),
+            (byte)Math.Clamp(Math.Round(c.B + (toward.B - c.B) * towardShare), 0, 255));
 
     // ---------- 主渲染 ----------
     protected override void OnRender(DrawingContext dc)
     {
         var pal = Palette ?? Palette.Dark;
-        // 小形象不在这里画：它在子级图层里（见 InvalidatePet）。整块重绘时顺手把图层同步到当前状态。
-        // "临时活动是否在前"整块重绘只看这一次表：图层的取舍与下面"画活动条还是画收起态内容"
-        // 必须基于同一时刻，否则恰好卡在过期瞬间会出一帧"音量条上叠着小形象"的画面。
-        bool overlay = OverlayVisible;
-        SyncPetLayer(pal, overlay);
-
         if (ActualWidth <= 0 || ActualHeight <= 0) return;
-        // 宿主还没注入本体矩形时（窗口首帧 Arrange 早于第一帧定时器）直接不画：
-        // 此时所有子元素的宽度/高度都会算成负数或零，画出来是错位且会抛异常
         if (BodyRect.Width <= 0 || BodyRect.Height <= 0) return;
 
-        // 挤压：高度按 Squash 缩放，保持中心（小形象图层用的是同一个矩形，见 SqueezedBody）
-        var r = SqueezedBody();
-        _bodyNow = r;
+        var r = BodyRect;
+        double squeezed = r.Height * Easing.Clamp(Squash, 0.5, 1.2);
+        r = RenderKit.SafeRect(r.X, r.Y + (r.Height - squeezed) / 2, r.Width, squeezed);
 
-        // 形态：收起=全胶囊（圆角=高度一半）；展开=26px 连续圆角面板（wisland 玻璃面板同款）
-        double corner = pal.SquareCorners ? Math.Min(3, r.Height / 2)
-            : IsExpanded ? 26 : r.Height / 2;
-        double fillet = 13;
-
-        // 贴边侧圆角随液桥强度收缩（液桥在场时贴边侧偏方，与液桥平滑衔接）
-        double attach = corner * (1 - Easing.Clamp(NeckStrength, 0, 1) * 0.85);
-        (double TL, double TR, double BR, double BL) radii = Edge switch
+        // 展开态 / 指示条模式（对齐 macOS DrawExpanded：独立悬浮圆角面板，不带刘海耳翼）
+        if (IsExpanded)
         {
-            "top"    => (attach, attach, corner, corner),
-            "bottom" => (corner, corner, attach, attach),
-            "left"   => (attach, corner, corner, attach),
-            "right"  => (corner, attach, attach, corner),
-            _ => (corner, corner, corner, corner),
-        };
-
-        _capsuleRadii = radii;
-
-        var geo = new GeometryGroup { FillRule = FillRule.Nonzero };
-        geo.Children.Add(LiquidGeometry.RoundedRect(r, radii.TL, radii.TR, radii.BR, radii.BL));
-
-        // 液桥锚定：本体贴合时边缘线就在本体贴边侧的边线上
-        (double line, double centerU) = Edge switch
-        {
-            "top"    => (r.Top, r.X + r.Width / 2),
-            "bottom" => (r.Bottom, r.X + r.Width / 2),
-            "left"   => (r.Left, r.Y + r.Height / 2),
-            "right"  => (r.Right, r.Y + r.Height / 2),
-            _ => (0, 0),
-        };
-        double length = Edge is "top" or "bottom" ? r.Width : r.Height;
-        var neck = LiquidGeometry.Neck(Edge, line, centerU, length, 0, NeckStretch, NeckStrength, fillet, corner);
-        if (neck is not null) geo.Children.Add(neck);
-        var drip = LiquidGeometry.Drip(Edge, line, centerU, DripRadius);
-        if (drip is not null) geo.Children.Add(drip);
-
-        // ---------- 液态毛玻璃（Liquid Glass）分层渲染 ----------
-        // ① 毛玻璃纹理底（壁纸模糊采样）
-        if (BackdropBrush is not null)
-            dc.DrawGeometry(BackdropBrush, null, geo);
-        // ② 主题色压层：降到 0.58（收起）让模糊底透出来；展开 0.74（玻璃面板感，卡片保可读）
-        dc.DrawGeometry(Faint(pal.Surface, IsExpanded ? 0.74 : 0.58), PenOf(pal.Rim, 1.0, 0.5), geo);
-        // ③ 顶部 sheen 高光带：白 12% → 45% 高度处消隐（液态玻璃的顶部反光）
-        if (!pal.SquareCorners && !IsIndicator && r.Width > 24 && r.Height > 16)
-        {
-            // 缓存的静态画刷（RenderKit.SheenBrush）：每帧新建渐变画刷与"每帧零分配"的设计声明不符
-            var sheen = RenderKit.SheenBrush;
-            // 高光带的顶角跟随外壳（贴边侧是近方角），否则角上会露出一条与外壳不贴合的亮月牙
-            var sheenGeo = LiquidGeometry.RoundedRect(
-                RenderKit.SafeRect(r.X + 1.5, r.Y + 1, Math.Max(4, r.Width - 3), Math.Max(2, r.Height * 0.45)),
-                radii.TL, radii.TR, 0, 0);
-            dc.DrawGeometry(sheen, null, sheenGeo);
+            double expCorner = pal.SquareCorners ? 3 : 20;
+            dc.DrawRoundedRectangle(Faint(Colors.Black, 0.24), null,
+                RenderKit.SafeRect(r.X, r.Y + 2, r.Width, r.Height), expCorner + 1, expCorner + 1);
+            dc.DrawRoundedRectangle(BrushOf(pal.Surface), PenOf(pal.Rim, 1.0, 0.50), r, expCorner, expCorner);
+            return;
         }
-        // ④ 底部内阴影（玻璃厚度感：底部 18% 处压一条暗带）
-        if (!pal.SquareCorners && !IsIndicator && r.Width > 24 && r.Height > 16)
+        if (IsIndicator)
         {
-            var shade = RenderKit.ShadeBrush;
-            var shadeGeo = LiquidGeometry.RoundedRect(
-                RenderKit.SafeRect(r.X + 1.5, r.Y + r.Height * 0.62, Math.Max(4, r.Width - 3), Math.Max(2, r.Height * 0.36)),
-                0, 0, radii.BR, radii.BL);
-            dc.DrawGeometry(shade, null, shadeGeo);
+            double indCorner = pal.SquareCorners ? 2 : r.Height / 2;
+            dc.DrawRoundedRectangle(Faint(pal.Surface, 0.92), PenOf(pal.Rim, 1.0, 0.5), r, indCorner, indCorner);
+            return;
         }
-        // ⑤ 高光边缘（rim light）：顶部 1px 渐隐白边，深主题下给胶囊玻璃厚度
-        if (pal.IsDark && !pal.SquareCorners)
-            dc.DrawGeometry(null, RenderKit.RimLightPen, geo);
 
-        // ⑥ 顶部辉光 + 细网格（2026-11-24 视觉重做，暗色科技）：深色主题的本体顶部中央透出一团强调色，
-        //    展开面板里再铺一层细网格，线本身就是径向渐变（离辉光中心越远越淡，相当于给网格加了径向遮罩）。
-        //    像素主题不铺网格（它的语言是点阵，不是线框）；指示条太小，不点灯。
-        //    读数类视图（读数带 / 信息胶囊 / 仪表盘 / 设备 / 活动窗口）会在下面再压一层底色，把这束光盖住，
-        //    所以它们的辉光由 DrawCapsuleBase 画在压层之上，这里不画（否则叠两遍）。
-        //    这一段只在外壳重绘时画（静止时不重绘），不给常驻帧率添成本。
-        bool veiled = CompactView is "monitor" or "combo" or "dash" or "devices" or "window";
-        if (pal.IsDark && !IsIndicator && r.Width > 60 && !(veiled && !IsExpanded))
+        double cy = r.Y + r.Height / 2;
+        bool notchDrawn = DecorNotch && Edge == "top" && !pal.SquareCorners
+            && DrawTopShoulderNotch(dc, pal, r, earR: Math.Min(11, r.Height * 0.28), botR: Math.Min(18, r.Height * 0.44));
+        if (!notchDrawn)
         {
-            dc.PushClip(geo);
-            bool expanded = IsExpanded && r.Height > 80;
-            dc.DrawRectangle(RenderKit.Spotlight(pal.Accent, expanded ? 0.20 : 0.15, expanded ? 0.95 : 1.5), null,
-                RenderKit.SafeRect(r.X, r.Y, r.Width, r.Height));
-            if (expanded && !pal.SquareCorners)
+            double corner = pal.SquareCorners ? Math.Min(3, r.Height / 2) : r.Height / 2;
+            // 柔和底影 + 不透明纯圆角药丸胶囊（1:1 复刻 macOS 时间胶囊立体悬浮质感）
+            if (!pal.SquareCorners)
             {
-                var fade = new RadialGradientBrush
-                {
-                    MappingMode = BrushMappingMode.Absolute,
-                    Center = new Point(r.X + r.Width / 2, r.Y), GradientOrigin = new Point(r.X + r.Width / 2, r.Y),
-                    RadiusX = r.Width * 0.62, RadiusY = r.Height * 1.05,
-                };
-                fade.GradientStops.Add(new GradientStop(RenderKit.Halo(pal.Text, 0.075), 0));
-                fade.GradientStops.Add(new GradientStop(RenderKit.Halo(pal.Text, 0), 1));
-                var pen = new Pen(fade, 1);
-                // 1px 的线落在像素中线上才清晰；从本体里侧起排，避免贴边的半格
-                for (double gx = Math.Round(r.X + 22) + 0.5; gx < r.Right - 8; gx += 22)
-                    dc.DrawLine(pen, new Point(gx, r.Top), new Point(gx, r.Bottom));
-                for (double gy = Math.Round(r.Y + 22) + 0.5; gy < r.Bottom - 8; gy += 22)
-                    dc.DrawLine(pen, new Point(r.Left, gy), new Point(r.Right, gy));
+                dc.DrawRoundedRectangle(Faint(Colors.Black, 0.26), null,
+                    RenderKit.SafeRect(r.X, r.Y + 1.5, r.Width, r.Height), corner, corner);
             }
-            dc.Pop();
+            dc.DrawRoundedRectangle(BrushOf(pal.Surface), PenOf(pal.Rim, 1.0, 0.50), r, corner, corner);
+            if (!pal.SquareCorners && r.Width > 24 && r.Height > 16)
+            {
+                dc.DrawRoundedRectangle(Faint(Colors.White, 0.038), null,
+                    RenderKit.SafeRect(r.X + 1, r.Y + 1, Math.Max(4, r.Width - 2), Math.Max(2, r.Height * 0.34)),
+                    Math.Max(1, corner - 1), Math.Max(1, corner - 1));
+            }
+            if ( DripRadius > 0.2 )
+            {
+                (double line, double centerU) = Edge switch
+                {
+                    "top" => (r.Top, r.X + r.Width / 2),
+                    "bottom" => (r.Bottom, r.X + r.Width / 2),
+                    "left" => (r.Left, r.Y + r.Height / 2),
+                    "right" => (r.Right, r.Y + r.Height / 2),
+                    _ => (0, 0),
+                };
+                var drip = LiquidGeometry.Drip(Edge, line, centerU, DripRadius);
+                if (drip is not null) dc.DrawGeometry(BrushOf(pal.Surface), null, drip);
+            }
         }
 
-        if (IsExpanded || IsIndicator) return;   // 展开面板由 XAML 画；指示条只留呼吸底
+        double contentCy = cy;
 
-        // 隐私点（iPhone/L4 同款）：麦克风使用中，胶囊右上角常绿点
+        // 隐私绿点（麦克风使用中）
         if (MicActive)
         {
-            double dotX = r.Right - r.Height * 0.42, dotY = r.Y + r.Height * 0.32;
-            dc.DrawEllipse(BrushOf(Color.FromRgb(0x3F, 0xC1, 0x5E)), null,
-                new Point(dotX, dotY), 3.4, 3.4);
-            dc.DrawEllipse(null, PenOf(Color.FromRgb(0x3F, 0xC1, 0x5E), 1.2, 0.45),
-                new Point(dotX, dotY), 5.2, 5.2);
+            double dotX = r.Right - r.Height * 0.38, dotY = r.Y + r.Height * 0.28;
+            dc.DrawEllipse(BrushOf(Color.FromRgb(0x3F, 0xC1, 0x5E)), null, new Point(dotX, dotY), 3.2, 3.2);
+            dc.DrawEllipse(null, PenOf(Color.FromRgb(0x3F, 0xC1, 0x5E), 1.1, 0.45), new Point(dotX, dotY), 5.0, 5.0);
         }
 
-        if (!IsExpanded)
+        if (Activity is { } act && DateTime.Now < act.Until)
+            DrawActivity(dc, pal, r, contentCy, act);
+        else
+            DrawCompact(dc, pal, r, contentCy);
+    }
+
+    /// <summary>
+    /// 真 MacBook 刘海贴顶造型（完全对齐 compact-notch.png / monitor.png 参考图）：
+    /// 顶边与屏幕上沿严丝合缝齐平，左右上角以反相圆弧耳翼（Shoulder Fillets）向外顺滑过渡至屏幕顶边，
+    /// 下方左右大圆角闭合，侧边与底边勾勒极淡 Rim 轮廓线（顶边不描线，与屏幕黑边融为一体）。
+    /// </summary>
+    private static bool DrawTopShoulderNotch(DrawingContext dc, Palette pal, Rect r, double earR, double botR)
+    {
+        if (r.Width < 44 || r.Height < 22) return false;
+        earR = Math.Clamp(earR, 4, Math.Min(16, r.Height * 0.4));
+        botR = Math.Clamp(botR, 6, Math.Min(26, Math.Min(r.Width / 2 - 2, r.Height - earR - 2)));
+
+        var fillGeo = new StreamGeometry();
+        using (var ctx = fillGeo.Open())
         {
-            // 临时活动优先（音量指示等，带过期时间）
-            if (overlay && Activity is { } act)
-                DrawActivity(dc, pal, r, act);
-            else
-            {
-                // 变形中（刚切到更宽 / 更高的视图，本体还在长）：内容按"最终的本体矩形"排版，裁进当前的本体 ——
-                // 胶囊长大时把最终的版面从中间揭开。以前内容按当前矩形排：信息胶囊的网速块贴着当前右缘、
-                // 与表盘叠成一团，装不下的部分直接溢出胶囊外面（小形象 10 秒后变形的那一下，每 40 秒出现一次；
-                // 2026-11-24 修复）。只管"变大"：缩小时内容本来就装得下，走原来的路径不变。
-                // 本体静止时最终矩形 = 当前矩形，同样走原来的路径 —— 画面与修复前逐像素相同。
-                var final = FinalBodyRect?.Invoke() ?? Rect.Empty;
-                if (final.Width > BodyRect.Width + 0.5 || final.Height > BodyRect.Height + 0.5)
-                {
-                    dc.PushClip(geo);
-                    DrawCompact(dc, pal, final);
-                    dc.Pop();
-                }
-                else
-                {
-                    dc.PushClip(geo);
-                    DrawCompact(dc, pal, r);
-                    dc.Pop();
-                }
-            }
+            ctx.BeginFigure(new Point(r.X - earR, r.Y), true, true);
+            ctx.LineTo(new Point(r.Right + earR, r.Y), false, false);
+            // 右上反圆角耳翼：圆心在 (r.Right + earR, r.Y + earR)，从顶点逆时针转 90° 到左点 (r.Right, r.Y + earR)
+            ctx.ArcTo(new Point(r.Right, r.Y + earR), new Size(earR, earR),
+                0, false, SweepDirection.Counterclockwise, false, false);
+            ctx.LineTo(new Point(r.Right, r.Bottom - botR), false, false);
+            ctx.ArcTo(new Point(r.Right - botR, r.Bottom), new Size(botR, botR),
+                0, false, SweepDirection.Clockwise, false, false);
+            ctx.LineTo(new Point(r.X + botR, r.Bottom), false, false);
+            ctx.ArcTo(new Point(r.X, r.Bottom - botR), new Size(botR, botR),
+                0, false, SweepDirection.Clockwise, false, false);
+            ctx.LineTo(new Point(r.X, r.Y + earR), false, false);
+            // 左上反圆角耳翼：圆心在 (r.X - earR, r.Y + earR)，从右点逆时针转 90° 回到顶点 (r.X - earR, r.Y)
+            ctx.ArcTo(new Point(r.X - earR, r.Y), new Size(earR, earR),
+                0, false, SweepDirection.Counterclockwise, false, false);
         }
+        fillGeo.Freeze();
+        dc.DrawGeometry(BrushOf(pal.Surface), null, fillGeo);
+
+        // 仅沿左耳翼 → 左壁 → 底边 → 右壁 → 右耳翼描 1px 淡轮廓线（顶边 y=r.Y 不描边以融入屏幕顶框）
+        var rimGeo = new StreamGeometry();
+        using (var rctx = rimGeo.Open())
+        {
+            rctx.BeginFigure(new Point(r.X - earR, r.Y + 0.5), false, false);
+            rctx.ArcTo(new Point(r.X, r.Y + earR), new Size(earR, earR),
+                0, false, SweepDirection.Clockwise, true, false);
+            rctx.LineTo(new Point(r.X, r.Bottom - botR), true, false);
+            rctx.ArcTo(new Point(r.X + botR, r.Bottom), new Size(botR, botR),
+                0, false, SweepDirection.Counterclockwise, true, false);
+            rctx.LineTo(new Point(r.Right - botR, r.Bottom), true, false);
+            rctx.ArcTo(new Point(r.Right, r.Bottom - botR), new Size(botR, botR),
+                0, false, SweepDirection.Counterclockwise, true, false);
+            rctx.LineTo(new Point(r.Right, r.Y + earR), true, false);
+            rctx.ArcTo(new Point(r.Right + earR, r.Y + 0.5), new Size(earR, earR),
+                0, false, SweepDirection.Clockwise, true, false);
+        }
+        rimGeo.Freeze();
+        dc.DrawGeometry(null, PenOf(pal.Rim, 1.0, 0.55), rimGeo);
+        return true;
     }
 
-    /// <summary>
-    /// 收起态"本体要去的地方"：弹簧目标值对应的本体矩形（窗口 DIP），由宿主提供；离屏渲染 / 测试里为 null。
-    /// 每次渲染时现取 —— 宿主在同一次操作里切视图、改弹簧目标，紧接着的那一帧渲染拿到的就是新目标，
-    /// 不需要宿主逐帧推送。返回空矩形 = 不适用（宿主正在做展开动画）。见 OnRender 的"变形中"。
-    /// </summary>
-    public Func<Rect>? FinalBodyRect { get; set; }
-
-    /// <summary>这一帧的本体矩形（挤压后）。读数类视图的压层始终按它画：变形中内容按最终矩形排版，压层不变。</summary>
-    private Rect _bodyNow;
-
-    /// <summary>
-    /// 读数类视图（读数带 / 信息胶囊 / 仪表盘 / 设备 / 活动窗口）自己的胶囊底：在玻璃上再压一层底色，保证小字可读。
-    /// 压层颜色跟主题走（2026-11-24 视觉重做）。以前这里写死 GitHub Dark 的 #0D1117：浅色主题下这几个视图
-    /// 变成灰黑色带，和同一主题里的白色玻璃小形象 / 时钟不是一套材质。
-    /// ⚠️ 必须与外壳（液态玻璃）用同一套四角半径：外壳在贴边侧是"近方角"（随液桥收缩），
-    ///    这里若还用全圆角，两层轮廓不重合 ⇒ 贴边侧会露出一圈多余描边，看起来像叠了两层背景。
-    /// 按当前的本体矩形（_bodyNow）画，不用各视图排版用的那个矩形：变形中内容按最终矩形排版，压层要一直盖住整个本体。
-    /// </summary>
-    private void DrawCapsuleBase(DrawingContext dc, Palette pal)
-    {
-        var geo = LiquidGeometry.RoundedRect(_bodyNow, _capsuleRadii.TL, _capsuleRadii.TR, _capsuleRadii.BR, _capsuleRadii.BL);
-        dc.DrawGeometry(Faint(pal.IsDark ? pal.Surface : Colors.White, 0.62), null, geo);
-        // 顶部辉光画在压层之上（深色主题；见 OnRender ⑥）
-        if (pal.IsDark)
-            dc.DrawGeometry(RenderKit.Spotlight(pal.Accent, 0.15, 1.5), null, geo);
-    }
-
-    /// <summary>中性读数的颜色：文字色降到 60% 不透明度（深色主题是灰白，像素主题是暗琥珀——整页保持单色）。</summary>
-    private static Color Neutral(Palette pal) => Color.FromArgb(0x99, pal.Text.R, pal.Text.G, pal.Text.B);
-
-    /// <summary>读数（数字等宽，见 RenderKit.Num）：按基线放置，返回右端 x。</summary>
-    private static double Num(DrawingContext dc, string s, double x, double baseline, double size, Color color, bool strong, double ppd)
-        => RenderKit.Num(dc, s, x, baseline, size, color, strong, ppd);
-
-    /// <summary>网速读数的显示格式。</summary>
-    private enum NetSpeedFormat
-    {
-        /// <summary>定宽（<see cref="MonitorSnapshot.FormatSpeedFixed"/>，恒 6 字符）—— mac 胶囊口径（combo/dash）。</summary>
-        Fixed,
-        /// <summary>旧的紧凑格式（<see cref="MonitorSnapshot.CompactSpeed"/>，3.40M）—— Windows clock/monitor 视图保持改动前外观。</summary>
-        Compact,
-    }
-
-    /// <summary>
-    /// 按格式取网速文本。宽度量算与绘制必须走这一个函数，否则「预留宽度」与「绘制位置」会错位。
-    /// </summary>
-    private static string NetSpeedText(double bytesPerSec, NetSpeedFormat format)
-        => format == NetSpeedFormat.Fixed
-            ? MonitorSnapshot.FormatSpeedFixed(bytesPerSec)
-            : MonitorSnapshot.CompactSpeed(bytesPerSec);
-
-    /// <summary>
-    /// 紧凑网速单行（↓3.40M ↑420K）占用的宽度：箭头 + 箭头数值间距 + 读数 + 网速间距 + 箭头 + 箭头数值间距 + 读数。
-    /// 读数格式由调用方定（combo 用定宽格式，恒 6 字符 —— 读数跳动不能带得整排抖）。
-    /// 网速间距由调用方给（combo = CompactSpec.NetGap=7，其余视图 = CompactSpec.DashNetGap=10），不写死。
-    /// </summary>
-    private static double NetWidth(double size, MonitorSnapshot snap, double ppd, double netGap, NetSpeedFormat format)
-        => Text("↓", size, Colors.Black, true, ppd).Width + CompactSpec.ArrowValueGap
-         + RenderKit.NumWidth(NetSpeedText(snap.DownloadSpeed, format), size, true, ppd) + netGap
-         + Text("↑", size, Colors.Black, true, ppd).Width + CompactSpec.ArrowValueGap
-         + RenderKit.NumWidth(NetSpeedText(snap.UploadSpeed, format), size, true, ppd);
-
-    /// <summary>紧凑网速单行：箭头是次要文字色，读数是等宽数字。返回右端 x。</summary>
-    private static double DrawNet(DrawingContext dc, Palette pal, double x, double bl, double size, MonitorSnapshot snap, double ppd, double netGap, NetSpeedFormat format)
-    {
-        var di = Text("↓", size, NetDownColor, true, ppd);
-        Baseline(dc, di, x, bl); x += di.Width + CompactSpec.ArrowValueGap;
-        x = Num(dc, NetSpeedText(snap.DownloadSpeed, format), x, bl, size, pal.Text, true, ppd) + netGap;
-        var ui = Text("↑", size, NetUpColor, true, ppd);
-        Baseline(dc, ui, x, bl); x += ui.Width + CompactSpec.ArrowValueGap;
-        return Num(dc, NetSpeedText(snap.UploadSpeed, format), x, bl, size, pal.Text, true, ppd);
-    }
-
-    // ---- 按资源配色的色值 ----
-    // 两端唯一真相源：Island.Core/Capabilities/ResourceColorSpec.cs（色值由用户给的参考图逐像素取样得出）。
-    // 收起态（dash / combo）按资源分色；**展开面板不动**（保持「暗色科技」口径，见 §8）。
-    private static Color ResourceColor(string hex) => Color.FromRgb(
-        (byte)Convert.ToInt32(hex.Substring(1, 2), 16),
-        (byte)Convert.ToInt32(hex.Substring(3, 2), 16),
-        (byte)Convert.ToInt32(hex.Substring(5, 2), 16));
-
-    /// <summary>CPU：蓝（#0A84FF）。</summary>
-    private static readonly Color CpuColor = ResourceColor(ResourceColorSpec.Cpu);
-    /// <summary>内存：青（#5CE1E6）。</summary>
-    private static readonly Color MemColor = ResourceColor(ResourceColorSpec.Memory);
-    /// <summary>GPU：粉（#FF8FB1）。</summary>
-    private static readonly Color GpuColor = ResourceColor(ResourceColorSpec.Gpu);
-    /// <summary>磁盘：薄荷绿（#98DBB0）。</summary>
-    private static readonly Color DiskColor = ResourceColor(ResourceColorSpec.Disk);
-    /// <summary>网速·下行箭头：蓝（#0A84FF）。</summary>
-    private static readonly Color NetDownColor = ResourceColor(ResourceColorSpec.NetDown);
-    /// <summary>网速·上行箭头：青（#5CE1E6）。</summary>
-    private static readonly Color NetUpColor = ResourceColor(ResourceColorSpec.NetUp);
-
-    /// <summary>
-    /// 温度的显示色：**资源色打底**，超过阈值才转警示色（mac 的 dash 同款：资源色 + 阈值覆盖）。
-    /// 读不到（null）是「未知」，用第三级文字色 —— 不是 0、也不是假装有值。
-    /// </summary>
-    private static Color TempResourceColor(double? t, Color resource, Palette pal) => t switch
-    {
-        null => pal.TextTertiary,
-        _ when t >= RenderKit.CritPct => pal.Up,
-        _ when t >= RenderKit.WarnPct => pal.Warning,
-        _ => resource,
-    };
-
-    /// <summary>温度的显示色：正常是文字色（不着色），71–85° 警示，&gt;85° 危险；读不到是第三级文字色。</summary>
-    private static Color TempColor(double? t, Palette pal) => t switch
-    {
-        null => pal.TextTertiary,
-        <= 70 => pal.Text,
-        <= 85 => pal.Warning,
-        _ => pal.Up,
-    };
-
-    private void DrawActivity(DrawingContext dc, Palette pal, Rect r, ActivityView act)
+    private void DrawActivity(DrawingContext dc, Palette pal, Rect r, double cy, ActivityView act)
     {
         double ppd = Ppd;
-        double cy = r.Y + r.Height / 2;
-        // 图标圆（音量=主题色，高温/低电量告警=告警红）
-        var tint = act.Kind is "temp" or "battery" ? pal.Up : pal.Accent;
+        var tint = act.Kind == "temp" ? pal.Up : pal.Accent;
         string label = act.Kind == "volume" ? (act.Muted ? "静音" : "音量") : act.Label;
         dc.DrawEllipse(Faint(tint, 0.25), null, new Point(r.X + 22, cy), 13, 13);
         var glyph = Text(label, 9, pal.Text, ppd: ppd);
         dc.DrawText(glyph, new Point(r.X + 22 - glyph.Width / 2, cy - glyph.Height / 2));
-        // 数值条：本体宽度还没量出来时（首帧 BodyRect 为空）w 会是负数，
-        // 负宽度的矩形会让 WPF 抛"宽度和高度必须为非负值"直接把整窗带走 ⇒ 先夹住
         double x = r.X + 44, w = Math.Max(0, r.Width - 70 - 44);
         var enter = Easing.EaseOut((DateTime.Now - act.Start).TotalSeconds / 0.3);
         double filled = Math.Min(Math.Max(4, w * act.Value * enter), w);
         dc.DrawRoundedRectangle(BrushOf(pal.SurfaceAlt), null, RenderKit.SafeRect(x, cy - 3, w, 6), 3, 3);
         dc.DrawRoundedRectangle(BrushOf(pal.Text), null, RenderKit.SafeRect(x, cy - 3, filled, 6), 3, 3);
-        // 右侧读数（默认百分比；告警类直接给文本，如 "92°"）
         var pct = Text(act.RightText ?? $"{Math.Round(act.Value * 100)}", 12, pal.Text, true, ppd);
         dc.DrawText(pct, new Point(r.Right - 14 - pct.Width, cy - pct.Height / 2));
     }
 
-    /// <summary>收起态内容实测宽度（DIP）：各视图渲染时回报，宿主据此自动调节岛体大小。</summary>
-    private double _compactWidthBudget = 560;
-    /// <summary>独立于弹簧当前宽度的收起态布局预算。</summary>
-    public double CompactWidthBudget
-    {
-        get => _compactWidthBudget;
-        set
-        {
-            double budget = double.IsFinite(value) ? Math.Max(80, value) : 560;
-            if (_compactWidthBudget == budget) return;
-            _compactWidthBudget = budget;
-            ResetCompactMeasurement();
-            InvalidateVisual();
-        }
-    }
-
-    private void ResetCompactMeasurement()
-    {
-        CompactContentWidth = 0;
-        HasMeasuredCompact = false;
-    }
-
     public double CompactContentWidth { get; private set; }
-
-    /// <summary>
-    /// 收起态的一个视觉组：组内可放多个元素（彼此紧挨），组与组之间按 TrailingGap 留白，
-    /// 需要时再在留白里画一条 Hairline 竖线（mac 的 DrawGaugeGroup + Gap()）。
-    /// </summary>
-    private sealed class CompactGroup
-    {
-        /// <summary>本组占用宽度（组内所有元素 + 组内间距）。</summary>
-        public double Width { get; init; }
-        /// <summary>绘制本组；参数是本组左边缘 x。</summary>
-        public Action<double> Draw { get; init; } = _ => { };
-        /// <summary>本组之后是否画分隔线（mac 的 Gap()）。最后一个可见组不画（其后是 +N 或空白）。</summary>
-        public bool DividerAfter { get; init; }
-        /// <summary>
-        /// 到下一组的间距；null = 用渲染层默认组间距（gap 参数）。
-        /// mac 的 combo 有两种边界：有分隔线的边界 = 24px 总带（SeparatorBand），
-        /// 没有分隔线的边界（时间│占用组）= 12px（ClockGap）。
-        /// </summary>
-        public double? TrailingGap { get; init; }
-    }
-
-    /// <summary>
-    /// 收起态分组排版：组与组之间按「上一组的 TrailingGap（缺省用 gap 参数）」留白，
-    /// 需要时在留白里画 Hairline 竖线（mac 的 Gap()：线在「组尾 + 18px」，偏后 6px，不在正中）。
-    /// 宽度不够时截断尾部并显示 "+N"；被截断时最后一个可见组**不**画分隔线。
-    ///
-    /// 排版决策（显示几组 / 「+N」画在哪 / 内容多宽）在 <see cref="CompactSpec.PlanCompactGroups"/>
-    /// 里做纯计算，这里只负责照着画 —— 这样「外观不变」由测试守住，不靠人读代码。
-    /// </summary>
-    private double DrawCompactGroups(DrawingContext dc, Palette pal, Rect r, double cy,
-        List<CompactGroup> groups, double gap = 16, double padding = 14,
-        bool drawDividers = false)
-    {
-        double available = Math.Max(0, CompactWidthBudget - padding * 2);
-        var plan = CompactSpec.PlanCompactGroups(groups.Count,
-            i => groups[i].Width,
-            i => groups[i].TrailingGap,
-            gap, available,
-            n => Text($"+{n}", 11, pal.TextDim, ppd: Ppd).Width);
-        double x = r.X + padding;
-        for (int i = 0; i < plan.Shown; i++)
-        {
-            double groupStart = x;
-            groups[i].Draw(groupStart);
-            double groupEnd = groupStart + groups[i].Width;
-            bool hasNext = i < plan.Shown - 1;
-            // 最后一个可见组后面没有下一组：不推进（推进值到这里就是死变量）；
-            // 「+N」的位置由 plan.MoreOffset 给 —— 排版口径唯一在 CompactSpec.PlanCompactGroups。
-            if (!hasNext) continue;
-            // 组间距：组自带 TrailingGap 优先，否则用渲染层默认组间距（CompactSpec.GroupAdvance）。
-            x = groupEnd + CompactSpec.GroupAdvance(groups[i].TrailingGap, gap);
-            // 组间分隔线：mac 的 Gap() 在总带里画线（组尾 + 18px = 组尾 + 1.5 × 单侧组间距）
-            if (drawDividers && groups[i].DividerAfter)
-            {
-                double lineX = CompactSpec.DividerXAfter(groupEnd);
-                dc.DrawLine(RenderKit.PenOf(pal.Hairline, 1, 0.8),
-                    new Point(lineX, cy - CompactSpec.DividerHalfHeight),
-                    new Point(lineX, cy + CompactSpec.DividerHalfHeight));
-            }
-        }
-        if (plan.Shown < groups.Count)
-        {
-            var more = Text($"+{groups.Count - plan.Shown}", 11, pal.TextDim, ppd: Ppd);
-            dc.DrawText(more, new Point(r.X + padding + plan.MoreOffset, cy - more.Height / 2));
-        }
-        return Math.Min(CompactWidthBudget, Math.Max(80, padding * 2 + plan.ContentWidth));
-    }
-    /// <summary>是否已完成首次内容测量（未测量前宿主流固定设计宽度）。</summary>
     public bool HasMeasuredCompact { get; private set; }
+    public void ResetCompactMeasure() => HasMeasuredCompact = false;
 
-    private void DrawCompact(DrawingContext dc, Palette pal, Rect r)
+    /// <summary>按当前状态直接测算收起视图所需胶囊宽度（DIP），首帧即可精确到位。</summary>
+    public double MeasureCompactWidth(string view)
+    {
+        var pal = Palette ?? Palette.Dark;
+        double ppd = Ppd;
+        return view switch
+        {
+            "clock" => LayoutClock(pal, ppd).CapsuleW,
+            "combo" => LayoutCombo(pal, ppd).CapsuleW,
+            "dash" => LayoutDash(pal, ppd).CapsuleW,
+            "media" => MeasureMediaWidth(pal, ppd),
+            "pet" => 110,
+            _ => HasMeasuredCompact ? CompactContentWidth : 0,
+        };
+    }
+
+    private void DrawCompact(DrawingContext dc, Palette pal, Rect r, double cy)
     {
         double cx = r.X + r.Width / 2;
-        double cy = r.Y + r.Height / 2;
-
         double w;
         switch (CompactView)
         {
             case "pet":
-                // 小形象画在自己的图层里（_petLayer，见 InvalidatePet / SyncPetLayer），这里只回报宽度。
-                // 照旧报 110：宿主按它定岛体尺寸，分层前后不变。
+                _pet.SurfaceColor = pal.Surface;
+                _pet.Draw(dc, cx, cy, 1.0, 1, LookPoint, PointerNear);
                 w = 110;
                 break;
             case "clock":
-                w = DrawClock(dc, pal, r, cy, Snapshot);
+                w = DrawClock(dc, pal, r, cy);
+                break;
+            case "combo":
+                w = DrawCombo(dc, pal, r, cy);
+                break;
+            case "dash":
+                w = DrawDash(dc, pal, r, cy);
+                break;
+            case "media":
+                w = DrawMedia(dc, pal, r, cy);
                 break;
             case "monitor":
                 w = DrawMonitor(dc, pal, r, cy, Snapshot);
-                break;
-            case "combo":
-                w = DrawCombo(dc, pal, r, cy, Snapshot, Thermal);
-                break;
-            case "dash":
-                w = DrawDash(dc, pal, r, cy, Snapshot, Thermal);
                 break;
             case "devices":
                 w = DrawDevices(dc, pal, r, cy);
@@ -683,675 +425,1120 @@ public sealed class IslandCanvas : FrameworkElement
                 w = 110;
                 break;
         }
-        if (w > 40)
+        if (w > 0)
         {
-            CompactContentWidth = w;
+            CompactContentWidth = Math.Max(110, w);
             HasMeasuredCompact = true;
         }
     }
 
-    /// <summary>
-    /// monitor 视图（单排高密度读数带）：细核心柱群（≤16 核）+ C/M/G/D 表盘读数 + 紧凑网速。
-    /// 配色（2026-11-27）：**环按资源分色**（CPU 蓝 / 内存 青 / GPU 粉 / 磁盘 薄荷绿），
-    /// 数字按阈值分级（正常白）；每核柱用 CPU 蓝 —— 与用户给的参考图形态一致，
-    /// 也与 dash / combo 同源同色（此前这三处各画各的，同一批数据三套配色语言）。
-    /// </summary>
-    private double DrawMonitor(DrawingContext dc, Palette pal, Rect r, double cy,
-        MonitorSnapshot? snap)
+    private void DrawGaugeCenter(DrawingContext dc, Glyph icon, Res res, double x, double cy, double dial, Color color, double ppd)
     {
-        if (snap is null) return 0;
-        if (r.Width < 40 || r.Height < 20) return 0;
-        double ppd = Ppd;
-        DrawCapsuleBase(dc, pal);
-
-        var groups = new List<CompactGroup>();
-
-        // ---- 细核心柱群（2.6px 细柱、2px 间距、最多 16 核，垂直居中） ----
-        var cores = snap.CoreUsages;
-        if (cores is not null && cores.Length > 0)
+        if (DecorLetters)
         {
-            int n = Math.Min(16, cores.Length);
-            double bw = 2.6, gap = 2, maxH = Math.Max(0, Math.Min(24, r.Height - 18));
-            groups.Add(new CompactGroup
+            string letter = res switch
             {
-                Width = n * (bw + gap),
-                Draw = x =>
-                {
-                    for (int i = 0; i < n; i++)
-                    {
-                        double v = Easing.Clamp(cores[i] / 100.0, 0, 1);
-                        dc.DrawRoundedRectangle(BrushOf(pal.Track), null,
-                            RenderKit.SafeRect(x + i * (bw + gap), cy - maxH / 2, bw, maxH), 1.2, 1.2);
-                        double h = 1.6 + v * (maxH - 1.6);
-                        // 柱色 = CPU 资源色（参考图里的每核直方图就是蓝的）；不再按占用率阈值变色。
-                        dc.DrawRoundedRectangle(BrushOf(CpuColor), null,
-                            RenderKit.SafeRect(x + i * (bw + gap), cy + maxH / 2 - h, bw, h), 1.2, 1.2);
-                    }
-                },
-            });
+                Res.Cpu => "C", Res.Mem => "M", Res.Gpu => "G",
+                Res.Disk => "D", Res.Batt => "B", Res.Net => "N", _ => "?",
+            };
+            var t = Text(letter, dial * 0.50, color, true, ppd);
+            dc.DrawText(t, new Point(x + (dial - t.Width) / 2, cy - t.Height / 2));
         }
-
-        // ---- 表盘读数（数字按 "100%" 预留，跳数不动布局） ----
-        const double dialSize = 20, dialFont = 12.5;
-        void Gauge(double value, Color color, string letter, bool pureArc = false)
-            => groups.Add(new CompactGroup
-            {
-                Width = dialSize + 5 + Math.Ceiling(RenderKit.NumWidth("100%", dialFont, true, ppd)),
-                Draw = x => DrawDialGauge(dc, pal, x, cy, ppd, value, color, letter, dialSize, dialFont,
-                    null, null, null, "100%", pureArc ? color : null),
-            });
-        // 环 = 资源色（CPU 蓝 / 内存 青 / GPU 粉 / 磁盘 薄荷绿），数字 = 阈值色（正常白）—— 参考图同款。
-        Gauge(snap.CpuUsage, CpuColor, "C", pureArc: true);
-        Gauge(snap.MemoryUsagePercent, MemColor, "M", pureArc: true);
-        if (snap.GpuUsage > 0) Gauge(snap.GpuUsage, GpuColor, "G", pureArc: true);
-        Gauge(snap.DiskUsagePercent, DiskColor, "D", pureArc: true);
-        groups.Add(new CompactGroup
+        else
         {
-            // clock / monitor 视图保持改动前外观（旧紧凑格式 + 10 间距）；dash 的网速已在 Task 5 按 mac 对齐（见 DrawDash）
-            Width = NetWidth(11, snap, ppd, CompactSpec.DashNetGap, NetSpeedFormat.Compact),
-            Draw = x => DrawNet(dc, pal, x, Math.Round(cy + 11 * 0.38), 11, snap, ppd, CompactSpec.DashNetGap, NetSpeedFormat.Compact),
-        });
-        return DrawCompactGroups(dc, pal, r, cy, groups);
+            DrawIcon(dc, icon, x + (dial - 12 * 0.62) / 2, cy, color, 0.62);
+        }
     }
 
-    /// <summary>
-    /// 信息胶囊（combo）：时间 │ 占用环组(C/M/G) │ 温度磁盘环组(C/G/D) │ 网速。
-    /// 对应 mac 版 LayoutCombo + DrawCombo（src/Island.Avalonia/IslandCanvas.cs L612-L707）。
-    /// 分隔线只有**两处**（占用组│温度磁盘组、温度磁盘组│网速，mac 的 Gap() 只调用两次：:694/:696）；
-    /// 时间│占用组之间没有线，只有 ClockGap=12 的留白（mac :677 的 x += L.ClockW + L.ClockGap）。
-    /// 规格：环 20px 闭环（RenderKit.Ring），环心字母，数值 13px 等宽放环外，槽宽 21px，
-    /// 有分隔线的边界总带 24px（SeparatorBand），线在「组尾 + 18px」。
-    /// 配色（2026-11-27）：**环按资源分色**（CPU 蓝 / 内存 青 / GPU 粉 / 磁盘 薄荷绿），
-    /// **数字按阈值分级**（正常白、≥70% 黄、≥90% 红）—— 与 mac 的 combo 完全同口径，
-    /// 色值取自两端唯一真相源 `ResourceColorSpec`（来源：用户给的参考图）。
-    /// 展开页（MonitorPage）**不**跟着改：它仍是 Windows 的「暗色科技」单强调色口径。
-    /// </summary>
-    private double DrawCombo(DrawingContext dc, Palette pal, Rect r, double cy,
-        MonitorSnapshot? snap, Services.ThermalSnapshot? thermal)
+    // ============ 1. 时间胶囊（clock，与 macOS 版完全同款） ============
+    //   [ 21:24 35  │  11月27日·周五  │  ☀ 18° 北京 ]
+
+    private sealed class ClockLayout
+    {
+        public FormattedText Time = null!, Date = null!, Sec = null!;
+        public double TimeSlotW, SecSlotW;
+        public Glyph? Icon;
+        public Color IconColor;
+        public FormattedText? Temp, City;
+        public bool HasWeather;
+        public FormattedText? BattText;
+        public Color BattColor;
+        public bool HasBattery;
+
+        public const double SecGap = 3;
+        public const double IconW = 13;
+        public const double IconGap = 7;
+        public const double CityGap = 7;
+        public const double BattIconW = 13;
+        public const double BattGap = 5;
+
+        public double DateW => Date.WidthIncludingTrailingWhitespace;
+        public double TempW => Temp?.WidthIncludingTrailingWhitespace ?? 0;
+        public double CityW => City?.WidthIncludingTrailingWhitespace ?? 0;
+        public double BattW => HasBattery && BattText is not null
+            ? BattIconW + BattGap + BattText.WidthIncludingTrailingWhitespace : 0;
+        public double LeftW => TimeSlotW + SecGap + SecSlotW;
+        public double WeatherW => HasWeather
+            ? IconW + IconGap + TempW + (City is not null ? CityGap + CityW : 0)
+            : 0;
+        public double ContentW => LeftW + ClockColGap + DateW
+            + (HasWeather ? ClockColGap + WeatherW : 0)
+            + (HasBattery ? ClockColGap + BattW : 0);
+        public double CapsuleW => ContentW + ClockPadX * 2;
+    }
+
+    private ClockLayout LayoutClock(Palette pal, double ppd)
+    {
+        var now = DateTime.Now;
+        var timeTxt = Text(now.ToString("HH:mm"), FontHero, pal.Text, true, ppd);
+        var secTxt = Text(now.ToString("ss"), FontBody, pal.TextDim, true, ppd);
+        // 用数字模板锁住最小槽宽，每秒跳字时胶囊宽度完全不抖
+        double timeSlot = Math.Max(timeTxt.WidthIncludingTrailingWhitespace,
+            Text("00:00", FontHero, pal.Text, true, ppd).WidthIncludingTrailingWhitespace);
+        double secSlot = Math.Max(secTxt.WidthIncludingTrailingWhitespace,
+            Text("00", FontBody, pal.TextDim, true, ppd).WidthIncludingTrailingWhitespace);
+
+        var l = new ClockLayout
+        {
+            Time = timeTxt,
+            Sec = secTxt,
+            TimeSlotW = timeSlot,
+            SecSlotW = secSlot,
+            Date = Text(now.ToString("M月d日") + "·" + WeekdayShort(now.DayOfWeek), FontValue, pal.TextDim, false, ppd),
+        };
+
+        if (Weather is { IsStale: false } w)
+        {
+            l.HasWeather = true;
+            l.Icon = WeatherGlyph(w.Condition);
+            l.IconColor = WeatherColor(w.Condition, pal);
+            l.Temp = Text($"{Math.Round(w.Temp)}°", FontValue, pal.Text, true, ppd);
+            if (!string.IsNullOrWhiteSpace(w.City))
+            {
+                var full = Text(w.City, FontLabel, pal.TextDim, false, ppd);
+                l.City = full.WidthIncludingTrailingWhitespace <= ClockCityMaxW
+                    ? full
+                    : Trimmed(w.City, FontLabel, pal.TextDim, ClockCityMaxW, false, ppd);
+            }
+        }
+
+        // 笔记本/带电池机型：在时间胶囊右端显示紧凑矢量电池与百分比（台式机无电池时自动隐藏）
+        var batDev = DeviceService.Snapshot.FirstOrDefault(d => d.Kind == "battery");
+        double? bp = batDev?.Percent ?? Snapshot?.BatteryPercent;
+        bool charging = (batDev?.Charging ?? false) || (batDev?.PluggedIn ?? false) || (Snapshot?.BatteryCharging ?? false);
+        if (bp is { } bpVal)
+        {
+            l.HasBattery = true;
+            int pct = (int)Math.Round(Math.Clamp(bpVal, 0, 100));
+            l.BattColor = charging ? DownC : pct <= 20 ? pal.Up : pct <= 40 ? pal.Warning : ResColor(Res.Batt, pal);
+            l.BattText = Text($"{pct}%", FontValue, pct <= 20 && !charging ? pal.Up : pal.Text, true, ppd);
+        }
+        return l;
+    }
+
+    private double DrawClock(DrawingContext dc, Palette pal, Rect r, double cy)
     {
         if (r.Width < 40 || r.Height < 20) return 0;
         double ppd = Ppd;
-        DrawCapsuleBase(dc, pal);
-        var groups = new List<CompactGroup>();
+        var L = LayoutClock(pal, ppd);
+        double x = r.X + (r.Width - L.ContentW) / 2;
+        double mid = cy;
 
-        // 一个环项：环心字母 + 环外等宽数值。
-        // 环弧长 = share（占用率/100 或 温度/125），环色 = ArcColor，数值色 = TextColor。
-        // 数值宽度用 RenderKit.NumWidth 量（等宽排版有缓存，不额外分配）。
-        void AddGaugeGroup(List<(string Letter, double Share, string Text, Color ArcColor, Color TextColor)> items,
-                          bool dividerAfter)
+        // ① 大号时间 + 基线对齐秒数
+        double timeTop = mid - L.Time.Height / 2;
+        dc.DrawText(L.Time, new Point(x, timeTop));
+        dc.DrawText(L.Sec, new Point(x + L.TimeSlotW + ClockLayout.SecGap,
+            timeTop + (L.Time.Baseline - L.Sec.Baseline)));
+        x += L.LeftW;
+
+        void Divider(double px)
+            => dc.DrawLine(PenOf(pal.Hairline, 1, 0.85), new Point(px, mid - 10), new Point(px, mid + 10));
+
+        // ② 日期·星期
+        Divider(x + ClockColGap / 2);
+        x += ClockColGap;
+        dc.DrawText(L.Date, new Point(x, mid - L.Date.Height / 2));
+        x += L.DateW;
+
+        // ③ 天气：矢量图标 + 温度 + 城市
+        if (L.HasWeather && L.Icon is { } g)
         {
-            if (items.Count == 0) return;
-            double groupW = CompactSpec.GaugeGroupWidth(items.Count,
-                i => RenderKit.NumWidth(items[i].Text, CompactSpec.FigureFont, true, ppd));
-            groups.Add(new CompactGroup
+            Divider(x + ClockColGap / 2);
+            x += ClockColGap;
+            DrawIcon(dc, g, x, mid, Mute(L.IconColor, pal.Text, 0.62), ClockLayout.IconW / 12.0);
+            x += ClockLayout.IconW + ClockLayout.IconGap;
+            if (L.Temp is not null)
             {
-                Width = groupW,
-                Draw = x =>
-                {
-                    double gx = x;
-                    for (int i = 0; i < items.Count; i++)
-                    {
-                        var it = items[i];
-                        RenderKit.Ring(dc, new Point(gx + CompactSpec.Dial / 2, cy), CompactSpec.Dial,
-                            Math.Max(1.8, CompactSpec.Dial * 0.14), it.Share, pal.Track, it.ArcColor);
-                        // 环心字母（mac DrawGaugeCenter 的 DecorLetters 分支）
-                        var letter = Text(it.Letter, CompactSpec.Dial * 0.52, it.ArcColor, true, ppd);
-                        dc.DrawText(letter, new Point(gx + (CompactSpec.Dial - letter.Width) / 2, cy - letter.Height / 2));
-                        gx += CompactSpec.Dial + CompactSpec.DialGap;
-                        Num(dc, it.Text, gx, Math.Round(cy + CompactSpec.FigureFont * 0.36),
-                            CompactSpec.FigureFont, it.TextColor, true, ppd);
-                        gx += Math.Max(RenderKit.NumWidth(it.Text, CompactSpec.FigureFont, true, ppd),
-                            CompactSpec.ValueMinW) + CompactSpec.GaugeGap;
-                    }
-                },
-                DividerAfter = dividerAfter,
-            });
+                dc.DrawText(L.Temp, new Point(x, mid - L.Temp.Height / 2));
+                x += L.TempW;
+            }
+            if (L.City is not null)
+            {
+                x += ClockLayout.CityGap;
+                dc.DrawText(L.City, new Point(x, mid - L.City.Height / 2));
+            }
         }
 
-        // ---- 组 1：时间 ----
-        // mac 的 ComboStyle.ClockStrong = !_comboNumericHero（IslandCanvas.cs:617-618 + :575）：
-        // 数字主角（hero）模式下时钟是**非粗体**的次级文字；经典版才是粗体主角。
+        // ④ 本机电池（仅带电池机型出现）
+        if (L.HasBattery && L.BattText is not null)
+        {
+            Divider(x + ClockColGap / 2);
+            x += ClockColGap;
+            DrawIcon(dc, Glyph.Battery, x, mid, L.BattColor, ClockLayout.BattIconW / 12.0);
+            x += ClockLayout.BattIconW + ClockLayout.BattGap;
+            dc.DrawText(L.BattText, new Point(x, mid - L.BattText.Height / 2));
+        }
+        return L.CapsuleW;
+    }
+
+    private static string WeekdayShort(DayOfWeek d) => d switch
+    {
+        DayOfWeek.Monday => "周一", DayOfWeek.Tuesday => "周二", DayOfWeek.Wednesday => "周三",
+        DayOfWeek.Thursday => "周四", DayOfWeek.Friday => "周五",
+        DayOfWeek.Saturday => "周六", DayOfWeek.Sunday => "周日",
+        _ => "",
+    };
+
+    private static Glyph WeatherGlyph(string? condition)
+    {
+        string c = condition ?? "";
+        if (c.Contains('雷')) return Glyph.Bolt;
+        if (c.Contains('雨')) return Glyph.Rain;
+        if (c.Contains('雪')) return Glyph.Snow;
+        if (c.Contains('雾') || c.Contains('霾')) return Glyph.Fog;
+        if (c.Contains('云') || c.Contains('阴')) return Glyph.Cloud;
+        return Glyph.Sun;
+    }
+
+    private static Color WeatherColor(string? condition, Palette pal)
+    {
+        string c = condition ?? "";
+        if (c.Contains('雷')) return Color.FromRgb(0xC9, 0xA6, 0xFF);
+        if (c.Contains('雨')) return Color.FromRgb(0x6F, 0xB8, 0xFF);
+        if (c.Contains('雪')) return Color.FromRgb(0xA8, 0xE6, 0xF0);
+        if (c.Contains('雾') || c.Contains('霾')) return pal.TextDim;
+        if (c.Contains('云') || c.Contains('阴')) return Color.FromRgb(0x9F, 0xB4, 0xD0);
+        return Color.FromRgb(0xFF, 0xC4, 0x6B);
+    }
+
+    // ============ 2. 信息胶囊（combo，1:1 对齐 Mac 实机悬浮药丸胶囊） ============
+    //   [ 03:08  (C) 3%  (M) 18%  (G) 15%  │  (C) 29°  (G) 30°  (D) 54%  │  ↓ 6.1K  ↑ 120.5K ]
+
+    private static readonly Color NetDownArrowC = Color.FromRgb(0x2F, 0xD0, 0x6B);
+    private static readonly Color NetUpArrowC = Color.FromRgb(0xFF, 0x3B, 0x5C);
+
+    /// <summary>温度分级配色：≤60° 绿色 / 60°–90° 黄色 / ≥90° 红色。</summary>
+    private static Color ComboTempColor(double temp, Palette pal)
+        => ReadableCached(RenderKit.ThermalColor(temp), pal);
+
+    private struct ComboStyle
+    {
+        public double FigureFont;
+        public double Dial;
+        public double DialGap;
+        public double GaugeGap;
+        public double ClockGap;
+        public bool ClockStrong;
+        public bool FigureResColor;
+    }
+
+    private ComboStyle CurrentComboStyle => ComboNumericHero
+        ? new ComboStyle
+        {
+            FigureFont = 13.5, Dial = 22, DialGap = 5, GaugeGap = 10, ClockGap = 12,
+            ClockStrong = false, FigureResColor = false,
+        }
+        : new ComboStyle
+        {
+            FigureFont = FontValue, Dial = 20, DialGap = 4, GaugeGap = 10, ClockGap = 12,
+            ClockStrong = true, FigureResColor = true,
+        };
+
+    private sealed class ComboLayout
+    {
+        public FormattedText? Clock;
+        public double ClockSlotW;
+        public FormattedText? NetDownArrow, NetDownVal, NetUpArrow, NetUpVal;
+        public double NetDownValSlotW, NetUpValSlotW;
+        // 左组（使用率环：C% / M% / G%）
+        public readonly List<(Glyph Icon, Res Res, double Share, Color RingColor, FormattedText Figure, double FigureSlotW)> LeftRings = new();
+        // 中组（温度环 + 硬盘/电池环：C° / G° / D% / B%）
+        public readonly List<(Glyph Icon, Res Res, double Share, Color RingColor, FormattedText Figure, double FigureSlotW)> MidRings = new();
+        public ComboStyle Style;
+
+        public const double NetArrowGap = 4;
+        public const double NetPairGap = 8;
+
+        private double MeasureGroup(List<(Glyph Icon, Res Res, double Share, Color RingColor, FormattedText Figure, double FigureSlotW)> list)
+            => list.Count == 0 ? 0
+                : list.Sum(g => Style.Dial + Style.DialGap + g.FigureSlotW + Style.GaugeGap) - Style.GaugeGap;
+
+        public double LeftRingsW => MeasureGroup(LeftRings);
+        public double MidRingsW => MeasureGroup(MidRings);
+
+        public double NetW => (NetDownArrow is not null && NetDownVal is not null && NetUpArrow is not null && NetUpVal is not null)
+            ? NetDownArrow.WidthIncludingTrailingWhitespace + NetArrowGap + NetDownValSlotW
+              + NetPairGap
+              + NetUpArrow.WidthIncludingTrailingWhitespace + NetArrowGap + NetUpValSlotW
+            : 0;
+
+        public double ContentW
+        {
+            get
+            {
+                double w = 0;
+                bool hasLeft = false;
+                if (Clock is not null)
+                {
+                    w += ClockSlotW;
+                    hasLeft = true;
+                }
+                if (LeftRings.Count > 0)
+                {
+                    if (hasLeft) w += Style.ClockGap;
+                    w += LeftRingsW;
+                    hasLeft = true;
+                }
+                if (MidRings.Count > 0)
+                {
+                    if (hasLeft) w += CompactGroupGap * 2;
+                    w += MidRingsW;
+                    hasLeft = true;
+                }
+                if (NetW > 0)
+                {
+                    if (hasLeft) w += CompactGroupGap * 2;
+                    w += NetW;
+                }
+                return Math.Max(84, w);
+            }
+        }
+
+        public double CapsuleW => ContentW + ComboPadX * 2;
+    }
+
+    private ComboLayout LayoutCombo(Palette pal, double ppd)
+    {
+        var snap = Snapshot;
+        var style = CurrentComboStyle;
+        var l = new ComboLayout { Style = style };
+
         if (WantCombo("clock"))
         {
-            var clock = Text(DateTime.Now.ToString("HH:mm"), CompactSpec.FigureFont,
-                ComboNumericHero ? pal.TextDim : pal.Text, !ComboNumericHero, ppd);
-            groups.Add(new CompactGroup
-            {
-                Width = clock.WidthIncludingTrailingWhitespace,
-                Draw = x => Baseline(dc, clock, x, Math.Round(cy + CompactSpec.FigureFont * 0.36)),
-                // 时间后面**没有分隔线**（mac 只在占用组│系统组、系统组│网速两处画线），只有 12px 留白
-                DividerAfter = false,
-                TrailingGap = CompactSpec.ClockGap,
-            });
+            var cColor = style.ClockStrong ? pal.Text : pal.TextDim;
+            l.Clock = Text(DateTime.Now.ToString("HH:mm"), FontValue, cColor, style.ClockStrong, ppd);
+            l.ClockSlotW = Math.Max(l.Clock.WidthIncludingTrailingWhitespace,
+                Text("00:00", FontValue, cColor, style.ClockStrong, ppd).WidthIncludingTrailingWhitespace);
         }
 
-        // ---- 组 2：占用环组（C/M/G）----
-        var dials = new List<(string Letter, double Share, string Text, Color ArcColor, Color TextColor)>();
-        if (WantCombo("dials") && snap is not null)
+        double minPctSlot = Math.Ceiling(Text("9%", style.FigureFont, pal.Text, true, ppd).WidthIncludingTrailingWhitespace);
+        double minTempSlot = Math.Ceiling(Text("88°", style.FigureFont, pal.Text, true, ppd).WidthIncludingTrailingWhitespace);
+
+        void AddUsageRing(List<(Glyph, Res, double, Color, FormattedText, double)> target, Glyph icon, Res res, double usage)
         {
-            // C/M 无条件画（mac 同款：0% 也画空环 + "0%"）—— 环数恒定，胶囊宽度不因读数跳到 0 而抖。
-            // 环 = 资源色（CPU 蓝 / 内存 青 / GPU 粉），数字 = 阈值色（正常白、≥70% 黄、≥90% 红）
-            // —— 与 mac 的 combo 完全同口径（参考图里也是「彩色环 + 白字」）。
-            dials.Add(("C", snap.CpuUsage / 100.0, $"{Math.Round(snap.CpuUsage)}%", CpuColor,
-                LevelColor(snap.CpuUsage, pal.Text, pal)));
-            dials.Add(("M", snap.MemoryUsagePercent / 100.0, $"{Math.Round(snap.MemoryUsagePercent)}%", MemColor,
-                LevelColor(snap.MemoryUsagePercent, pal.Text, pal)));
-            // G 保留 >0 判断：Windows 无独显 / 读不到时不出这个环（改动前的既有取舍，mac 是恒画三个环）。
-            if (snap.GpuUsage > 0)
-            {
-                dials.Add(("G", snap.GpuUsage / 100.0, $"{Math.Round(snap.GpuUsage)}%", GpuColor,
-                    LevelColor(snap.GpuUsage, pal.Text, pal)));
-            }
+            Color rc = ResColor(res, pal);
+            Color figC = style.FigureResColor ? rc : LevelColor(usage, pal.Text, pal);
+            var fig = Text($"{Math.Round(usage)}%", style.FigureFont, figC, true, ppd);
+            double share = usage > 0 ? Math.Max(usage / 100.0, 0.05) : 0;
+            target.Add((icon, res, share, rc, fig, Math.Max(fig.WidthIncludingTrailingWhitespace, minPctSlot)));
         }
-        // 占用组之后有分隔线（mac :694）
-        AddGaugeGroup(dials, dividerAfter: true);
 
-        // ---- 组 3：温度 / 磁盘环组（C/G/D）----
-        var sys = new List<(string Letter, double Share, string Text, Color ArcColor, Color TextColor)>();
-        if (snap is not null)
+        void AddTempRing(Glyph icon, Res res, double? temp)
         {
-            double? ct = thermal?.CpuTemp, gt = thermal?.GpuTemp;
-            // 温度 ≤0 视为「读不到」（mac :634-635 的 is > 0 ? … : null）：传感器报 0℃ 时显示占位符，不是 "0°"。
-            double? ctv = ct is > 0 ? ct : null;
-            double? gtv = gt is > 0 ? gt : null;
-            if (WantCombo("cputemp"))
-            {
-                var c = TempColor(ctv, pal);
-                sys.Add(("C", ctv is { } t ? Math.Clamp(t / 125.0, 0, 1) : 0,
-                    // 读不到温度时的占位符用全角破折号 "—"（mac combo 的写法，IslandCanvas.cs:638），
-                    // 不要写 "--"：本分支之前误改成了 "--"，与 mac 不一致（2026-11-25 复审 Must-fix 2）。
-                    ctv is { } tv ? $"{Math.Round(tv)}°" : "—", c, c));
-            }
-            if (WantCombo("gputemp"))
-            {
-                var g = TempColor(gtv, pal);
-                sys.Add(("G", gtv is { } t2 ? Math.Clamp(t2 / 125.0, 0, 1) : 0,
-                    gtv is { } tv2 ? $"{Math.Round(tv2)}°" : "—", g, g));
-            }
-            if (WantCombo("disk"))
-            {
-                // 磁盘环 = 资源色（薄荷绿），数字仍按阈值分级 —— mac 的 combo 同款。
-                sys.Add(("D", snap.DiskUsagePercent / 100.0,
-                    $"{Math.Round(snap.DiskUsagePercent)}%", DiskColor,
-                    LevelColor(snap.DiskUsagePercent, pal.Text, pal)));
-            }
+            if (temp is not { } tv || tv <= 0) return;
+            Color tc = ComboTempColor(tv, pal);
+            var fig = Text($"{Math.Round(tv)}°", style.FigureFont, tc, true, ppd);
+            double share = Math.Clamp(tv / 100.0, 0.06, 1.0);
+            l.MidRings.Add((icon, res, share, tc, fig, Math.Max(fig.WidthIncludingTrailingWhitespace, minTempSlot)));
         }
-        // 系统组之后有分隔线（mac :696）
-        AddGaugeGroup(sys, dividerAfter: true);
 
-        // ---- 组 4：网速（↓值 ↑值，中性色）----
-        if (WantCombo("net") && snap is not null)
+        // ① 左组：CPU / 内存 / GPU / 硬盘 占用环（C% / M% / G% / D%）
+        if (WantCombo("dials"))
         {
-            groups.Add(new CompactGroup
-            {
-                Width = NetWidth(CompactSpec.FigureFont, snap, ppd, CompactSpec.NetGap, NetSpeedFormat.Fixed),
-                Draw = x => DrawNet(dc, pal, x, Math.Round(cy + CompactSpec.FigureFont * 0.36),
-                    CompactSpec.FigureFont, snap, ppd, CompactSpec.NetGap, NetSpeedFormat.Fixed),
-            });
+            double gpuPct = Math.Max(snap?.GpuUsage ?? 0, Thermal?.GpuLoad ?? 0);
+            AddUsageRing(l.LeftRings, Glyph.Cpu, Res.Cpu, snap?.CpuUsage ?? 0);
+            AddUsageRing(l.LeftRings, Glyph.Mem, Res.Mem, snap?.MemoryUsagePercent ?? 0);
+            AddUsageRing(l.LeftRings, Glyph.Gpu, Res.Gpu, gpuPct);
+        }
+        if (WantCombo("disk"))
+        {
+            AddUsageRing(l.LeftRings, Glyph.Disk, Res.Disk, snap?.DiskUsagePercent ?? 0);
         }
 
-        // 组间距：mac 的 combo 有分隔线的边界总带 24px（SeparatorBand），左右内边距 10px（ComboPadX）
-        return DrawCompactGroups(dc, pal, r, cy, groups,
-            gap: CompactSpec.SeparatorBand, padding: CompactSpec.PadX, drawDividers: true);
+        // ② 中组：温度环（CPU° / GPU° / 硬盘°）+ 电池状态环（B% / 充电⚡）
+        double? cpuT = Thermal?.CpuTemp ?? snap?.CpuTemp;
+        double? gpuT = Thermal?.GpuTemp ?? snap?.GpuTemp;
+        double? ssdT = Thermal?.SsdTemp ?? snap?.SsdTemp;
+
+        if (WantCombo("cputemp")) AddTempRing(Glyph.Cpu, Res.Cpu, cpuT);
+        if (WantCombo("gputemp")) AddTempRing(Glyph.Gpu, Res.Gpu, gpuT);
+        if (WantCombo("ssdtemp")) AddTempRing(Glyph.Ssd, Res.Disk, ssdT);
+        if (WantCombo("battery"))
+        {
+            var bat = DeviceService.Snapshot.FirstOrDefault(d => d.Kind == "battery");
+            double? bp = bat?.Percent ?? snap?.BatteryPercent;
+            bool charging = (bat?.Charging ?? false) || (bat?.PluggedIn ?? false) || (snap?.BatteryCharging ?? false);
+            if (bp is { } bpVal)
+            {
+                int pct = (int)Math.Round(Math.Clamp(bpVal, 0, 100));
+                Color rc = charging
+                    ? ReadableCached(RenderKit.ThermalCoolColor, pal)
+                    : pct <= 20 ? pal.Up
+                    : pct <= 40 ? pal.Warning
+                    : ResColor(Res.Batt, pal);
+                Color figC = charging
+                    ? ReadableCached(RenderKit.ThermalCoolColor, pal)
+                    : pct <= 20 ? pal.Up
+                    : (style.FigureResColor ? rc : pal.Text);
+                string label = charging ? $"{pct}%⚡" : $"{pct}%";
+                var fig = Text(label, style.FigureFont, figC, true, ppd);
+                l.MidRings.Add((Glyph.Battery, Res.Batt, Math.Clamp(pct / 100.0, 0.05, 1.0), rc, fig,
+                    Math.Max(fig.WidthIncludingTrailingWhitespace, minPctSlot)));
+            }
+        }
+
+        // ③ 右组：彩色箭头（绿↓ / 红↑）+ 粗体纯白速率数字（6.1K / 120.5K）
+        if (WantCombo("net"))
+        {
+            string dn = MonitorSnapshot.FormatSpeedFixed(snap?.DownloadSpeed ?? 0).Trim();
+            string up = MonitorSnapshot.FormatSpeedFixed(snap?.UploadSpeed ?? 0).Trim();
+            double minSpeedSlot = Math.Ceiling(Text("99.9K", style.FigureFont, pal.Text, true, ppd).WidthIncludingTrailingWhitespace);
+            l.NetDownArrow = Text("↓", style.FigureFont, ReadableCached(NetDownArrowC, pal), true, ppd);
+            l.NetDownVal = Text(dn, style.FigureFont, pal.Text, true, ppd);
+            l.NetDownValSlotW = Math.Max(l.NetDownVal.WidthIncludingTrailingWhitespace, minSpeedSlot);
+            l.NetUpArrow = Text("↑", style.FigureFont, ReadableCached(NetUpArrowC, pal), true, ppd);
+            l.NetUpVal = Text(up, style.FigureFont, pal.Text, true, ppd);
+            l.NetUpValSlotW = Math.Max(l.NetUpVal.WidthIncludingTrailingWhitespace, minSpeedSlot);
+        }
+
+        return l;
     }
 
-    /// <summary>读数表盘 + 右侧数字：返回占用宽度（数字按最宽样本预留，数字等宽）。
-    /// 环 20px，数字 12.5px 粗体，环与数字间距 5px。
-    ///
-    /// fill / text / textColor / sample 可覆盖：
-    /// - 温度环的填充比例与显示数值不同（环按 0–125℃ 填，数字是 "62°"）；
-    /// - textColor 给出时环和数字都用它（温度按分级配色），否则都按占用率分级（≥70% 警示、≥90% 危险）。
-    /// 这样"占用率环"与"温度环/硬盘环"是同一套视觉语言。</summary>
-    private double DrawDialGauge(DrawingContext dc, Palette pal, double x, double yc, double ppd,
-        double? usage, Color arc, string letter, double dialSize, double font,
-        double? fill = null, string? text = null, Color? textColor = null, string sample = "100%",
-        Color? arcPure = null)
+    private double DrawCombo(DrawingContext dc, Palette pal, Rect r, double cy)
     {
-        // 环用 arc（按占用率分级），数字用文字色（按占用率分级）；给了 textColor 就两者都用它。
-        // arcPure 给出时环**不做阈值分级**（按资源色），数字仍按阈值分级 —— 对齐 mac 的 combo：
-        // 环是资源色（蓝/青/粉），数字正常时是白色、≥70% 黄、≥90% 红。
-        Color arcColor = arcPure ?? textColor ?? (usage is { } a ? LevelColor(a, arc, pal) : arc);
-        Color color = textColor ?? (usage is { } u ? LevelColor(u, pal.Text, pal) : pal.TextTertiary);
-        Dial(dc, new Point(x + dialSize / 2, yc), dialSize, Math.Max(1.6, dialSize * 0.11),
-            fill ?? (usage is { } f ? f / 100 : null), pal.Track, arcColor, pal.Text, letter, ppd);
+        if (r.Width < 40 || r.Height < 20) return 0;
+        double ppd = Ppd;
+        var L = LayoutCombo(pal, ppd);
+        double x = r.X + (r.Width - L.ContentW) / 2;
+
+        void Divider()
+            => dc.DrawLine(PenOf(pal.Hairline, 1, 0.78),
+                new Point(x + CompactGroupGap, cy - 9), new Point(x + CompactGroupGap, cy + 9));
+        void Gap() { Divider(); x += CompactGroupGap * 2; }
+
+        void DrawRingGroup(List<(Glyph Icon, Res Res, double Share, Color RingColor, FormattedText Figure, double FigureSlotW)> list)
+        {
+            for (int i = 0; i < list.Count; i++)
+            {
+                var g = list[i];
+                RenderKit.Ring(dc, new Point(x + L.Style.Dial / 2, cy), L.Style.Dial,
+                    2.3, g.Share, pal.Track, g.RingColor);
+                DrawGaugeCenter(dc, g.Icon, g.Res, x, cy, L.Style.Dial, g.RingColor, ppd);
+                x += L.Style.Dial + L.Style.DialGap;
+                dc.DrawText(g.Figure, new Point(x, cy - g.Figure.Height / 2));
+                x += g.FigureSlotW;
+                if (i < list.Count - 1) x += L.Style.GaugeGap;
+            }
+        }
+
+        bool hasLeft = false;
+        if (L.Clock is not null)
+        {
+            dc.DrawText(L.Clock, new Point(x, cy - L.Clock.Height / 2));
+            x += L.ClockSlotW;
+            hasLeft = true;
+        }
+
+        if (L.LeftRings.Count > 0)
+        {
+            if (hasLeft) x += L.Style.ClockGap;
+            DrawRingGroup(L.LeftRings);
+            hasLeft = true;
+        }
+
+        if (L.MidRings.Count > 0)
+        {
+            if (hasLeft) Gap();
+            DrawRingGroup(L.MidRings);
+            hasLeft = true;
+        }
+
+        if (L.NetDownArrow is not null && L.NetDownVal is not null && L.NetUpArrow is not null && L.NetUpVal is not null)
+        {
+            if (hasLeft) Gap();
+            dc.DrawText(L.NetDownArrow, new Point(x, cy - L.NetDownArrow.Height / 2));
+            x += L.NetDownArrow.WidthIncludingTrailingWhitespace + ComboLayout.NetArrowGap;
+            double dnOffset = L.NetDownValSlotW - L.NetDownVal.WidthIncludingTrailingWhitespace;
+            dc.DrawText(L.NetDownVal, new Point(x + dnOffset, cy - L.NetDownVal.Height / 2));
+            x += L.NetDownValSlotW + ComboLayout.NetPairGap;
+
+            dc.DrawText(L.NetUpArrow, new Point(x, cy - L.NetUpArrow.Height / 2));
+            x += L.NetUpArrow.WidthIncludingTrailingWhitespace + ComboLayout.NetArrowGap;
+            double upOffset = L.NetUpValSlotW - L.NetUpVal.WidthIncludingTrailingWhitespace;
+            dc.DrawText(L.NetUpVal, new Point(x + upOffset, cy - L.NetUpVal.Height / 2));
+        }
+
+        return L.CapsuleW;
+    }
+
+    // ============ 3. 单排仪表盘（dash，与 macOS 版 LayoutDash 一致） ============
+
+    private sealed class DashLayout
+    {
+        public double[]? Spectrum;
+        public int SpectrumCount;
+        public int ClipCount;
+        public FormattedText? ClipText;
+        public readonly List<(Glyph Icon, Res Res, bool Ok, FormattedText Text)> Temps = new();
+        public readonly List<(Glyph Icon, Res Res, double Share, FormattedText Text)> Usage = new();
+        public (Glyph Icon, double Share, Color Color, FormattedText Text)? Battery;
+        public readonly List<Color> WirelessRings = new();
+        public readonly List<double> WirelessShares = new();
+        public FormattedText? NetDown, NetUp;
+
+        public const double SpectrumW = 46;
+        public const double SpectrumH = 20;
+        public const double NetGap = 10;
+
+        public double ClipW => ClipText is null ? 0 : 13 + Math.Max(ClipText.WidthIncludingTrailingWhitespace, 16);
+        public double TempW => Temps.Count == 0 ? 0
+            : Temps.Sum(t => CompactIconBox + CompactIconGap + Math.Max(t.Text.WidthIncludingTrailingWhitespace, TempValueMinW) + CompactTempGap) - CompactTempGap;
+        public double UsageW => Usage.Count == 0 ? 0
+            : Usage.Sum(u => DashRing + 5 + Math.Max(u.Text.WidthIncludingTrailingWhitespace, 34) + DashItemGap) - DashItemGap;
+        public double BattW => Battery is { } b ? DashRing + 5 + Math.Max(b.Text.WidthIncludingTrailingWhitespace, 34) : 0;
+        public double DevW => WirelessShares.Count == 0 ? 0 : WirelessShares.Count * (14 + 6) - 6;
+        public double NetW => (NetDown is not null && NetUp is not null)
+            ? NetDown.WidthIncludingTrailingWhitespace + NetGap + NetUp.WidthIncludingTrailingWhitespace : 0;
+
+        public double ContentW
+        {
+            get
+            {
+                double w = 0;
+                int groups = 0;
+                if (SpectrumCount > 1) { w += SpectrumW; groups++; }
+                if (ClipCount > 0 && ClipText is not null) { w += ClipW; groups++; }
+                if (Temps.Count > 0) { w += TempW; groups++; }
+                if (Usage.Count > 0) { w += UsageW; groups++; }
+                if (Battery is not null) { w += BattW; groups++; }
+                if (WirelessShares.Count > 0) { w += DevW; groups++; }
+                if (NetDown is not null && NetUp is not null) { w += NetW; groups++; }
+                if (groups == 0) return 84;
+                return w + (groups - 1) * CompactGroupGap * 2;
+            }
+        }
+
+        public double CapsuleW => ContentW + DashPadX * 2;
+    }
+
+    private DashLayout LayoutDash(Palette pal, double ppd)
+    {
+        var snap = Snapshot;
+        var l = new DashLayout();
+
+        // ⓪ CPU 频谱柱（对应 cores 开关）
+        if (Want("cores") && CpuHistory is { Length: > 0 } hist && CpuHistoryCount > 1)
+        {
+            int n = Math.Min(12, Math.Min(CpuHistoryCount, hist.Length));
+            var slice = new double[n];
+            Array.Copy(hist, hist.Length - n, slice, 0, n);
+            l.Spectrum = slice;
+            l.SpectrumCount = n;
+        }
+
+        int clipCount = ClipboardService.Count;
+        if (clipCount > 0 && DashItems is null)
+        {
+            l.ClipCount = clipCount;
+            l.ClipText = Text($"{clipCount}", FontValue, pal.Text, true, ppd);
+        }
+
+        // ① 温度组
+        void AddDashTemp(bool want, Glyph icon, Res res, double? val, bool omitWhenNull = false)
+        {
+            if (!want) return;
+            if (omitWhenNull && val is null) return;
+            bool ok = val is { } v0 && v0 > 0;
+            double tv = val ?? 0;
+            Color c = !ok ? pal.TextTertiary : ComboTempColor(tv, pal);
+            l.Temps.Add((icon, res, ok, Text(ok ? $"{Math.Round(tv)}°" : "--", FontValue, c, true, ppd)));
+        }
+
+        AddDashTemp(Want("cputemp"), Glyph.Cpu, Res.Cpu, Thermal?.CpuTemp ?? snap?.CpuTemp);
+        AddDashTemp(Want("gputemp"), Glyph.Gpu, Res.Gpu, Thermal?.GpuTemp ?? snap?.GpuTemp);
+        AddDashTemp(Want("ssd"), Glyph.Ssd, Res.Disk, Thermal?.SsdTemp ?? snap?.SsdTemp, omitWhenNull: DashItems is null);
+
+        // ② 占用组（环包图标/字母）
+        if (Want("mem"))
+        {
+            double mv = snap?.MemoryUsagePercent ?? 0;
+            l.Usage.Add((Glyph.Mem, Res.Mem, mv / 100.0, Text($"{mv:F0}%", FontValue, ResColor(Res.Mem, pal), true, ppd)));
+        }
+        if (Want("gpu") && (snap is null || snap.GpuUsage > 0 || DashItems is not null))
+        {
+            double gv = snap?.GpuUsage ?? 0;
+            l.Usage.Add((Glyph.Gpu, Res.Gpu, gv / 100.0, Text($"{gv:F0}%", FontValue, ResColor(Res.Gpu, pal), true, ppd)));
+        }
+        if (Want("disk"))
+        {
+            double dv = snap?.DiskUsagePercent ?? 0;
+            l.Usage.Add((Glyph.Disk, Res.Disk, dv / 100.0, Text($"{dv:F0}%", FontValue, ResColor(Res.Disk, pal), true, ppd)));
+        }
+
+        // ③ 电池与无线外设电量环（DeviceService 优先，首帧回退 MonitorSnapshot.BatteryPercent）
+        if (Want("battery"))
+        {
+            var devs = DeviceService.Snapshot;
+            var bat = devs.FirstOrDefault(d => d.Kind == "battery");
+            double? bp = bat?.Percent ?? snap?.BatteryPercent;
+            bool charging = (bat?.Charging ?? false) || (bat?.PluggedIn ?? false) || (snap?.BatteryCharging ?? false);
+            if (bp is { } bpVal)
+            {
+                int pct = (int)Math.Round(Math.Clamp(bpVal, 0, 100));
+                Color bc = pct <= 20 && !charging ? pal.Up : pct <= 40 && !charging ? pal.Warning : charging ? DownC : ResColor(Res.Batt, pal);
+                l.Battery = (Glyph.Battery, pct / 100.0, bc, Text($"{pct}%", FontValue, ReadableCached(bc, pal), true, ppd));
+            }
+            foreach (var dev in devs.Where(d => d.Kind != "battery").Take(4))
+            {
+                Color dc2 = dev.Charging ? DownC : dev.Percent <= 20 ? pal.Up : dev.Percent <= 40 ? pal.Warning : ResColor(Res.Batt, pal);
+                l.WirelessShares.Add(dev.Percent / 100.0);
+                l.WirelessRings.Add(dc2);
+            }
+        }
+
+        // ④ 单行网速
+        if (Want("net"))
+        {
+            l.NetDown = Text("↓" + MonitorSnapshot.FormatSpeedFixed(snap?.DownloadSpeed ?? 0), FontValue, pal.Down, false, ppd);
+            l.NetUp = Text("↑" + MonitorSnapshot.FormatSpeedFixed(snap?.UploadSpeed ?? 0), FontValue, pal.Up, false, ppd);
+        }
+
+        return l;
+    }
+
+    private double DrawDash(DrawingContext dc, Palette pal, Rect r, double cy)
+    {
+        if (r.Width < 40 || r.Height < 20) return 0;
+        double ppd = Ppd;
+        var L = LayoutDash(pal, ppd);
+        double x = r.X + (r.Width - L.ContentW) / 2;
+
+        void Divider()
+            => dc.DrawLine(PenOf(pal.Hairline, 1, 0.8),
+                new Point(x + CompactGroupGap, cy - 9), new Point(x + CompactGroupGap, cy + 9));
+        void Gap() { Divider(); x += CompactGroupGap * 2; }
+
+        bool hasLeft = false;
+
+        if (L.SpectrumCount > 1 && L.Spectrum is not null)
+        {
+            RenderKit.Spectrum(dc, RenderKit.SafeRect(x, cy - 10, DashLayout.SpectrumW, DashLayout.SpectrumH),
+                L.Spectrum, L.SpectrumCount, ResColor(Res.Cpu, pal), ResColor(Res.Mem, pal));
+            x += DashLayout.SpectrumW;
+            hasLeft = true;
+        }
+
+        if (L.ClipCount > 0 && L.ClipText is not null)
+        {
+            if (hasLeft) Gap();
+            DrawIcon(dc, Glyph.ClipBox, x, cy, pal.TextDim, 0.95);
+            x += 13;
+            Baseline(dc, L.ClipText, x, Math.Round(cy + FontValue * 0.36));
+            x += Math.Max(L.ClipText.WidthIncludingTrailingWhitespace, 16);
+            hasLeft = true;
+        }
+
+        if (L.Temps.Count > 0)
+        {
+            if (hasLeft) Gap();
+            for (int i = 0; i < L.Temps.Count; i++)
+            {
+                var t = L.Temps[i];
+                DrawIcon(dc, t.Icon, x, cy, t.Ok ? ResColor(t.Res, pal) : pal.TextTertiary, 0.9);
+                x += CompactIconBox + CompactIconGap;
+                Baseline(dc, t.Text, x, Math.Round(cy + FontValue * 0.36));
+                x += Math.Max(t.Text.WidthIncludingTrailingWhitespace, TempValueMinW);
+                if (i < L.Temps.Count - 1) x += CompactTempGap;
+            }
+            hasLeft = true;
+        }
+
+        if (L.Usage.Count > 0)
+        {
+            if (hasLeft) Gap();
+            for (int i = 0; i < L.Usage.Count; i++)
+            {
+                var u = L.Usage[i];
+                var c = ResColor(u.Res, pal);
+                RenderKit.Ring(dc, new Point(x + DashRing / 2, cy), DashRing, 2.2, u.Share, pal.Track, c);
+                DrawGaugeCenter(dc, u.Icon, u.Res, x, cy, DashRing, c, ppd);
+                x += DashRing + 5;
+                Baseline(dc, u.Text, x, Math.Round(cy + FontValue * 0.36));
+                x += Math.Max(u.Text.WidthIncludingTrailingWhitespace, 34);
+                if (i < L.Usage.Count - 1) x += DashItemGap;
+            }
+            hasLeft = true;
+        }
+
+        if (L.Battery is { } b)
+        {
+            if (hasLeft) Gap();
+            RenderKit.Ring(dc, new Point(x + DashRing / 2, cy), DashRing, 2.2, b.Share, pal.Track, b.Color);
+            DrawGaugeCenter(dc, b.Icon, Res.Batt, x, cy, DashRing, b.Color, ppd);
+            x += DashRing + 5;
+            Baseline(dc, b.Text, x, Math.Round(cy + FontValue * 0.36));
+            x += Math.Max(b.Text.WidthIncludingTrailingWhitespace, 34);
+            hasLeft = true;
+        }
+
+        if (L.WirelessShares.Count > 0)
+        {
+            if (hasLeft) Gap();
+            for (int i = 0; i < L.WirelessShares.Count; i++)
+            {
+                RenderKit.Ring(dc, new Point(x + 7, cy), 14, 2.0, L.WirelessShares[i], pal.Track, L.WirelessRings[i]);
+                x += 14 + 6;
+            }
+            x -= 6;
+            hasLeft = true;
+        }
+
+        if (L.NetDown is not null && L.NetUp is not null)
+        {
+            if (hasLeft) Gap();
+            Baseline(dc, L.NetDown, x, Math.Round(cy + FontValue * 0.36));
+            x += L.NetDown.WidthIncludingTrailingWhitespace + DashLayout.NetGap;
+            Baseline(dc, L.NetUp, x, Math.Round(cy + FontValue * 0.36));
+        }
+
+        return L.CapsuleW;
+    }
+
+    // ============ 4. 媒体律动胶囊（media，对齐 BrimDeck compact-notch.png：左圆角封面 + 歌名 + 右封面同色律动柱） ============
+
+    private double MeasureMediaWidth(Palette pal, double ppd)
+    {
+        var m = Media;
+        if (m is null || !m.HasMedia)
+            return Text("暂无正在播放的媒体", FontBody, pal.TextDim, false, ppd).WidthIncludingTrailingWhitespace + 68;
+        string label = string.IsNullOrEmpty(m.Artist) ? m.Title : $"{m.Title} · {m.Artist}";
+        var full = Text(label, FontBody, pal.Text, true, ppd);
+        double textW = Math.Min(210, full.WidthIncludingTrailingWhitespace);
+        // 左封面 28 + 间距 10 + 文本 + 间距 12 + 5 根律动柱(24) + 左右内边距 28
+        return 14 + 28 + 10 + textW + 12 + 24 + 14;
+    }
+
+    private double DrawMedia(DrawingContext dc, Palette pal, Rect r, double cy)
+    {
+        if (r.Width < 40 || r.Height < 20) return 0;
+        double ppd = Ppd;
+        var m = Media;
+        Color accent = m?.AccentColor ?? pal.Accent;
+        double x = r.X + 14;
+
+        // 左：28×28 圆角封面或唱片矢量
+        var coverBox = RenderKit.SafeRect(x, cy - 14, 28, 28);
+        if (m?.Cover is not null)
+        {
+            dc.PushClip(new RectangleGeometry(coverBox, 7, 7));
+            dc.DrawImage(m.Cover, coverBox);
+            dc.Pop();
+            dc.DrawRoundedRectangle(null, PenOf(pal.Rim, 0.8, 0.5), coverBox, 7, 7);
+        }
+        else
+        {
+            dc.DrawRoundedRectangle(BrushOf(pal.SurfaceAlt), PenOf(pal.Rim, 0.8, 0.5), coverBox, 7, 7);
+            Point dc0 = new(x + 14, cy);
+            dc.DrawEllipse(Faint(accent, 0.22), PenOf(accent, 1.2, 0.8), dc0, 8.5, 8.5);
+            dc.DrawEllipse(BrushOf(accent), null, dc0, 2.8, 2.8);
+        }
+        x += 28 + 10;
+
+        if (m is null || !m.HasMedia)
+        {
+            var idle = Text("暂无正在播放的媒体", FontBody, pal.TextDim, false, ppd);
+            dc.DrawText(idle, new Point(x, cy - idle.Height / 2));
+            return x - r.X + idle.WidthIncludingTrailingWhitespace + 14;
+        }
+
+        // 右：5 根圆头实时音频律动柱（封面主色，与 compact-notch.png 完全一致）
+        const int barCount = 5;
+        const double barW = 3.2, barGap = 2.0, barMaxH = 18;
+        double waveTotalW = barCount * barW + (barCount - 1) * barGap;
+        double waveX = r.Right - 14 - waveTotalW;
+        var bars = AudioBars;
+        for (int i = 0; i < barCount; i++)
+        {
+            int srcIdx = bars is { Length: > 0 } ? Math.Min(bars.Length - 1, i * (bars.Length / barCount)) : 0;
+            double v = m.IsPlaying && bars is { Length: > 0 }
+                ? Math.Clamp(bars[srcIdx], 0.18, 1.0)
+                : (0.22 + (i % 2) * 0.12);
+            double bh = Math.Max(4, v * barMaxH);
+            double bx = waveX + i * (barW + barGap);
+            dc.DrawRoundedRectangle(BrushOf(accent), null,
+                RenderKit.SafeRect(bx, cy - bh / 2, barW, bh), barW / 2, barW / 2);
+        }
+
+        // 中：歌曲标题 · 歌手
+        double availTextW = Math.Max(40, waveX - 12 - x);
+        string label = string.IsNullOrEmpty(m.Artist) ? m.Title : $"{m.Title} · {m.Artist}";
+        var txt = Text(label, FontBody, pal.Text, true, ppd);
+        if (txt.WidthIncludingTrailingWhitespace > availTextW)
+            txt = Trimmed(label, FontBody, pal.Text, availTextW, true, ppd);
+        dc.DrawText(txt, new Point(x, cy - txt.Height / 2));
+
+        return MeasureMediaWidth(pal, ppd);
+    }
+
+    // ============ 5. Windows 扩展收起视图（monitor / devices / clipboard / window） ============
+
+    private double DrawMonitor(DrawingContext dc, Palette pal, Rect r, double cy, MonitorSnapshot? snap)
+    {
+        if (snap is null || r.Width < 40 || r.Height < 20) return 0;
+        double ppd = Ppd;
+        double x = r.X + 14;
+
+        var cores = snap.CoreUsages;
+        if (cores is { Length: > 0 })
+        {
+            int n = Math.Min(16, cores.Length);
+            double bw = 2.6, gap = 2, maxH = Math.Max(0, Math.Min(22, r.Height - 20));
+            for (int i = 0; i < n; i++)
+            {
+                double v = Easing.Clamp(cores[i] / 100.0, 0, 1);
+                dc.DrawRoundedRectangle(BrushOf(pal.Track), null,
+                    RenderKit.SafeRect(x + i * (bw + gap), cy - maxH / 2, bw, maxH), 1.2, 1.2);
+                double h = 1.6 + v * (maxH - 1.6);
+                var c = LevelColor(v * 100, ResColor(Res.Cpu, pal), pal);
+                dc.DrawRoundedRectangle(BrushOf(c), null,
+                    RenderKit.SafeRect(x + i * (bw + gap), cy + maxH / 2 - h, bw, h), 1.2, 1.2);
+            }
+            x += n * (bw + gap) + 14;
+        }
+
+        const double dialSize = 20, dialFont = 12.5;
+        x += DrawDialGauge(dc, pal, x, cy, ppd, snap.CpuUsage, ResColor(Res.Cpu, pal), "C", dialSize, dialFont) + 14;
+        x += DrawDialGauge(dc, pal, x, cy, ppd, snap.MemoryUsagePercent, ResColor(Res.Mem, pal), "M", dialSize, dialFont) + 14;
+        if (snap.GpuUsage > 0)
+            x += DrawDialGauge(dc, pal, x, cy, ppd, snap.GpuUsage, ResColor(Res.Gpu, pal), "G", dialSize, dialFont) + 14;
+        x += DrawDialGauge(dc, pal, x, cy, ppd, snap.DiskUsagePercent, ResColor(Res.Disk, pal), "D", dialSize, dialFont) + 14;
+
+        var down = Text("↓" + MonitorSnapshot.FormatSpeedFixed(snap.DownloadSpeed), 11.5, pal.Down, true, ppd);
+        var up = Text("↑" + MonitorSnapshot.FormatSpeedFixed(snap.UploadSpeed), 11.5, pal.Up, true, ppd);
+        double bl = Math.Round(cy + 11.5 * 0.36);
+        Baseline(dc, down, x, bl); x += down.WidthIncludingTrailingWhitespace + 8;
+        Baseline(dc, up, x, bl); x += up.WidthIncludingTrailingWhitespace;
+        return x - r.X + 14;
+    }
+
+    private static double DrawDialGauge(DrawingContext dc, Palette pal, double x, double yc, double ppd,
+        double usage, Color arc, string letter, double dialSize, double font)
+    {
+        RenderKit.Ring(dc, new Point(x + dialSize / 2, yc), dialSize, Math.Max(1.8, dialSize * 0.13),
+            usage / 100.0, pal.Track, arc);
+        var lt = Text(letter, dialSize * 0.48, arc, true, ppd);
+        dc.DrawText(lt, new Point(x + (dialSize - lt.Width) / 2, yc - lt.Height / 2));
         double at = x + dialSize + 5;
-        double bl = Math.Round(yc + font * 0.36);
-        string figure = text ?? (usage is { } u1 ? $"{Math.Round(u1)}%" : "—");
-        if (figure == "—") Baseline(dc, Text(figure, font, color, true, ppd), at, bl);
-        else Num(dc, figure, at, bl, font, color, true, ppd);
-        double slot = Math.Ceiling(RenderKit.NumWidth(sample, font, true, ppd));
+        var color = LevelColor(usage, pal.Text, pal);
+        Baseline(dc, Text($"{Math.Round(usage)}%", font, color, true, ppd), at, Math.Round(yc + font * 0.36));
+        double slot = Math.Ceiling(Text("100%", font, pal.Text, true, ppd).WidthIncludingTrailingWhitespace);
         return dialSize + 5 + slot;
     }
 
-
-    /// <summary>
-    /// dash 的信息密度档：决定**显示哪些组**（2026-11-25 单行化后的新语义）。
-    ///
-    /// 旧语义是「只管组间距」（Minimal 16 / 其余 26）；组间距已被规格统一为 24px 总带 + 分隔线，
-    /// 密度再不管间距就没有意义了，改成按可用宽度决定显示什么（规格 §3.2 的密度表）：
-    ///   Minimal（宽 &lt; 390） → 核心柱 + 温度组 + 网速
-    ///   其余（宽 ≥ 390）     → 核心柱 + 温度组 + 占用组 + 网速
-    ///
-    /// 阈值（&lt;390 / &lt;560）保持不变；Full 档原本只比 Balanced 多一个「电池组」，
-    /// 电池组已移出 dash（设备视图已有一份电池读数）⇒ 现在 Full 与 Balanced 的显示内容相同。
-    /// </summary>
-    private enum CompactDensity { Minimal, Balanced, Full }
-
-    /// <summary>
-    /// 收起态信息密度分级：空间越窄，越优先保留用户能立即采取行动的读数。
-    /// 密度按独立预算选档，不跟随动画宽度跳变。
-    /// 所有配置项按完整组测量；预算不足时用 +N 汇总，避免文字和环互相覆盖。
-    /// </summary>
-    private CompactDensity DensityFor() => CompactWidthBudget < 390
-        ? CompactDensity.Minimal
-        : CompactWidthBudget < 560 ? CompactDensity.Balanced : CompactDensity.Full;
-
-    /// <summary>
-    /// dash 视图（全读数单行）：核心柱群 │ 温度项组 │ 占用项组 │ 网速，组间画 Hairline 分隔线。
-    /// 对应 mac 版 dash 的单行形态（mac: 频谱│剪贴板计数│温度组│占用组│电池│设备环│网速）。
-    ///
-    /// 与旧版的差别：旧版是「标签在上、数值在下」的两行网格（高 69px）；
-    /// 现在是单行（高 44px），标签与数值同行。内容项与「用户定制显示项」语义不变。
-    ///
-    /// 电池读数**不在 dash 里**：设备收起视图已经有一份，dash 不重复（2026-11-25 修复轮 2 裁决）。
-    ///
-    /// CompactDensity 的含义随之调整：旧版它只控制组间距（16/26），而组间距已被规格统一为
-    /// 12 + 分隔线，所以改为**决定显示哪些组**（阈值 &lt;390 / &lt;560 不变）：
-    ///   Minimal（宽 &lt; 390）→ 核心柱 + 温度组 + 网速
-    ///   其余（宽 ≥ 390）    → 核心柱 + 温度组 + 占用组 + 网速
-    /// </summary>
-    private double DrawDash(DrawingContext dc, Palette pal, Rect r, double cy,
-        MonitorSnapshot? snap, Services.ThermalSnapshot? thermal)
-    {
-        if (snap is null) return 0;
-        if (r.Width < 40 || r.Height < 20) return 0;
-        double ppd = Ppd;
-        DrawCapsuleBase(dc, pal);
-        var density = DensityFor();
-        var groups = new List<CompactGroup>();
-
-        // 网速项（dash 里**唯一**还是「文字标签 + 数值」的元素）：箭头标签（9.5px 三级文字）+ 间距 3 + 数值（13px 等宽）
-        // mac 的 dash 网速也是纯文字箭头（"↓123.4K"，IslandCanvas.cs L2051-L2052），不是图标盒 ⇒ 保持改动前的排布。
-        // 数值槽按**实画宽**推进，窄值再按最小槽宽 21 兜底（mac 的 max(实画宽, CompactValueMinW) 同口径）：
-        // 预留宽与实画宽必须同口径，否则组尾比墨迹尾多出一截，分隔线整体右移、且随读数跳变
-        // （2026-11-25 复审 Must-fix 1：曾用样本宽 "125°"/"100%" 预留，每项空出 7.1px）。
-        void InlineItem(string label, string value, Color? labelColor, Color? valueColor, ref double x)
-        {
-            var icon = Text(label, 9.5, labelColor ?? pal.TextTertiary, ppd: ppd);
-            Baseline(dc, icon, x, Math.Round(cy + 13 * 0.36));
-            x += icon.Width + CompactSpec.ArrowValueGap;
-            double vx = x;
-            x = Num(dc, value, vx, Math.Round(cy + 13 * 0.36), 13, valueColor ?? pal.Text, true, ppd);
-            x = vx + Math.Max(x - vx, CompactSpec.ValueMinW);   // 窄值按最小槽兜底（与组宽预留同口径）
-            x += CompactSpec.GaugeGap;
-        }
-
-        // 一个组：若干网速项，组内用 GaugeGap 隔开
-        // 组宽按**实画文本宽**预留（不是样本宽）：组宽必须等于这一组真正画出来的宽度，
-        // 否则组尾（分隔线的定位基准）会离最后一个字形远一截 —— 与 mac 的 DashLayout.TempW/UsageW 同口径
-        // （mac 量的是 max(实画文本宽, 最小槽)）。
-        void AddItemGroup(List<(string Label, string Value, Color? LabelColor, Color? ValueColor)> items, bool dividerAfter)
-        {
-            if (items.Count == 0) return;
-            var labels = items.Select(i => (double)Text(i.Label, 9.5, i.LabelColor ?? pal.TextTertiary, ppd: ppd).Width).ToArray();
-            var values = items.Select(i => (double)RenderKit.NumWidth(i.Value, 13, true, ppd)).ToArray();
-            double groupW = CompactSpec.InlineGroupWidth(items.Count, i => labels[i], i => values[i]);
-            groups.Add(new CompactGroup
-            {
-                Width = groupW,
-                Draw = x =>
-                {
-                    double ix = x;
-                    for (int i = 0; i < items.Count; i++)
-                    {
-                        InlineItem(items[i].Label, items[i].Value, items[i].LabelColor, items[i].ValueColor, ref ix);
-                    }
-                },
-                DividerAfter = dividerAfter,
-            });
-        }
-
-        // ---- 读数元素：图标盒 + 数值（mac dash 形态，本次两端对齐的目标）----
-        // mac 侧 dash 的读数元素不是「文字标签」，而是「小图标 + 数值」的元素块
-        // （src/Island.Avalonia/IslandCanvas.cs DrawDash L2000-L2022），有两种盒：
-        //   温度项 = 图标盒（10.8×10.8，图标即盒内容）+ 4 + 数值槽（≥21）
-        //   占用项 = 环盒（环 16、线宽 2.2、环心图标 7.2）+ 5 + 数值槽（≥34）
-        // 「盒」是排版槽位，mac 侧不画圆角底板 ⇒ 这里也不画。
-        // 数值槽按**实画宽**推进，窄值按最小槽兜底（mac 的 max(实画宽, 最小槽) 同口径）。
-
-        // 温度项：图标盒（边长 CompactSpec.IconBox = 10.8）+ 间距 4 + 数值槽（≥21）
-        void TempItem(GlyphKind glyph, string value, Color color, ref double x)
-        {
-            Glyphs.Draw(dc, glyph, RenderKit.SafeRect(x, cy - CompactSpec.IconBox / 2,
-                CompactSpec.IconBox, CompactSpec.IconBox), color, CompactSpec.IconStroke);
-            x += CompactSpec.IconBox + CompactSpec.IconGap;
-            double vx = x;
-            x = Num(dc, value, vx, Math.Round(cy + 13 * 0.36), 13, color, true, ppd);
-            x = vx + Math.Max(x - vx, CompactSpec.ValueMinW);   // 窄值按最小槽兜底（与组宽预留同口径）
-            x += CompactSpec.TempGap;
-        }
-
-        // 占用项：环盒（环 16、线宽 2.2、环心图标 7.2）+ 间距 5 + 数值槽（≥34）
-        // 环 / 环心图标 / 数值三处同色（mac 的同色规则），但颜色是 Windows 的**分级色**
-        // （≥70% 警示、≥90% 危险），不是 mac 的「按资源配色」—— 暗色科技的身份不变。
-        void UsageItem(GlyphKind glyph, double share, string value, Color color, ref double x)
-        {
-            RenderKit.Ring(dc, new Point(x + CompactSpec.DashRing / 2, cy), CompactSpec.DashRing,
-                CompactSpec.DashRingThickness, share, pal.Track, color);
-            Glyphs.Draw(dc, glyph, RenderKit.SafeRect(
-                x + (CompactSpec.DashRing - CompactSpec.DashRingIcon) / 2,
-                cy - CompactSpec.DashRingIcon / 2,
-                CompactSpec.DashRingIcon, CompactSpec.DashRingIcon), color, CompactSpec.IconStroke);
-            x += CompactSpec.DashRing + CompactSpec.DashRingGap;
-            double vx = x;
-            x = Num(dc, value, vx, Math.Round(cy + 13 * 0.36), 13, color, true, ppd);
-            x = vx + Math.Max(x - vx, CompactSpec.DashValueMinW);
-            x += CompactSpec.DashItemGap;
-        }
-
-        // ---- 组 1：核心柱群（保持现状，只改成分组形式）----
-        var cores = snap.CoreUsages;
-        if (Want("cores") && cores is not null && cores.Length > 0)
-        {
-            int n = Math.Min(8, cores.Length);
-            double bw = 4, gap = 2.6, maxH = 26;
-            double baseY = cy + maxH / 2 - 4;
-            groups.Add(new CompactGroup
-            {
-                Width = n * (bw + gap),
-                Draw = x =>
-                {
-                    for (int i = 0; i < n; i++)
-                    {
-                        double v = Easing.Clamp(cores[i] / 100.0, 0, 1);
-                        dc.DrawRoundedRectangle(BrushOf(pal.Track), null,
-                            RenderKit.SafeRect(x + i * (bw + gap), baseY - maxH, bw, maxH), 1.6, 1.6);
-                        double h = 2 + v * maxH;
-                        dc.DrawRoundedRectangle(BrushOf(LevelColor(v * 100, pal.Accent, pal)), null,
-                            RenderKit.SafeRect(x + i * (bw + gap), baseY - h, bw, h), 1.6, 1.6);
-                    }
-                },
-                DividerAfter = true,
-            });
-        }
-
-        // ---- 组 2：温度项组（CPU/GPU/SSD）—— 图标盒形态（mac dash 温度组）----
-        double? ct = thermal?.CpuTemp, gt = thermal?.GpuTemp, st = thermal?.SsdTemp;
-        var temps = new List<(GlyphKind Glyph, string Value, Color Color)>();
-        // 配色：**资源色打底**（CPU 蓝 / GPU 粉 / SSD 薄荷绿），超阈值才转黄/红 —— 与 mac 的 dash 同口径。
-        if (Want("cputemp")) temps.Add((GlyphKind.Cpu, ct is { } c1 ? $"{Math.Round(c1)}°" : "--", TempResourceColor(ct, CpuColor, pal)));
-        if (Want("gputemp")) temps.Add((GlyphKind.Gpu, gt is { } g1 ? $"{Math.Round(g1)}°" : "--", TempResourceColor(gt, GpuColor, pal)));
-        if (Want("ssd")) temps.Add((GlyphKind.Ssd, st is { } s1 ? $"{Math.Round(s1)}°" : "--", TempResourceColor(st, DiskColor, pal)));
-        if (temps.Count > 0)
-        {
-            // 组宽按**实画文本宽**预留（不是样本宽）—— 与 mac 的 DashLayout.TempW 同口径
-            var values = temps.Select(t => (double)RenderKit.NumWidth(t.Value, 13, true, ppd)).ToArray();
-            groups.Add(new CompactGroup
-            {
-                Width = CompactSpec.TempGroupWidth(temps.Count, i => values[i]),
-                Draw = x =>
-                {
-                    double ix = x;
-                    for (int i = 0; i < temps.Count; i++)
-                        TempItem(temps[i].Glyph, temps[i].Value, temps[i].Color, ref ix);
-                },
-                DividerAfter = density != CompactDensity.Minimal,
-            });
-        }
-
-        // ---- 组 3：占用项组（内存/GPU/磁盘）—— 环盒形态（mac dash 占用组）----
-        // Minimal 档不显示占用组（规格 §3.2 的密度表：Minimal = 核心柱 + 温度组 + 网速）。
-        if (density != CompactDensity.Minimal)
-        {
-            var usage = new List<(GlyphKind Glyph, double Share, string Value, Color Color)>();
-            // 占用组：**纯资源色**（内存 青 / GPU 粉 / 磁盘 薄荷绿），环与数字同色 —— 与 mac 的 dash 同口径。
-            if (Want("mem")) usage.Add((GlyphKind.Memory, snap.MemoryUsagePercent / 100.0,
-                $"{snap.MemoryUsagePercent:F0}%", MemColor));
-            if (Want("gpu")) usage.Add((GlyphKind.Gpu, snap.GpuUsage / 100.0,
-                $"{snap.GpuUsage:F0}%", GpuColor));
-            if (Want("disk")) usage.Add((GlyphKind.Disk, snap.DiskUsagePercent / 100.0,
-                $"{snap.DiskUsagePercent:F0}%", DiskColor));
-            if (usage.Count > 0)
-            {
-                // 组宽按**实画文本宽**预留（不是样本宽）—— 与 mac 的 DashLayout.UsageW 同口径
-                var values = usage.Select(u => (double)RenderKit.NumWidth(u.Value, 13, true, ppd)).ToArray();
-                groups.Add(new CompactGroup
-                {
-                    Width = CompactSpec.UsageGroupWidth(usage.Count, i => values[i]),
-                    Draw = x =>
-                    {
-                        double ix = x;
-                        for (int i = 0; i < usage.Count; i++)
-                            UsageItem(usage[i].Glyph, usage[i].Share, usage[i].Value, usage[i].Color, ref ix);
-                    },
-                    DividerAfter = true,
-                });
-            }
-        }
-
-        // ---- 组 4：网速（↓ ↔ ↑ 间距用 CompactSpec.DashNetGap = 10，mac DashLayout.NetGap）----
-        // 电池读数不在这里：设备收起视图已经有一份，dash 不重复（修复轮 2 裁决）。
-        if (Want("net"))
-        {
-            // 方向箭头用资源色（↓ 蓝 / ↑ 青，参考图同款），数值仍是文字色。
-            AddItemGroup(new List<(string, string, Color?, Color?)>
-            {
-                ("↓", MonitorSnapshot.FormatSpeedFixed(snap.DownloadSpeed), NetDownColor, null),
-                ("↑", MonitorSnapshot.FormatSpeedFixed(snap.UploadSpeed), NetUpColor, null),
-            }, dividerAfter: false);
-        }
-
-        // dash 的胶囊左右内边距用 CompactSpec.DashPadX = 14（mac DashPadX），不是 combo 的 PadX = 10；
-        // 组间距必须用 SeparatorBand(24)：分隔线固定画在「组尾 + 18」，若组间距是默认 16，
-        // 线会落到下一组起点右侧 2px（压字）。mac 的 dash 各组之间也是 Gap()（带 24px 总带 + 线）。
-        return DrawCompactGroups(dc, pal, r, cy, groups,
-            gap: CompactSpec.SeparatorBand, padding: CompactSpec.DashPadX, drawDividers: true);
-    }
-
-    /// <summary>设备电量行（BrimDeck compact-devices 同款：文件数 + 设备图标 + 大号分级配色百分比）。</summary>
     private double DrawDevices(DrawingContext dc, Palette pal, Rect r, double cy)
     {
         if (r.Width < 40 || r.Height < 20) return 0;
         double ppd = Ppd;
-        DrawCapsuleBase(dc, pal);
+        double x = r.X + 16;
 
-        var groups = new List<CompactGroup>();
-
-        // 文件中转计数（有文件才显示）
         int files = FileTrayService.Count;
         if (files > 0)
         {
-            var fi = Text("文", 11, pal.TextDim, true, ppd);
-            groups.Add(new CompactGroup
-            {
-                Width = fi.Width + 4 + RenderKit.NumWidth($"{files}", 13, true, ppd),
-                Draw = x =>
-                {
-                    dc.DrawText(fi, new Point(x, cy - fi.Height / 2));
-                    Num(dc, $"{files}", x + fi.Width + 4, Math.Round(cy + 5), 13, pal.Text, true, ppd);
-                },
-            });
+            var fi = Text("文", 11, pal.Accent, true, ppd);
+            dc.DrawText(fi, new Point(x, cy - fi.Height / 2));
+            x += fi.Width + 4;
+            var fc = Text($"{files}", 13, pal.Text, true, ppd);
+            dc.DrawText(fc, new Point(x, cy - fc.Height / 2));
+            x += fc.Width + 20;
         }
 
         var devices = DeviceService.Snapshot;
         if (devices.Count == 0 && files == 0)
         {
-            var empty = Trimmed("未检测到设备电量", 11, pal.TextDim, Math.Max(1, CompactWidthBudget - 32), false, ppd);
-            dc.DrawText(empty, new Point(r.X + 16, cy - empty.Height / 2));
-            return Math.Min(CompactWidthBudget, empty.Width + 32);
+            var empty = Text("未检测到无线设备电量（蓝牙/HID）", 11, pal.TextDim, ppd: ppd);
+            dc.DrawText(empty, new Point(x, cy - empty.Height / 2));
+            return empty.Width + 32;
         }
 
-        foreach (var d in devices)
+        foreach (var d in devices.Take(5))
         {
-            // 分级配色：充电绿 / ≤20 红 / ≤40 橙 / 其余文字色
-            var color = d.Charging ? pal.Down
-                      : d.Percent <= 20 ? pal.Up
-                      : d.Percent <= 40 ? pal.Warning
-                      : pal.Text;
-            // 设备图标（矢量剪影）+ 大号读数：档位设备显示"空/低/中/满"（系统只给档位，
-            // 换算成百分比就是伪装），百分比设备显示分级配色粗体等宽数字
-            double width = 15 + (d.LevelText is { } label ? Text(label, 12.5, color, true, ppd).Width
-                : RenderKit.NumWidth($"{d.Percent}%", 13, true, ppd)) + (d.Charging ? 11 : 0);
-            groups.Add(new CompactGroup
+            var color = d.Charging ? DownC : d.Percent <= 20 ? pal.Up : d.Percent <= 40 ? pal.Warning : pal.Text;
+            var glyph = Text(DeviceService.Glyph(d.Kind), 11, pal.TextDim, true, ppd);
+            dc.DrawText(glyph, new Point(x, cy - glyph.Height / 2));
+            x += glyph.Width + 5;
+            var pct = Text($"{d.Percent}%", 13, color, true, ppd);
+            dc.DrawText(pct, new Point(x, cy - pct.Height / 2));
+            x += pct.Width;
+            if (d.Charging)
             {
-                Width = width,
-                Draw = x =>
-                {
-                    Glyphs.Draw(dc, Glyphs.IconOf(d.Kind), RenderKit.SafeRect(x, cy - 5.5, 11, 11), pal.TextDim);
-                    x += 15;
-                    if (d.LevelText is { } levelText)
-                    {
-                        var level = Text(levelText, 12.5, color, true, ppd);
-                        dc.DrawText(level, new Point(x, cy - level.Height / 2));
-                        x += level.Width;
-                    }
-                    else
-                        x = Num(dc, $"{d.Percent}%", x, Math.Round(cy + 13 * 0.36), 13, color, true, ppd);
-                    // 充电小闪电提供颜色之外的形状线索。
-                    if (d.Charging)
-                        Glyphs.Draw(dc, GlyphKind.Bolt, RenderKit.SafeRect(x + 1, cy - 8, 9, 9), pal.Down);
-                },
-            });
+                var bolt = Text("⚡", 9, DownC, ppd: ppd);
+                dc.DrawText(bolt, new Point(x + 1, cy - pct.Height / 2 - 2));
+                x += bolt.Width + 2;
+            }
+            x += 18;
         }
-        return DrawCompactGroups(dc, pal, r, cy, groups, 18, 16);
+        return x - r.X - 18 + 16;
     }
 
-    /// <summary>剪贴板提示行：图标 + 最近一条内容预览。</summary>
     private double DrawClipboardHint(DrawingContext dc, Palette pal, Rect r, double cy)
     {
         double ppd = Ppd;
         var last = ClipboardService.LastPreview;
-        bool empty = string.IsNullOrEmpty(last);
         double x = r.X + 16;
-        Glyphs.Draw(dc, GlyphKind.Clipboard, RenderKit.SafeRect(x, cy - 7.5, 15, 15), empty ? pal.TextDim : pal.Text);
-        x += 23;
-        // 预览超长时截断（内容宽度上限 260，避免剪贴板长文本撑爆岛体）
-        string preview = empty ? "剪贴板为空" : last;
-        var previewColor = empty ? pal.TextDim : pal.Text;
-        int count = ClipboardService.Count;
-        string cs = $"{count} 条";
-        double cw = count > 0 ? RenderKit.NumWidth(cs, 10, false, ppd) : 0;
-        bool showCount = cw + 39 + 14 + 12 < CompactWidthBudget;
-        double countBlock = showCount && count > 0 ? cw + 12 : 0;
-        double maxPreview = Math.Max(1, Math.Min(260, CompactWidthBudget - 39 - 14 - countBlock));
-        var t = Trimmed(preview, 11.5, previewColor, maxPreview, false, ppd);
+        DrawIcon(dc, Glyph.ClipBox, x, cy, pal.Accent, 1.0);
+        x += 18;
+        string preview = string.IsNullOrEmpty(last) ? "剪贴板为空" : last;
+        var previewColor = string.IsNullOrEmpty(last) ? pal.TextDim : pal.Text;
+        var t = Text(preview, 11.5, previewColor, ppd: ppd);
+        const double maxPreview = 260;
+        if (t.Width > maxPreview)
+            t = Trimmed(preview, 11.5, previewColor, maxPreview, false, ppd);
         dc.DrawText(t, new Point(x, cy - t.Height / 2));
         x += t.Width;
-        if (countBlock > 0)
-            Num(dc, cs, x + 12, Math.Round(cy + 4), 10, pal.TextDim, false, ppd);
-        return Math.Min(CompactWidthBudget, x - r.X + countBlock + 14);
+        double countBlock = 0;
+        int count = ClipboardService.Count;
+        if (count > 0)
+        {
+            var n = Text($"{count} 条", 10, pal.TextDim, ppd: ppd);
+            dc.DrawText(n, new Point(r.Right - 14 - n.Width, cy - n.Height / 2));
+            countBlock = n.Width + 14;
+        }
+        return x - r.X + (countBlock > 0 ? 12 + countBlock : 14);
     }
 
-    /// <summary>活动窗口视图：强调色圆点（"正在跟随前台窗口"）+ 进程名 + 窗口标题，超长截断。</summary>
     private double DrawActiveWindow(DrawingContext dc, Palette pal, Rect r, double cy)
     {
         if (r.Width < 40 || r.Height < 20) return 0;
         double ppd = Ppd;
-        DrawCapsuleBase(dc, pal);
-
         double x = r.X + 16;
         dc.DrawEllipse(BrushOf(pal.Accent), null, new Point(x + 4, cy), 4, 4);
         x += 16;
 
         var (proc, title) = ActiveWindow ?? ("", "");
         string procText = string.IsNullOrEmpty(proc) ? "桌面" : proc;
-        var p = Trimmed(procText, 11.5, pal.Text, Math.Max(1, Math.Min(160, CompactWidthBudget - 58)), true, ppd);
+        var p = Text(procText, 11.5, pal.Accent, true, ppd);
         dc.DrawText(p, new Point(x, cy - p.Height / 2));
         x += p.Width + 10;
 
-        double maxTitle = Math.Max(1, Math.Min(300, CompactWidthBudget - (x - r.X) - 16));
+        const double maxTitle = 300;
         string tt = string.IsNullOrEmpty(title) ? "" : title;
         var t = Text(tt, 11, pal.TextDim, ppd: ppd);
         if (t.Width > maxTitle)
-            t = RenderKit.Trimmed(tt, 11, pal.TextDim, maxTitle, false, ppd);
+            t = Trimmed(tt, 11, pal.TextDim, maxTitle, false, ppd);
         if (!string.IsNullOrEmpty(tt))
             dc.DrawText(t, new Point(x, cy - t.Height / 2));
-        return Math.Min(CompactWidthBudget, x - r.X + (string.IsNullOrEmpty(tt) ? 0 : t.Width) + 16);
+        return x - r.X + (string.IsNullOrEmpty(tt) ? 0 : t.Width) + 16;
     }
 
-    /// <summary>
-    /// 时钟视图：**时间 + 秒 │ 日期 │ 天气 │ 上下行网速**。
-    ///
-    /// 2026-11-26 对齐 mac（用户拍板）：mac 的时间胶囊是 **时间 + 秒 + 日期 + 天气**，
-    /// Windows 此前只有 **时间 + 天气 + 上下行网速** ⇒ 同一个视图两端内容不同。
-    /// 补上秒与日期后，两端都有"时间 + 秒 + 日期 + 天气"；
-    /// 剩下的唯一差异是 **上下行网速只有 Windows 有**（平台专属读数，公开在能力清单里）。
-    ///
-    /// 细节：
-    ///   · 秒与时间是**一体**的（mac 同款）：秒用次级色、字号更小、**基线对齐**主时间，
-    ///     不是悬在右下角的装饰；
-    ///   · 日期格式取自两端共用的 <see cref="ClockTextSpec"/>（不各写一份，否则又会漂）；
-    ///   · 时间按样本 "00:00" 预留宽度（分针跳变不推挤后面的内容）。
-    /// </summary>
-    private double DrawClock(DrawingContext dc, Palette pal, Rect r, double cy, MonitorSnapshot? snap)
+    // ============ 5. 12×12 矢量图标库（与 macOS 版 BuildIcon/DrawIcon 一致，缓存冻结零分配） ============
+
+    private enum Glyph
     {
-        double ppd = Ppd;
-        var now = DateTime.Now;
-
-        // 时间 + 秒（一体）
-        double tw = RenderKit.NumWidth("00:00", 15, true, ppd);
-        double sw = RenderKit.NumWidth("00", 11, true, ppd);
-        const double secGap = 3;
-        var groups = new List<CompactGroup>
-        {
-            new CompactGroup
-            {
-                Width = tw + secGap + sw,
-                Draw = x =>
-                {
-                    double baseline = Math.Round(cy + 15 * 0.36);
-                    Num(dc, now.ToString("HH:mm"), x, baseline, 15, pal.Text, true, ppd);
-                    // 秒：字号更小、颜色更淡，基线对齐主时间（mac 同款）
-                    Num(dc, ClockTextSpec.SecondsText(now), x + tw + secGap, baseline, 11, pal.TextDim, true, ppd);
-                },
-            },
-        };
-
-        // 日期："11月27日·周五"（两端共用同一份格式实现）
-        var dateText = Text(ClockTextSpec.DateText(now), 11.5, pal.TextDim, ppd: ppd);
-        groups.Add(new CompactGroup
-        {
-            Width = dateText.Width,
-            Draw = x => dc.DrawText(dateText, new Point(x, cy - dateText.Height / 2)),
-        });
-        // 天气（时钟旁给环境信息）；无数据时不占位
-        if (Weather is { } w)
-        {
-            // 过期（最近一次成功更新超过 30 分钟）时不显示旧读数：
-            // 断网后把几小时前的温度当"实时"画出来，比没有数据更糟 —— 统一按铁律显示 "--"。
-            bool stale = w.IsStale;
-            string temp = stale ? "--" : $"{Math.Round(w.Temp)}°";
-            Color tempColor = stale ? pal.TextDim : pal.Text;
-            var emoji = Text(stale ? "" : w.Emoji, 12, pal.Text, ppd: ppd);
-            double tempW = RenderKit.NumWidth(temp, 12, true, ppd);
-            groups.Add(new CompactGroup
-            {
-                Width = emoji.Width + 3 + tempW,
-                Draw = x =>
-                {
-                    if (!stale) dc.DrawText(emoji, new Point(x, cy - emoji.Height / 2));
-                    Num(dc, temp, x + emoji.Width + 3, Math.Round(cy + 12 * 0.36), 12, tempColor, true, ppd);
-                },
-            });
-        }
-        if (snap is not null)
-            groups.Add(new CompactGroup
-            {
-                // clock / monitor 视图保持改动前外观（旧紧凑格式 + 10 间距）；dash 的网速已在 Task 5 按 mac 对齐（见 DrawDash）
-                Width = NetWidth(10, snap, ppd, CompactSpec.DashNetGap, NetSpeedFormat.Compact),
-                Draw = x => DrawNet(dc, pal, x, Math.Round(cy + 10 * 0.38), 10, snap, ppd, CompactSpec.DashNetGap, NetSpeedFormat.Compact),
-            });
-        return DrawCompactGroups(dc, pal, r, cy, groups, 12, 16);
+        Cpu, Gpu, Mem, Down, Up, Battery, Disk, Ssd,
+        Sun, Cloud, Rain, Snow, Fog, Bolt, ClipBox,
     }
 
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Glyph, (StreamGeometry Stroke, bool HasStroke, StreamGeometry Fill, bool HasFill)> _iconGeos = new();
+
+    private static double DrawIcon(DrawingContext dc, Glyph g, double x, double cy, Color color, double scale = 1.0)
+    {
+        var geos = _iconGeos.GetOrAdd(g, BuildIcon);
+        dc.PushTransform(new MatrixTransform(scale, 0, 0, scale, x, cy - 6 * scale));
+        try
+        {
+            if (geos.HasStroke)
+                dc.DrawGeometry(null, PenOf(color, 1.3 * scale), geos.Stroke);
+            if (geos.HasFill)
+                dc.DrawGeometry(BrushOf(color), null, geos.Fill);
+        }
+        finally
+        {
+            dc.Pop();
+        }
+        return 12 * scale;
+    }
+
+    private static (StreamGeometry Stroke, bool HasStroke, StreamGeometry Fill, bool HasFill) BuildIcon(Glyph g)
+    {
+        var stroke = new StreamGeometry();
+        var fills = new StreamGeometry();
+        bool hasStroke = false, hasFill = false;
+
+        using (var sctx = stroke.Open())
+        using (var fctx = fills.Open())
+        {
+            void Seg(double ax, double ay, double bx, double by)
+            {
+                hasStroke = true;
+                sctx.BeginFigure(new Point(ax, ay), false, false);
+                sctx.LineTo(new Point(bx, by), true, false);
+            }
+            void PolyLine(bool closed, params (double x, double y)[] pts)
+            {
+                if (pts.Length < 2) return;
+                hasStroke = true;
+                sctx.BeginFigure(new Point(pts[0].x, pts[0].y), false, closed);
+                for (int i = 1; i < pts.Length; i++)
+                    sctx.LineTo(new Point(pts[i].x, pts[i].y), true, false);
+            }
+            void Box(double x, double y, double w, double h, double r = 0)
+            {
+                hasStroke = true;
+                if (r <= 0)
+                {
+                    sctx.BeginFigure(new Point(x, y), false, true);
+                    sctx.LineTo(new Point(x + w, y), true, false);
+                    sctx.LineTo(new Point(x + w, y + h), true, false);
+                    sctx.LineTo(new Point(x, y + h), true, false);
+                }
+                else
+                {
+                    var rr = new Rect(x, y, w, h);
+                    sctx.BeginFigure(new Point(rr.X + r, rr.Y), false, true);
+                    sctx.LineTo(new Point(rr.Right - r, rr.Y), true, false);
+                    sctx.ArcTo(new Point(rr.Right, rr.Y + r), new Size(r, r), 0, false, SweepDirection.Clockwise, true, false);
+                    sctx.LineTo(new Point(rr.Right, rr.Bottom - r), true, false);
+                    sctx.ArcTo(new Point(rr.Right - r, rr.Bottom), new Size(r, r), 0, false, SweepDirection.Clockwise, true, false);
+                    sctx.LineTo(new Point(rr.X + r, rr.Bottom), true, false);
+                    sctx.ArcTo(new Point(rr.X, rr.Bottom - r), new Size(r, r), 0, false, SweepDirection.Clockwise, true, false);
+                    sctx.LineTo(new Point(rr.X, rr.Y + r), true, false);
+                    sctx.ArcTo(new Point(rr.X + r, rr.Y), new Size(r, r), 0, false, SweepDirection.Clockwise, true, false);
+                }
+            }
+            void FRect(double x, double y, double w, double h)
+            {
+                hasFill = true;
+                fctx.BeginFigure(new Point(x, y), true, true);
+                fctx.LineTo(new Point(x + w, y), false, false);
+                fctx.LineTo(new Point(x + w, y + h), false, false);
+                fctx.LineTo(new Point(x, y + h), false, false);
+            }
+            void FPoly(params (double x, double y)[] pts)
+            {
+                if (pts.Length == 0) return;
+                hasFill = true;
+                fctx.BeginFigure(new Point(pts[0].x, pts[0].y), true, true);
+                for (int i = 1; i < pts.Length; i++)
+                    fctx.LineTo(new Point(pts[i].x, pts[i].y), false, false);
+            }
+            void FEllipse(double cx, double cy, double rx, double ry)
+            {
+                hasFill = true;
+                fctx.BeginFigure(new Point(cx + rx, cy), true, true);
+                fctx.ArcTo(new Point(cx - rx, cy), new Size(rx, ry), 0, true, SweepDirection.Clockwise, false, false);
+                fctx.ArcTo(new Point(cx + rx, cy), new Size(rx, ry), 0, true, SweepDirection.Clockwise, false, false);
+            }
+
+            switch (g)
+            {
+                case Glyph.Cpu:
+                    Box(3, 3, 6, 6);
+                    FEllipse(6, 6, 1.4, 1.4);
+                    foreach (var (ax, ay, bx, by) in new[]
+                    {
+                        (5.0, 1.0, 5.0, 3.0), (7.0, 1.0, 7.0, 3.0), (5.0, 9.0, 5.0, 11.0), (7.0, 9.0, 7.0, 11.0),
+                        (1.0, 5.0, 3.0, 5.0), (1.0, 7.0, 3.0, 7.0), (9.0, 5.0, 11.0, 5.0), (9.0, 7.0, 11.0, 7.0),
+                    })
+                        Seg(ax, ay, bx, by);
+                    break;
+                case Glyph.Gpu:
+                    Box(2.2, 2.2, 7.6, 7.6, 1.4);
+                    FRect(3.8, 3.8, 4.4, 4.4);
+                    FEllipse(6, 6, 1.1, 1.1);
+                    break;
+                case Glyph.Mem:
+                    Box(1, 4, 10, 4);
+                    for (int i = 0; i < 4; i++) Seg(2.5 + i * 2.2, 8, 2.5 + i * 2.2, 10);
+                    break;
+                case Glyph.Down:
+                    Seg(6, 1, 6, 10);
+                    PolyLine(false, (2.5, 6.5), (6, 10), (9.5, 6.5));
+                    break;
+                case Glyph.Up:
+                    Seg(6, 11, 6, 2);
+                    PolyLine(false, (2.5, 5.5), (6, 2), (9.5, 5.5));
+                    break;
+                case Glyph.Battery:
+                    Box(1, 3, 9, 6);
+                    FRect(10, 5, 1.5, 2);
+                    FRect(2.2, 4.2, 4, 3.6);
+                    break;
+                case Glyph.Disk:
+                    Box(1, 3, 10, 6);
+                    Seg(1, 6, 11, 6);
+                    break;
+                case Glyph.Ssd:
+                    Box(0.8, 3, 10.4, 6, 1);
+                    FRect(2, 4.2, 2.4, 3.6);
+                    FRect(5.1, 4.2, 2.4, 3.6);
+                    Seg(8.9, 4.4, 8.9, 7.6);
+                    Seg(10.3, 4.4, 10.3, 7.6);
+                    break;
+                case Glyph.Sun:
+                {
+                    var pts = new (double, double)[14];
+                    for (int i = 0; i < 14; i++)
+                    {
+                        double a = i * Math.PI * 2 / 14;
+                        pts[i] = (6 + Math.Cos(a) * 2.6, 6 + Math.Sin(a) * 2.6);
+                    }
+                    FPoly(pts);
+                    for (int i = 0; i < 8; i++)
+                    {
+                        double a = i * Math.PI / 4;
+                        double c1 = Math.Cos(a), s1 = Math.Sin(a);
+                        Seg(6 + c1 * 4.2, 6 + s1 * 4.2, 6 + c1 * 5.6, 6 + s1 * 5.6);
+                    }
+                    break;
+                }
+                case Glyph.Cloud:
+                    FPoly((3.2, 5.2), (5.0, 5.2), (5.6, 4.4), (7.0, 4.4), (7.8, 5.3), (9.4, 5.3), (9.4, 8.4), (3.2, 8.4));
+                    break;
+                case Glyph.Rain:
+                    FPoly((3.2, 6.0), (5.0, 6.0), (5.6, 5.2), (7.0, 5.2), (7.8, 6.1), (9.4, 6.1), (9.4, 8.6), (3.2, 8.6));
+                    for (int i = 0; i < 3; i++) { double rx = 4.2 + i * 2.0; Seg(rx, 9.4, rx - 0.8, 11.2); }
+                    break;
+                case Glyph.Snow:
+                    FPoly((3.2, 6.0), (5.0, 6.0), (5.6, 5.2), (7.0, 5.2), (7.8, 6.1), (9.4, 6.1), (9.4, 8.6), (3.2, 8.6));
+                    FRect(3.2, 10.2, 0.8, 1.0);
+                    FRect(5.7, 10.8, 0.8, 0.8);
+                    FRect(8.2, 10.2, 0.8, 1.0);
+                    break;
+                case Glyph.Fog:
+                    FPoly((3.2, 6.8), (5.0, 6.8), (5.6, 6.0), (7.0, 6.0), (7.8, 6.9), (9.4, 6.9), (9.4, 8.8), (3.2, 8.8));
+                    for (int i = 0; i < 3; i++) { double yy = 9.6 + i * 0.8; Seg(3.2, yy, 9.2, yy); }
+                    break;
+                case Glyph.Bolt:
+                    PolyLine(true, (7.2, 1.0), (3.4, 6.8), (6.2, 6.8), (4.8, 11.0), (8.6, 5.2), (5.8, 5.2));
+                    break;
+                case Glyph.ClipBox:
+                    Box(1.6, 3.2, 8.8, 7.6, 1.2);
+                    PolyLine(false, (4.2, 3.2), (4.2, 1.8), (7.8, 1.8), (7.8, 3.2));
+                    break;
+            }
+        }
+        stroke.Freeze();
+        fills.Freeze();
+        return (stroke, hasStroke, fills, hasFill);
+    }
 }
 
 /// <summary>收起态临时活动（音量指示 / 高温告警等，参考 BrimDeck compact-alert）。</summary>
 public sealed record ActivityView
 {
-    public string Kind { get; init; } = "volume";     // volume / temp
-    public string Label { get; set; } = "音量";        // 图标圆内的字
-    public string? RightText { get; set; }             // 右侧读数（null=按 Value 显示百分比）
+    public string Kind { get; init; } = "volume";
+    public string Label { get; init; } = "音量";
+    public string? RightText { get; init; }
     public double Value { get; set; }
     public bool Muted { get; set; }
     public DateTime Start { get; set; } = DateTime.Now;

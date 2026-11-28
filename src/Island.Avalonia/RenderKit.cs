@@ -140,7 +140,7 @@ internal static class RenderKit
     public static Bitmap? Bitmap(byte[]? png)
     {
         if (png is null || png.Length == 0) return null;
-        string key = Convert.ToHexString(png.AsSpan(0, Math.Min(64, png.Length))) + png.Length;
+        string key = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(png));
         lock (_bitmapGate)
         {
             if (_bitmaps.TryGetValue(key, out var hit)) return hit;
@@ -148,7 +148,16 @@ internal static class RenderKit
             {
                 using var ms = new MemoryStream(png);
                 var bmp = new Bitmap(ms);
-                if (_bitmaps.Count > 256) _bitmaps.Clear();     // 粗略封顶，避免无限增长
+                if (_bitmaps.Count >= 256)
+                {
+                    foreach (var oldKey in _bitmaps.Keys.Take(64).ToList())
+                    {
+                        if (_bitmaps.Remove(oldKey, out var oldBmp))
+                        {
+                            try { oldBmp.Dispose(); } catch { }
+                        }
+                    }
+                }
                 _bitmaps[key] = bmp;
                 return bmp;
             }

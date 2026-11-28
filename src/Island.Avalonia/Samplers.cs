@@ -17,10 +17,20 @@ public interface ISampler : IDisposable
 public static class Samplers
 {
     public static ISampler Create(int intervalMs) =>
-        OperatingSystem.IsMacOS() ? new MacSampler(intervalMs) : new WinSampler(intervalMs);
+        OperatingSystem.IsMacOS() ? new MacSampler(intervalMs)
+        : OperatingSystem.IsWindows() ? new WinSampler(intervalMs)
+        : new NullSampler();
+}
+
+internal sealed class NullSampler : ISampler
+{
+    public event Action<MonitorSnapshot>? Snapshot;
+    public void Start() => Snapshot?.Invoke(new MonitorSnapshot { Status = ReadingStatus.Empty });
+    public void Dispose() { }
 }
 
 /// <summary>Windows：直接复用 Island.Native.SystemMonitor（PDH 全套）+ WMI 电池 + LHM 温度。</summary>
+[System.Runtime.Versioning.SupportedOSPlatform("windows")]
 public sealed class WinSampler : ISampler
 {
     private readonly Island.Native.SystemMonitor _inner;
@@ -30,15 +40,27 @@ public sealed class WinSampler : ISampler
     private DateTime _battChecked = DateTime.MinValue;
     private double? _battPct;
     private bool _battCharging;
+    private SamplerDemand _demand = SamplerDemand.Collapsed;
 
     public WinSampler(int intervalMs)
     {
         _inner = new Island.Native.SystemMonitor(intervalMs);
-        _thermal.SetWanted(true);   // 常驻采样 CPU/GPU/SSD 温度（2s）
+        _thermal.SetWanted(true);
         _inner.Snapshot += s =>
         {
-            SampleBattery();
+            if (_demand.HasFlag(SamplerDemand.Battery)) SampleBattery();
             var th = _thermal.Current;
+            var battReading = !_demand.HasFlag(SamplerDemand.Battery)
+                ? Reading<double>.NotRequested
+                : _battPct is { } bp ? Reading<double>.Of(bp) : Reading<double>.Unavailable("无内置电池");
+            var wantTemp = _demand.HasFlag(SamplerDemand.Temperatures);
+            var st = s.Status with
+            {
+                Battery = battReading,
+                CpuTemp = !wantTemp ? Reading<double>.NotRequested : th?.CpuTemp is { } ct ? Reading<double>.Of(ct) : Reading<double>.Unavailable("无传感器读数"),
+                GpuTemp = !wantTemp ? Reading<double>.NotRequested : th?.GpuTemp is { } gt ? Reading<double>.Of(gt) : Reading<double>.Unavailable("无传感器读数"),
+                SsdTemp = !wantTemp ? Reading<double>.NotRequested : th?.SsdTemp is { } stt ? Reading<double>.Of(stt) : Reading<double>.Unavailable("无传感器读数"),
+            };
             Snapshot?.Invoke(s with
             {
                 BatteryPercent = _battPct,
@@ -49,10 +71,17 @@ public sealed class WinSampler : ISampler
                 MotherboardTemp = th?.MotherboardTemp,
                 GpuMemoryUsedGB = th?.GpuMemoryUsedGB,
                 GpuMemoryTotalGB = th?.GpuMemoryTotalGB,
-                GpuMemoryKind = th?.GpuMemoryKind ?? "",   // 口径与数值同源（Windows 走同一份 LHM 规则）
                 GpuCoreClockMHz = th?.GpuCoreClockMHz,
+                Status = st,
             });
         };
+    }
+
+    public void SetDemand(SamplerDemand demand)
+    {
+        _demand = demand;
+        _inner.SetDemand(demand);
+        _thermal.SetWanted(demand.HasFlag(SamplerDemand.Temperatures));
     }
 
     /// <summary>本机电池（WMI Win32_Battery，30 秒一采；台式机无电池给 null）。</summary>
@@ -64,14 +93,15 @@ public sealed class WinSampler : ISampler
         {
             using var q = new System.Management.ManagementObjectSearcher(
                 "SELECT EstimatedChargeRemaining, BatteryStatus FROM Win32_Battery");
-            foreach (var o in q.Get())
+            using var results = q.Get();
+            foreach (System.Management.ManagementBaseObject o in results)
             {
-                _battPct = Convert.ToDouble(o["EstimatedChargeRemaining"]);
-                // 充电判定：6=Charging 7=Charging and High 8=Charging and Low 9=Charging and Critical。
-                // 2 = "接着交流电所以不在放电"，满电插着电源显示"充电中"是错的
-                //（主工程 DeviceService.IsChargingStatus 已修，这里是与它对齐的副本 —— 2026-11-23 复审 F-2）。
-                _battCharging = Convert.ToInt32(o["BatteryStatus"]) is 6 or 7 or 8 or 9;
-                return;
+                using (o)
+                {
+                    _battPct = Convert.ToDouble(o["EstimatedChargeRemaining"]);
+                    _battCharging = Convert.ToInt32(o["BatteryStatus"]) is 6 or 7 or 8 or 9;
+                    return;
+                }
             }
             _battPct = null;   // 无电池
         }
@@ -88,12 +118,13 @@ public sealed class WinSampler : ISampler
 /// - 内存：host_statistics64(HOST_VM_INFO64) + sysctlbyname("hw.memsize")
 /// - 网速：.NET NetworkInterface（跨平台，与 Windows 版同口径）
 /// - 磁盘：statfs(Data 卷)，无子进程
-/// GPU/温度：Apple Silicon 需要 IOReport/SMC（受限），GPU v0.1 给 0/"--"；温度走 IOHID 探针。
+/// GPU/温度：Apple Silicon 需要 IOReport/SMC（受限），GPU 走 ioreg AGXAccelerator；温度走 IOHID + SMC 探针。
 /// </summary>
+[System.Runtime.Versioning.SupportedOSPlatform("macos")]
 public sealed class MacSampler : ISampler
 {
     private readonly System.Timers.Timer _timer;
-    private long _lastCpuUser, _lastCpuSystem, _lastCpuIdle, _lastCpuNice;
+    private uint _lastCpuUser, _lastCpuSystem, _lastCpuIdle, _lastCpuNice;
     private bool _cpuInit;
     private long _lastIn, _lastOut;
     private DateTime _lastNetTime;
@@ -102,28 +133,49 @@ public sealed class MacSampler : ISampler
 
     public event Action<MonitorSnapshot>? Snapshot;
 
+    private readonly SamplerReentrancyGuard _sampleGuard = new();
+    private volatile bool _disposed;
+
     public MacSampler(int intervalMs)
     {
         _timer = new System.Timers.Timer(intervalMs);
-        _timer.Elapsed += (_, _) =>
-        {
-            try { Sample(); }
-            catch (Exception ex)
-            {
-                // 采样器整体异常：保留上一帧，但必须留日志——之前这里静默吞掉，采样崩了 UI 只会"卡住"看不出原因
-                Console.Error.WriteLine($"[sampler] {ex.GetType().Name}: {ex.Message}");
-            }
-        };
+        _timer.Elapsed += (_, _) => Sample();
     }
 
-    public void Start() { _timer.Start(); Sample(); }
-    public void Dispose() { _timer.Stop(); _timer.Dispose(); }
+    public void Start()
+    {
+        if (_disposed) return;
+        _timer.Start();
+        // 首帧也离开 UI 线程；探针超时可能超过一秒，不能阻塞窗口启动。
+        _ = Task.Run(Sample);
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _timer.Stop();
+        _timer.Dispose();
+    }
 
     private SamplerDemand _demand = SamplerDemand.Collapsed;
     public void SetDemand(SamplerDemand demand) => _demand = demand;
 
     private void Sample()
     {
+        if (_disposed || !_sampleGuard.TryEnter()) return;
+        try { SampleCore(); }
+        catch (Exception ex)
+        {
+            // 单次失败保留下一轮，并留下可诊断日志。
+            Console.Error.WriteLine($"[sampler] {ex.GetType().Name}: {ex.Message}");
+        }
+        finally { _sampleGuard.Exit(); }
+    }
+
+    private void SampleCore()
+    {
+        if (_disposed) return;
         SamplerDemand d = _demand;
 
         Reading<double> cpu = d.HasFlag(SamplerDemand.Cpu) ? SampleCpu() : Reading<double>.NotRequested;
@@ -138,7 +190,7 @@ public sealed class MacSampler : ISampler
         var temps = d.HasFlag(SamplerDemand.Temperatures) ? SampleTemps() : Temps.NotRequested;
         Reading<double> disk = d.HasFlag(SamplerDemand.Disk) ? SampleDisk() : Reading<double>.NotRequested;
 
-        Snapshot?.Invoke(new MonitorSnapshot
+        if (!_disposed) Snapshot?.Invoke(new MonitorSnapshot
         {
             CpuUsage = cpu.GetValueOrDefault(0),
             CpuFrequencyGHz = freq,
@@ -146,6 +198,8 @@ public sealed class MacSampler : ISampler
             MemoryUsedGB = memUsed,
             MemoryTotalGB = memTotal,
             DiskUsagePercent = disk.GetValueOrDefault(0),
+            DriveUsedGB = _driveUsedGB,
+            DriveTotalGB = _driveTotalGB,
             GpuUsage = gpu,
             GpuName = gpu > 0 || _gpuMemGB is not null ? "Apple GPU" : "",
             GpuMemoryUsedGB = gpuMem,
@@ -159,11 +213,6 @@ public sealed class MacSampler : ISampler
         TopProcessesByMem = d.HasFlag(SamplerDemand.Processes) ? _topProcessesByMem : null,
             DownloadSpeed = down.GetValueOrDefault(0),
             UploadSpeed = up.GetValueOrDefault(0),
-            // 运行时长：与 Windows 端（Island.Native.SystemMonitor）**同一口径、同一实现** ——
-            // Environment.TickCount64（系统开机时长）。mac 之前没填 ⇒ 底部状态行取不到值。
-            // 注意：Windows 侧 SystemMonitor 里那段 PDH "System Up Time" 是**死代码**（从未被调用），
-            // 两端都以这一行为准。
-            UptimeHours = Environment.TickCount64 / 3600000.0,
             Status = new ReadingStatus
             {
                 Cpu = cpu, Memory = memPct, Disk = disk, NetDown = down, NetUp = up,
@@ -190,6 +239,8 @@ public sealed class MacSampler : ISampler
     private Temps SampleTemps()
     {
         if ((DateTime.Now - _tempChecked).TotalSeconds < 3) return _temps;
+        // 成功、超时和异常都按同一周期节流；失败不能每秒重启一个慢探针。
+        _tempChecked = DateTime.Now;
         try
         {
             if (_thermalProbePath is null)
@@ -313,8 +364,8 @@ public sealed class MacSampler : ISampler
     private double _cpuFreqGHz;
     private DateTime _freqChecked = DateTime.MinValue;
 
-    [DllImport("libSystem.dylib")]
-    private static extern int SysctlByName(string name, IntPtr oldp, ref nuint oldlenp, IntPtr newp, nuint newlen);
+    [DllImport("libSystem.dylib", EntryPoint = "sysctlbyname")]
+    private static extern int SysctlByName([MarshalAs(UnmanagedType.LPUTF8Str)] string name, IntPtr oldp, ref nuint oldlenp, IntPtr newp, nuint newlen);
 
     private double SampleCpuFreq()
     {
@@ -340,10 +391,6 @@ public sealed class MacSampler : ISampler
     }
 
     // ---------- GPU：ioreg AGXAccelerator PerformanceStatistics（无 root 官方通道） ----------
-    // 实测（2026-11-23, macOS 27.2 Apple Silicon）：ioreg -r -c AGXAccelerator 的
-    // PerformanceStatistics 含 "Device Utilization %"（=任务管理器 GPU%）、
-    // "Alloc system memory"/"In use system memory"（字节）。
-    // 每 2 秒读一次（起 ioreg 子进程约 80-150ms，不值得每秒）。
     private DateTime _gpuChecked = DateTime.MinValue;
     private double _gpuUsage;
     private double? _gpuMemGB;
@@ -351,6 +398,8 @@ public sealed class MacSampler : ISampler
     private (double usage, double? memGB) SampleGpuIoreg()
     {
         if ((DateTime.Now - _gpuChecked).TotalSeconds < 2) return (_gpuUsage, _gpuMemGB);
+        // 无论成功或失败都节流 2 秒，避免非 Apple Silicon 或无读数时每秒拉起 ioreg 子进程
+        _gpuChecked = DateTime.Now;
         try
         {
             var psi = new System.Diagnostics.ProcessStartInfo("ioreg", "-r -c AGXAccelerator -l")
@@ -370,8 +419,6 @@ public sealed class MacSampler : ISampler
             }
             string output = outTask.Wait(1000) ? outTask.Result : "";
             errTask.Wait(100);
-            // 只解析关心的三个键；解析失败时保留上次值，避免超时把 GPU% 清零
-            // （否则会出现"GPU 0% 但仍有显存占用"的不一致状态）
             long? util = FindIoregNumber(output, "Device Utilization %");
             long? alloc = FindIoregNumber(output, "Alloc system memory");
             long? inUse = FindIoregNumber(output, "In use system memory");
@@ -381,7 +428,6 @@ public sealed class MacSampler : ISampler
                 if (util is { } u) _gpuUsage = u;
                 if (inUse is { } used) _gpuMemGB = used / 1073741824.0;   // 主值
                 else if (alloc is { } a) _gpuMemGB = a / 1073741824.0;    // 上限兜底
-                _gpuChecked = DateTime.Now;   // 只在成功时更新时间戳
             }
         }
         catch { /* ioreg 不可用（非 Apple Silicon / 权限变化）：保留上次 */ }
@@ -418,68 +464,74 @@ public sealed class MacSampler : ISampler
 
         var prev = _procPrev;
         var next = new Dictionary<int, (string, TimeSpan, DateTime)>(256);
-        var tops = new List<TopProcess>(64);
-        var byMem = new List<TopProcess>(256);
+        var tops = new List<(TopProcess Item, int Pid)>(64);
+        var byMem = new List<(TopProcess Item, int Pid)>(256);
+        var pidMap = new Dictionary<int, System.Diagnostics.Process>(256);
         int coresN = Math.Max(1, Environment.ProcessorCount);
 
-        foreach (var p in System.Diagnostics.Process.GetProcesses())
+        try
         {
-            // Process 持有进程句柄，不释放会攒到 GC 终结器（主工程同款）
-            using var proc = p;
-            try
+            foreach (var proc in System.Diagnostics.Process.GetProcesses())
             {
-                string name = proc.ProcessName;
-                if (name is "Idle" or "System" or "kernel_task" or "launchd") continue;
-                var cpu = proc.TotalProcessorTime;
-                DateTime start = DateTime.MinValue;
-                try { start = proc.StartTime; } catch { /* 无权限：退化为只按进程名判身份 */ }
-                long ws = 0;
-                try { ws = proc.WorkingSet64; } catch { }
-                next[proc.Id] = (name, cpu, start);
-                string exe = "";
-                double pct = 0;
-                if (wall > 0.5 && prev.TryGetValue(proc.Id, out var old) && IsSameProcess(old, name, start))
+                pidMap[proc.Id] = proc;
+                try
                 {
-                    pct = (cpu - old.Cpu).TotalSeconds / wall / coresN * 100;
-                    // 门槛从 0.05 降到 0.01：18 核机器上单进程占比被除以核数后很小，
-                    // 0.05 的门槛会让榜几乎永远是空的（实测最高的也只有 0.06%）。
-                    if (pct >= 0.01)
+                    string name = proc.ProcessName;
+                    if (name is "Idle" or "System" or "kernel_task" or "launchd") continue;
+                    DateTime start = DateTime.MinValue;
+                    try { start = proc.StartTime; } catch { }
+                    long ws = 0;
+                    try { ws = proc.WorkingSet64; } catch { }
+                    double pct = 0;
+                    try
                     {
-                        // 可执行路径：应用榜取图标用（NSWorkspace icon(forFile:)）。无权限时为空，榜里显示首字母兜底
-                        exe = "";
-                        try { exe = proc.MainModule?.FileName ?? ""; } catch { }
-                        tops.Add(new TopProcess { Name = name, CpuPercent = Math.Min(pct, 100), MemoryMB = ws / 1048576.0, ExePath = exe });
+                        var cpu = proc.TotalProcessorTime;
+                        next[proc.Id] = (name, cpu, start);
+                        if (wall > 0.5 && prev.TryGetValue(proc.Id, out var old) && IsSameProcess(old, name, start))
+                        {
+                            pct = Math.Clamp((cpu - old.Cpu).TotalSeconds / wall / coresN * 100, 0, 100);
+                            if (pct >= 0.01)
+                            {
+                                tops.Add((new TopProcess { Name = name, CpuPercent = pct, MemoryMB = ws / 1048576.0 }, proc.Id));
+                            }
+                        }
                     }
+                    catch { /* 无权限读 CPU 时间：仍允许参与内存榜 */ }
+
+                    if (ws > 0)
+                        byMem.Add((new TopProcess { Name = name, CpuPercent = pct, MemoryMB = ws / 1048576.0 }, proc.Id));
                 }
-                // 内存榜：所有进程都参与（内存占用与 CPU 忙闲无关）
-                if (ws > 0) byMem.Add(new TopProcess { Name = name, CpuPercent = Math.Min(pct, 100), MemoryMB = ws / 1048576.0, ExePath = exe });
+                catch { /* 进程已退出 */ }
             }
-            catch { /* 进程已退出/无权限 */ }
-            finally { proc.Dispose(); }
-        }
-        _procPrev = next;
-        // 本轮为空也要赋空数组：否则界面会一直显示已经退出的进程和旧数值（主工程同款修复）
-        // 同名进程（同一个 App 的多个实例）按可执行路径去重，只留占用最高的那条——
-        // 否则应用榜会出现三个 "WorkBuddy Helper"（BrimDeck 同样按进程聚合）。
-        static TopProcess[] Dedup(IEnumerable<TopProcess> src, Func<TopProcess, double> key)
-        {
-            var seen = new HashSet<string>(StringComparer.Ordinal);
-            var list = new List<TopProcess>();
-            foreach (var t in src)
+
+            _procPrev = next;
+
+            // 先按指标降序排序再去重（确保同名多进程保留占用最高的那条），最后仅对前 5 名取 ExePath 图标路径
+            TopProcess[] DedupWithIcons(IEnumerable<(TopProcess Item, int Pid)> src, Func<TopProcess, double> key)
             {
-                // 按**进程名**去重：同一个 App 的多实例可能路径不同（如 Helper 塞在
-                // 不同版本的 .app 里），按路径去重会留下好几条同名条目。
-                string id = t.Name;
-                if (seen.Add(id)) list.Add(t);
+                var seen = new HashSet<string>(StringComparer.Ordinal);
+                var winners = new List<TopProcess>(5);
+                foreach (var (item, pid) in src.OrderByDescending(x => key(x.Item)))
+                {
+                    if (!seen.Add(item.Name)) continue;
+                    string exe = "";
+                    if (pidMap.TryGetValue(pid, out var p))
+                    {
+                        try { exe = p.MainModule?.FileName ?? ""; } catch { }
+                    }
+                    winners.Add(exe.Length > 0 ? item with { ExePath = exe } : item);
+                    if (winners.Count >= 5) break;
+                }
+                return winners.ToArray();
             }
-            return list.OrderByDescending(key).Take(5).ToArray();
+
+            _topProcesses = tops.Count > 0 ? DedupWithIcons(tops, t => t.CpuPercent) : Array.Empty<TopProcess>();
+            _topProcessesByMem = byMem.Count > 0 ? DedupWithIcons(byMem, t => t.MemoryMB) : Array.Empty<TopProcess>();
         }
-        _topProcesses = tops.Count > 0
-            ? Dedup(tops, t => t.CpuPercent)
-            : Array.Empty<TopProcess>();
-        _topProcessesByMem = byMem.Count > 0
-            ? Dedup(byMem, t => t.MemoryMB)
-            : Array.Empty<TopProcess>();
+        finally
+        {
+            foreach (var p in pidMap.Values) p.Dispose();
+        }
     }
 
     /// <summary>
@@ -524,10 +576,12 @@ public sealed class MacSampler : ISampler
         try
         {
             list = IOPSCopyPowerSourcesList(blob);
-            int n = CFArrayGetCount(list);
-            for (int i = 0; i < n; i++)
+            if (list == IntPtr.Zero) return (null, false);
+            nint n = CFArrayGetCount(list);
+            for (nint i = 0; i < n; i++)
             {
                 IntPtr ps = CFArrayGetValueAtIndex(list, i);
+                if (ps == IntPtr.Zero) continue;
                 IntPtr desc = IOPSGetPowerSourceDescription(blob, ps);
                 if (desc == IntPtr.Zero) continue;
                 if (CfString(CfDictGet(desc, "Type")) != "InternalBattery") continue;
@@ -549,7 +603,7 @@ public sealed class MacSampler : ISampler
     private static IntPtr CfDictGet(IntPtr dict, string key)
     {
         IntPtr k = CFStringCreateWithCString(IntPtr.Zero, key, 0x08000100);
-        try { return dict == IntPtr.Zero ? IntPtr.Zero : CFDictionaryGetValue(dict, k); }
+        try { return dict == IntPtr.Zero || k == IntPtr.Zero ? IntPtr.Zero : CFDictionaryGetValue(dict, k); }
         finally { if (k != IntPtr.Zero) CFRelease(k); }
     }
 
@@ -562,8 +616,9 @@ public sealed class MacSampler : ISampler
     {
         if (s == IntPtr.Zero) return null;
         var buf = new byte[256];
-        return CFStringGetCString(s, buf, buf.Length, 0x08000100)
-            ? System.Text.Encoding.UTF8.GetString(buf).TrimEnd('\0') : null;
+        if (!CFStringGetCString(s, buf, buf.Length, 0x08000100)) return null;
+        int nul = Array.IndexOf(buf, (byte)0);
+        return System.Text.Encoding.UTF8.GetString(buf, 0, nul >= 0 ? nul : buf.Length);
     }
 
     [DllImport("/System/Library/Frameworks/IOKit.framework/IOKit")]
@@ -573,50 +628,62 @@ public sealed class MacSampler : ISampler
     [DllImport("/System/Library/Frameworks/IOKit.framework/IOKit")]
     private static extern IntPtr IOPSGetPowerSourceDescription(IntPtr blob, IntPtr ps);
     [DllImport("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")]
-    private static extern int CFArrayGetCount(IntPtr array);
+    private static extern nint CFArrayGetCount(IntPtr array);
     [DllImport("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")]
-    private static extern IntPtr CFArrayGetValueAtIndex(IntPtr array, int idx);
+    private static extern IntPtr CFArrayGetValueAtIndex(IntPtr array, nint idx);
     [DllImport("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")]
     private static extern IntPtr CFDictionaryGetValue(IntPtr dict, IntPtr key);
     [DllImport("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")]
-    private static extern IntPtr CFStringCreateWithCString(IntPtr alloc, string cStr, uint encoding);
+    private static extern IntPtr CFStringCreateWithCString(IntPtr alloc, [MarshalAs(UnmanagedType.LPUTF8Str)] string cStr, uint encoding);
     [DllImport("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")]
-    private static extern bool CFStringGetCString(IntPtr str, byte[] buffer, long bufferSize, uint encoding);
+    [return: MarshalAs(UnmanagedType.I1)]
+    private static extern bool CFStringGetCString(IntPtr str, byte[] buffer, nint bufferSize, uint encoding);
     [DllImport("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")]
-    private static extern bool CFNumberGetValue(IntPtr number, int theType, out long valuePtr);
+    [return: MarshalAs(UnmanagedType.I1)]
+    private static extern bool CFNumberGetValue(IntPtr number, nint theType, out long valuePtr);
     [DllImport("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")]
+    [return: MarshalAs(UnmanagedType.I1)]
     private static extern bool CFBooleanGetValue(IntPtr boolean);
     [DllImport("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")]
     private static extern void CFRelease(IntPtr cf);
 
+    // 缓存 mach_host_self() 句柄与页大小：每次调用 mach_host_self() 都会递增内核 Mach port send-right 引用计数，
+    // 若不缓存在每秒多次采样下会造成内核端口泄漏。
+    private static readonly uint HostPort = mach_host_self();
+    private static readonly uint CachedPageSize = InitPageSize();
+    private static uint InitPageSize()
+    {
+        try { return host_page_size(HostPort, out uint ps) == 0 && ps > 0 ? ps : 16384u; }
+        catch { return 16384u; }
+    }
+
     // ---------- CPU：host_statistics(HOST_CPU_LOAD_INFO=3)，4×u32 ----------
     private Reading<double> SampleCpu()
     {
-        // HOST_CPU_LOAD_INFO(3) 返回 host_cpu_load_info = 4 × integer_t（32 位），共 16 字节。
-        // 必须用 host_statistics（非 64）+ 按 32 位读。
-        // 旧实现用 host_statistics64 + ReadInt64：把 (user,system) 拼成一个 64 位数、
-        // (idle,nice) 拼成另一个，而 idle/nice 读到的是未初始化堆内存（恒 0）→ Δidle=0 → CPU 恒 100%。
         var buf = Marshal.AllocHGlobal(16);
         try
         {
             int count = 4;   // HOST_CPU_LOAD_INFO_COUNT
-            int kr = host_statistics(mach_host_self(), 3, buf, ref count);
+            int kr = host_statistics(HostPort, 3, buf, ref count);
             if (kr != 0) return Reading<double>.Unavailable($"host_statistics 失败（kr={kr}）");
-            long user = (uint)Marshal.ReadInt32(buf, 0);
-            long system = (uint)Marshal.ReadInt32(buf, 4);
-            long idle = (uint)Marshal.ReadInt32(buf, 8);
-            long nice = (uint)Marshal.ReadInt32(buf, 12);
+            uint user = (uint)Marshal.ReadInt32(buf, 0);
+            uint system = (uint)Marshal.ReadInt32(buf, 4);
+            uint idle = (uint)Marshal.ReadInt32(buf, 8);
+            uint nice = (uint)Marshal.ReadInt32(buf, 12);
             if (!_cpuInit)
             {
                 _lastCpuUser = user; _lastCpuSystem = system; _lastCpuIdle = idle; _lastCpuNice = nice;
                 _cpuInit = true;
                 return Reading<double>.Unavailable("首个采样周期");
             }
-            long dUser = user - _lastCpuUser, dSys = system - _lastCpuSystem,
-                 dIdle = idle - _lastCpuIdle, dNice = nice - _lastCpuNice;
+            // 无符号 32 位自然回绕差分：避免长运行后计数器溢出导致负值
+            ulong dUser = unchecked(user - _lastCpuUser);
+            ulong dSys = unchecked(system - _lastCpuSystem);
+            ulong dIdle = unchecked(idle - _lastCpuIdle);
+            ulong dNice = unchecked(nice - _lastCpuNice);
             _lastCpuUser = user; _lastCpuSystem = system; _lastCpuIdle = idle; _lastCpuNice = nice;
-            long total = dUser + dSys + dIdle + dNice;
-            if (total <= 0) return Reading<double>.Unavailable("计数器无变化");
+            ulong total = dUser + dSys + dIdle + dNice;
+            if (total == 0) return Reading<double>.Unavailable("计数器无变化");
             return Reading<double>.Of(Math.Clamp((total - dIdle) * 100.0 / total, 0, 100));
         }
         catch (Exception ex) { return Reading<double>.Unavailable(ex.Message); }
@@ -624,30 +691,17 @@ public sealed class MacSampler : ISampler
     }
 
     // ---------- 内存：HOST_VM_INFO64=4（vm_statistics64_data_t） ----------
-    // 布局要点（vm_statistics64_data_t，XNU osfmk/mach/vm_statistics.h）：
-    //   开头 4 个是 32 位 natural_t（free/active/inactive/wire），
-    //   之后是 64 位计数器，但中间还夹着 6 个 32 位 natural_t
-    //   （purgeable/speculative/compressor/throttled/external/internal）——
-    //   整个结构体 160 字节，不能假设"第 5 个起就全是 64 位"。
-    //   本函数只读 active@4 与 wire@12（这两个偏移是对的）。
-    //
-    // ⚠️ 2026-11-23 修复：原来只给了 8*15=120 字节缓冲、count=15。
-    //   host_statistics64 的 count 以 4 字节为单位，最少要覆盖 160 字节的结构体；
-    //   count 不足时内核直接返回 KERN_INVALID_ARGUMENT ⇒ Mac 上内存面板永远显示 0%。
-    //   现在缓冲 256 字节、count=64（=256/4），两边都够。
     private (Reading<double> pct, double used, double total) SampleMemory()
     {
         var buf = Marshal.AllocHGlobal(256);
         try
         {
             int count = 64;   // 256 / 4：足够覆盖 160 字节的 vm_statistics64_data_t
-            int kr = host_statistics64(mach_host_self(), 4, buf, ref count);
+            int kr = host_statistics64(HostPort, 4, buf, ref count);
             if (kr != 0) return (Reading<double>.Unavailable($"host_statistics64 失败（kr={kr}）"), 0, 0);
-            if (host_page_size(mach_host_self(), out uint pageSize) != 0 || pageSize == 0) pageSize = 16384;
-            // natural_t 是 32 位无符号整数：free@0 / active@4 / inactive@8 / wire@12
+            uint pageSize = CachedPageSize;
             ulong active = (uint)Marshal.ReadInt32(buf, 4);
             ulong wire = (uint)Marshal.ReadInt32(buf, 12);
-            // 近似口径：已用 ≈ 活跃页 + 联动页（未含压缩页，与活动监视器口径略有差异）
             double usedGb = (active + wire) * (double)pageSize / 1073741824.0;
 
             ulong memsize = 0;
@@ -698,21 +752,19 @@ public sealed class MacSampler : ISampler
     }
 
     // ---------- libSystem P/Invoke ----------
-    [DllImport("libSystem.dylib")] private static extern IntPtr mach_host_self();
-    [DllImport("libSystem.dylib")] private static extern int host_statistics64(IntPtr host, int flavor, IntPtr info, ref int count);
-    [DllImport("libSystem.dylib")] private static extern int host_statistics(IntPtr host, int flavor, IntPtr info, ref int count);
+    [DllImport("libSystem.dylib")] private static extern uint mach_host_self();
+    [DllImport("libSystem.dylib")] private static extern int host_statistics64(uint host, int flavor, IntPtr info, ref int count);
+    [DllImport("libSystem.dylib")] private static extern int host_statistics(uint host, int flavor, IntPtr info, ref int count);
 
-    // ---------- 磁盘：statfs("/")（无子进程；Data 卷与 / 同一 APFS 容器，用量一致） ----------
-    // 旧版 Mac 采样器从未给 DiskUsagePercent 赋值 → 面板"磁盘"恒 0/--。
-    // 用 byte buffer + 显式偏移读，避免手写 struct 对齐出错。macOS x86_64/arm64 的 struct statfs 布局：
-    //   0  f_bsize(u32) 4 f_iosize(i32) 8 f_blocks(u64) 16 f_bfree(u64) 24 f_bavail(u64) …
+    // ---------- 磁盘：statfs("/System/Volumes/Data")（无子进程） ----------
     [DllImport("libSystem.dylib", EntryPoint = "statfs", SetLastError = true)]
-    private static extern int statfs(string path, byte[] buf);
+    private static extern int statfs([MarshalAs(UnmanagedType.LPUTF8Str)] string path, byte[] buf);
 
     private DateTime _diskChecked = DateTime.MinValue;
     private Reading<double> _disk = Reading<double>.NotRequested;
+    private double _driveUsedGB, _driveTotalGB;
 
-    /// <summary>根卷用量百分比；30 秒一采（磁盘用量变化慢）。失败保留上次读数并带原因。</summary>
+    /// <summary>根卷用量百分比与容量（GB）；30 秒一采。</summary>
     private Reading<double> SampleDisk()
     {
         if ((DateTime.Now - _diskChecked).TotalSeconds < 30) return _disk;
@@ -723,15 +775,21 @@ public sealed class MacSampler : ISampler
             int r = statfs("/System/Volumes/Data", buf);
             if (r != 0) r = statfs("/", buf);
             if (r != 0) { _disk = Reading<double>.Unavailable($"statfs 失败（errno={Marshal.GetLastWin32Error()}）"); return _disk; }
+            uint bsize = BitConverter.ToUInt32(buf, 0);
             ulong blocks = BitConverter.ToUInt64(buf, 8);
             ulong bfree = BitConverter.ToUInt64(buf, 16);
             if (blocks == 0) { _disk = Reading<double>.Unavailable("statfs 返回 0 块"); return _disk; }
-            ulong used = blocks - bfree;
+            ulong used = blocks >= bfree ? blocks - bfree : 0;
+            if (bsize > 0)
+            {
+                _driveTotalGB = blocks * (double)bsize / 1073741824.0;
+                _driveUsedGB = used * (double)bsize / 1073741824.0;
+            }
             _disk = Reading<double>.Of(Math.Clamp(used * 100.0 / blocks, 0, 100));
         }
         catch (Exception ex) { _disk = Reading<double>.Unavailable(ex.Message); }
         return _disk;
     }
-    [DllImport("libSystem.dylib")] private static extern int host_page_size(IntPtr host, out uint pageSize);
-    [DllImport("libSystem.dylib")] private static extern int sysctlbyname(string name, out ulong oldp, ref IntPtr oldlenp, IntPtr newp, IntPtr newlen);
+    [DllImport("libSystem.dylib")] private static extern int host_page_size(uint host, out uint pageSize);
+    [DllImport("libSystem.dylib")] private static extern int sysctlbyname([MarshalAs(UnmanagedType.LPUTF8Str)] string name, out ulong oldp, ref IntPtr oldlenp, IntPtr newp, IntPtr newlen);
 }

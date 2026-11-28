@@ -57,13 +57,11 @@ public static class DisplayControl
     /// 这把锁让「读完一整轮」和「写一次」互斥。
     /// </summary>
     private static readonly SemaphoreSlim _refreshGate = new(1, 1);
-    /// <summary>上一次 DDC 事务结束的时刻（写前用它判断总线是否刚空闲）。</summary>
-    private static DateTime? LastDdcAt;
+    /// <summary>上一次 DDC 事务结束的单调时间戳（Environment.TickCount64，避免系统改时导致负值抛异常）。</summary>
+    private static long _lastDdcTick;
 
-    // 写入"未确认"的 (uuid, vcp)（对齐参考版 failedWrites / readOnlyControls）：
-    // 设备没确认目标值的项，本进程内暂停写入，直到用户点"允许重试"。
-    // 连接/超时类失败**不**记入——那是临时问题，重试有意义。
-    private static readonly HashSet<(string uuid, int vcp)> _failedWrites = new();
+    // 写入"未确认"的 (uuid, vcp)：跨 UI 线程与后台 DDC 线程并发读写，必须使用 ConcurrentDictionary。
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string uuid, int vcp), byte> _failedWrites = new();
 
     private static void Log(string what, Exception ex)
         => Console.Error.WriteLine($"[display] {what}: {ex.GetType().Name}: {ex.Message}");
@@ -111,8 +109,9 @@ public static class DisplayControl
                 if (parts.Length < 4 || !uint.TryParse(parts[0], out uint id)) continue;
                 string uuid = parts[1].Trim();
                 bool builtin = parts[3].Trim() == "builtin";
+                int builtinBri = builtin && BuiltinBrightness.Read(id) is { Ok: true, Level: { } bl } ? bl.PercentRounded : 0;
                 list.Add(new DdcScreen(id, uuid, parts[2].Trim(), builtin,
-                    builtin ? GetBuiltinBrightness() : 0, 0, 0, null, ValuesLoaded: builtin));
+                    builtinBri, 0, 0, null, ValuesLoaded: builtin));
             }
         }
         catch (Exception ex) { Log("list screens", ex); }
@@ -172,7 +171,7 @@ public static class DisplayControl
             });
         }
         }
-        finally { _refreshGate.Release(); LastDdcAt = DateTime.Now; }
+        finally { _refreshGate.Release(); Volatile.Write(ref _lastDdcTick, Environment.TickCount64); }
         return result;
     }
 
@@ -216,15 +215,18 @@ public static class DisplayControl
         => _ranges.TryGetValue(uuid, out var r) ? r : (0, 100);
 
     /// <summary>取回某屏某项的写入暂停状态：true=已暂停（未确认过）。</summary>
-    public static bool IsWritePaused(string uuid, int vcp) => _failedWrites.Contains((uuid, vcp));
-    /// <summary>允许重试（对齐参考版 allowRetry）：清除该屏**所有**项的暂停。</summary>
+    public static bool IsWritePaused(string uuid, int vcp) => _failedWrites.ContainsKey((uuid, vcp));
+    /// <summary>允许重试（对齐参考版 allowRetry）：清除该屏所有项的写入暂停与不支持缓存。</summary>
     public static void AllowRetry(string uuid)
     {
-        foreach (var k in _failedWrites.Where(k => k.uuid == uuid).ToList()) _failedWrites.Remove(k);
+        foreach (var k in _failedWrites.Keys)
+            if (k.uuid == uuid) _failedWrites.TryRemove(k, out _);
+        foreach (var k in _unsupportedVcp.Keys)
+            if (k.uuid == uuid) _unsupportedVcp.TryRemove(k, out _);
     }
     /// <summary>该屏被暂停的 VCP 集合（面板显示用）。</summary>
     public static IReadOnlyCollection<int> PausedControls(string uuid)
-        => _failedWrites.Where(k => k.uuid == uuid).Select(k => k.vcp).ToList();
+        => _failedWrites.Keys.Where(k => k.uuid == uuid).Select(k => k.vcp).ToList();
 
     // ---------- 读取 ----------
     /// <summary>
@@ -307,12 +309,14 @@ public static class DisplayControl
         _refreshGate.Wait();      // 与"整轮刷新"互斥：写事务不能被读事务打断
         try
         {
-            // 写前让总线空转一小段：显示器在上一次 DDC 事务后需要一点恢复时间，
-            // 紧接着就发写命令可能被丢弃（实测：连续读写后写入无声无息地失效）。
-            if (LastDdcAt is { } last && (DateTime.Now - last).TotalMilliseconds < 400)
-                Thread.Sleep((int)(400 - (DateTime.Now - last).TotalMilliseconds));
+            long last = Volatile.Read(ref _lastDdcTick);
+            if (last != 0)
+            {
+                long elapsed = Environment.TickCount64 - last;
+                if (elapsed >= 0 && elapsed < 400) Thread.Sleep((int)(400 - elapsed));
+            }
             var r = SetPercentExCore(uuid, id, code, percent, builtin);
-            LastDdcAt = DateTime.Now;
+            Volatile.Write(ref _lastDdcTick, Environment.TickCount64);
             return r;
         }
         finally { _refreshGate.Release(); }
@@ -332,16 +336,16 @@ public static class DisplayControl
             if (builtin)
             {
                 r = BuiltinBrightness.Set(percent, id);
-                if (r.Ok) _failedWrites.Remove((uuid, code));
-                else if (r.Status == DdcStatus.WriteUnconfirmed) _failedWrites.Add((uuid, code));
+                if (r.Ok) _failedWrites.TryRemove((uuid, code), out _);
+                else if (r.Status == DdcStatus.WriteUnconfirmed) _failedWrites[(uuid, code)] = 1;
             }
             else
             {
                 r = SetPercentUnlocked(uuid, id, code, percent);
                 // 写后冷却：ddc-helper 的 set 内部做 3 次确认读取，刚结束时总线仍忙（实测 300ms 才稳）
                 if (r.Ok || r.Status == DdcStatus.WriteUnconfirmed) Thread.Sleep(320);
-                if (r.Ok) _failedWrites.Remove((uuid, code));
-                else if (r.Status == DdcStatus.WriteUnconfirmed) _failedWrites.Add((uuid, code));
+                if (r.Ok) _failedWrites.TryRemove((uuid, code), out _);
+                else if (r.Status == DdcStatus.WriteUnconfirmed) _failedWrites[(uuid, code)] = 1;
             }
         }
         finally { _ddcGate.Release(); }
@@ -472,9 +476,21 @@ public static class DisplayControl
         => id != 0 && CGDisplayIsBuiltin(id) != 0 && CGDisplayIsActive(id) != 0 && CGDisplayIsAsleep(id) == 0;
 
     // ---------- 内建屏关闭 / 恢复（经独立守护进程） ----------
+    private static readonly object _guardianGate = new();
     private static Process? _guardian;
 
-    public static bool IsBuiltinOff => _guardian is { HasExited: false };
+    public static bool IsBuiltinOff
+    {
+        get
+        {
+            lock (_guardianGate)
+            {
+                if (_guardian is null) return false;
+                try { return !_guardian.HasExited; }
+                catch { return false; }
+            }
+        }
+    }
 
     /// <summary>内建屏被关闭的时刻（用于 15 秒倒计时）；未关闭为 null。</summary>
     public static DateTime? BuiltinOffAt { get; private set; }
@@ -484,122 +500,134 @@ public static class DisplayControl
     {
         get
         {
-            if (!IsBuiltinOff || BuiltinOffKept || BuiltinOffAt is not { } at) return null;
-            int left = 15 - (int)(DateTime.Now - at).TotalSeconds;
-            return left > 0 ? left : 0;
+            lock (_guardianGate)
+            {
+                if (_guardian is null || BuiltinOffKept || BuiltinOffAt is not { } at) return null;
+                try { if (_guardian.HasExited) return null; } catch { return null; }
+                int left = 15 - (int)(DateTime.Now - at).TotalSeconds;
+                return left > 0 ? left : 0;
+            }
         }
     }
 
     /// <summary>用户是否已点"保持关闭"。</summary>
     public static bool BuiltinOffKept { get; private set; }
 
-    /// <summary>
-    /// 关闭内建屏（阻塞，调用方须在后台线程）。移植原版 turnOff 的保护：
-    /// 必须至少有一块可见的实体外接屏，否则关闭内建屏 = 整机黑屏。
-    /// 返回错误信息（null=成功）。
-    /// </summary>
     public static string? TurnOffBuiltin(uint id, string uuid, bool hasExternal)
     {
-        if (IsBuiltinOff) return null;
         string? guardian = Locate(GuardianName);
         if (guardian is null) return "未找到 screen-guardian（随包工具缺失，请重新安装）";
         if (!hasExternal) return "请先连接并开启一台实体外接显示器，再关闭内建屏。";
 
-        try
+        lock (_guardianGate)
         {
-            var psi = new ProcessStartInfo(guardian)
+            if (_guardian is not null)
             {
-                UseShellExecute = false, CreateNoWindow = true,
-                RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
-            };
-            psi.ArgumentList.Add(id.ToString());
-            psi.ArgumentList.Add(uuid);
-            var p = Process.Start(psi);
-            if (p is null) return "无法启动守护进程";
-            // 等 READY 最多 8 秒（对齐参考版 turnOff 的 asyncAfter(8) 保护）：
-            // 守护进程卡住不回应时不能无限等，否则内建屏可能已关而 UI 毫无提示。
-            // ReadLineAsync 配合 Wait(8000)：超时则杀掉守护进程并报错。
-            var readyTask = p.StandardOutput.ReadLineAsync();
-            if (!readyTask.Wait(8000))
-            {
-                TryKill(p);
-                return "屏幕恢复保护程序无响应，已取消关闭内建屏。";
+                try { if (!_guardian.HasExited) return null; } catch { }
+                TryKillAndDispose(_guardian);
+                _guardian = null;
             }
-            string? first = readyTask.Result;
-            if (first != "READY")
+            try
             {
-                TryKill(p);
-                return first?.StartsWith("ERROR:") == true ? first[6..] : "内建屏关闭失败";
+                var psi = new ProcessStartInfo(guardian)
+                {
+                    UseShellExecute = false, CreateNoWindow = true,
+                    RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
+                };
+                psi.ArgumentList.Add(id.ToString());
+                psi.ArgumentList.Add(uuid);
+                var p = Process.Start(psi);
+                if (p is null) return "无法启动守护进程";
+                var readyTask = p.StandardOutput.ReadLineAsync();
+                if (!readyTask.Wait(8000))
+                {
+                    TryKillAndDispose(p);
+                    return "屏幕恢复保护程序无响应，已取消关闭内建屏。";
+                }
+                string? first = readyTask.Result;
+                if (first != "READY")
+                {
+                    TryKillAndDispose(p);
+                    return first?.StartsWith("ERROR:") == true ? first[6..] : "内建屏关闭失败";
+                }
+                _guardian = p;
+                BuiltinOffAt = DateTime.Now;
+                BuiltinOffKept = false;
+                _ = Task.Run(async () =>
+                {
+                    try { await p.StandardOutput.ReadToEndAsync(); await p.StandardError.ReadToEndAsync(); }
+                    catch { /* 探针退出时读流中断 */ }
+                });
+                return null;
             }
-            _guardian = p;
-            BuiltinOffAt = DateTime.Now;
-            BuiltinOffKept = false;
-            _ = Task.Run(() => { try { p.StandardOutput.ReadToEndAsync(); p.StandardError.ReadToEndAsync(); } catch { /* 探针退出时读流中断 */ } });
-            return null;
+            catch (Exception ex) { Log("turn off builtin", ex); return ex.Message; }
         }
-        catch (Exception ex) { Log("turn off builtin", ex); return ex.Message; }
     }
 
     /// <summary>确认保持关闭（重置 15 秒倒计时）。</summary>
     public static void KeepBuiltinOff()
     {
-        if (_guardian is not { HasExited: false }) return;
-        try
+        lock (_guardianGate)
         {
-            _guardian.StandardInput.WriteLine("keep");
-            _guardian.StandardInput.Flush();
-            BuiltinOffKept = true;
+            if (_guardian is null) return;
+            try
+            {
+                if (_guardian.HasExited) return;
+                _guardian.StandardInput.WriteLine("keep");
+                _guardian.StandardInput.Flush();
+                BuiltinOffKept = true;
+            }
+            catch (Exception ex) { Log("keep builtin off", ex); }
         }
-        catch (Exception ex) { Log("keep builtin off", ex); }
     }
 
     /// <summary>恢复内建屏（阻塞，调用方须在后台线程）。守护进程不在时也兜底。</summary>
     public static void RestoreBuiltin()
     {
-        try
+        Process? g;
+        lock (_guardianGate)
         {
-            if (_guardian is { HasExited: false })
+            g = _guardian;
+            _guardian = null;
+            BuiltinOffAt = null;
+            BuiltinOffKept = false;
+        }
+        if (g is not null)
+        {
+            try
             {
-                // 让守护进程自己完成恢复（它有重试 + 唤醒逻辑），等它退出。
-                // 绝不能在它恢复中途 Kill——会打断 setEnabled 导致屏保持关闭。
-                _guardian.StandardInput.WriteLine("restore");
-                _guardian.StandardInput.Flush();
-                if (!_guardian.WaitForExit(6000))
+                if (!g.HasExited)
                 {
-                    // 超时未退出：再等一轮（guardian 内部有 3 次重试 × 0.5s）
-                    _guardian.WaitForExit(3000);
+                    g.StandardInput.WriteLine("restore");
+                    g.StandardInput.Flush();
+                    if (!g.WaitForExit(6000)) g.WaitForExit(3000);
                 }
             }
-        }
-        catch (Exception ex) { Log("restore via guardian", ex); }
-        finally
-        {
-            // 只在 guardian 已经退出后才清理；仍活着说明恢复卡住，交给下面的直接恢复兜底
-            if (_guardian is { HasExited: false }) { Log("guardian still alive after restore", new TimeoutException()); }
-            else { TryKill(_guardian); _guardian = null; }
-            BuiltinOffAt = null; BuiltinOffKept = false;
+            catch (Exception ex) { Log("restore via guardian", ex); }
         }
 
-        if (!OperatingSystem.IsMacOS()) return;
+        if (!OperatingSystem.IsMacOS())
+        {
+            TryKillAndDispose(g);
+            return;
+        }
         try
         {
-            // 用 SkyLight 列表判断：关闭态的内建屏不在 CGGetOnlineDisplayList 里（实测），
-            // 只有 SLSGetDisplayList 仍包含它。
             uint builtinId = FindBuiltinViaSkyLight();
             if (builtinId == 0) return;       // 这台机器没有内建屏（台式 Mac）
 
             string? lister = Locate(ListName);
             bool builtinVisible = lister is not null && Run(lister, 2500).Contains("|builtin", StringComparison.Ordinal);
-            if (builtinVisible)
+            if (!builtinVisible)
             {
-                if (_guardian is { HasExited: false }) TryKill(_guardian);
-                _guardian = null;
-                return;                         // 已恢复
+                RestoreBuiltinDirect(builtinId);
             }
-            // 屏仍关闭 → 直接用 SkyLight 恢复
-            RestoreBuiltinDirect(builtinId);
         }
         catch (Exception ex) { Log("restore fallback", ex); }
+        finally
+        {
+            TryKillAndDispose(g);
+        }
     }
 
     /// <summary>不经守护进程直接恢复内建屏（等价于原版 `LunarCN --restore-display`）。</summary>
@@ -638,10 +666,12 @@ public static class DisplayControl
     [DllImport("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", EntryPoint = "SLSConfigureDisplayEnabled")]
     private static extern int SLSConfigureDisplayEnabled(IntPtr config, uint display, [MarshalAs(UnmanagedType.I1)] bool enabled);
 
-    private static void TryKill(Process? p)
+    private static void TryKillAndDispose(Process? p)
     {
-        try { if (p is { HasExited: false }) { p.Kill(true); p.WaitForExit(1000); } }
+        if (p is null) return;
+        try { if (!p.HasExited) { p.Kill(true); p.WaitForExit(1000); } }
         catch (Exception ex) { Log("kill guardian", ex); }
+        finally { try { p.Dispose(); } catch { } }
     }
 
     // ---------- 工具定位：只用随包编译的三个工具（在 BaseDirectory 下，与可执行文件同级） ----------

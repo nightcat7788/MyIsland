@@ -9,6 +9,8 @@
     <LangVersion>latest</LangVersion>
     <!-- InpOutSmnService 里有指针字段（物理内存映射），编译它需要 unsafe -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- macOS 上交叉编译 Windows 目标（与主工程一致） -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <AssemblyName>Island.Tests</AssemblyName>
     <RootNamespace>Island.Tests</RootNamespace>
     <!-- 最小测试门禁：零 NuGet 包，自研 harness（Check 失败即抛，退出码非 0） -->
@@ -22,158 +24,27 @@
 
   <!-- 与主工程"源码合并进单一 exe"思路一致：把被测源文件链接进来（不生成额外 DLL） -->
   <ItemGroup>
-    <Compile Include="..\..\src\Island.App\Services\ClipboardService.cs" Link="Merged\App\ClipboardService.cs" />
     <Compile Include="..\..\src\Island.App\Services\Settings.cs" Link="Merged\App\Settings.cs" />
-    <Compile Include="..\..\src\Island.Core\Monitoring\*.cs" Link="Merged\Core\%(Filename)%(Extension)" />
-    <!-- 能力清单（两端唯一真相源）：链进测试工程 ⇒ 漂移检查能直接断言清单本身 -->
-    <Compile Include="..\..\src\Island.Core\Capabilities\*.cs" Link="Merged\Core\Capabilities\%(Filename)%(Extension)" />
-    <Compile Include="..\..\src\Island.App\Themes\Theme.cs" Link="Merged\App\Theme.cs" />
-
-    <!-- 收起态排版规格（纯计算）：Windows 与 mac 两端一致性的唯一契约 -->
-    <Compile Include="..\..\src\Island.App\Controls\CompactSpec.cs" Link="Merged\CompactSpec.cs" />
-    <!-- 收起态宿主布局（纯数据）：各视图尺寸表 + 宿主窗口宽上限 640
-         ⇒ 仓库内直接断言「胶囊不得超出宿主窗口宽」（原先这条只活在仓库外的离屏 harness 里） -->
-    <Compile Include="..\..\src\Island.App\Controls\CompactLayout.cs" Link="Merged\CompactLayout.cs" />
-    <!-- 收起态 dash 的渲染（视觉探针链了 VisualProbeCore.cs ⇒ 探针用到的源文件这里也要链，
-         否则门禁工程编译不过）。全部是本仓库内的纯源文件，**不引入任何 NuGet 依赖**。 -->
-    <Compile Include="..\..\src\Island.App\Controls\IslandCanvas.cs" Link="Merged\App\IslandCanvas.cs" />
-    <Compile Include="..\..\src\Island.App\Animation\LiquidGeometry.cs" Link="Merged\App\LiquidGeometry.cs" />
-    <Compile Include="..\..\src\Island.App\Animation\PetFace.cs" Link="Merged\App\PetFace.cs" />
-    <Compile Include="..\..\src\Island.App\Services\FileTrayService.cs" Link="Merged\App\FileTrayService.cs" />
+    <!-- 天气代次/取消：注入 HTTP 替身，测试绝不访问网络 -->
     <Compile Include="..\..\src\Island.App\Services\WeatherService.cs" Link="Merged\App\WeatherService.cs" />
-    <!-- 温度通道：SMN 直读服务（2026-11-23 的 0x1EA 蓝屏回归用例要用到厂商判定与拒绝逻辑） -->
-    <Compile Include="..\..\src\Island.App\Services\InpOutSmnService.cs" Link="Merged\App\InpOutSmnService.cs" />
-    <!-- SMN 高风险通道的所有者：把"要不要碰驱动"的决策收拢到可被测试链接的地方
-         （事故门禁以前没链接 ThermalService.cs，这条判断根本没被覆盖过 —— 假绿） -->
-    <Compile Include="..\..\src\Island.App\Services\SmnChannel.cs" Link="Merged\App\SmnChannel.cs" />
+    <!-- 热键 UI 调度：注入调度器，不启动 Avalonia 或热键探针 -->
+    <Compile Include="..\..\src\Island.Avalonia\HotKeyClient.cs" Link="Merged\Avalonia\HotKeyClient.cs" />
+    <!-- 剪贴板去重：只测纯判断，不读取系统剪贴板 -->
+    <Compile Include="..\..\src\Island.App\Services\ClipboardService.cs" Link="Merged\App\ClipboardService.cs" />
+    <Compile Include="..\..\src\Island.Core\Monitoring\*.cs" Link="Merged\Core\%(Filename)%(Extension)" />
+    <Compile Include="..\..\src\Island.App\Themes\Theme.cs" Link="Merged\App\Theme.cs" />
+    <!-- 温度驱动探测：纯只读注册表检测 PawnIO 官方签名驱动（已彻底移除旧 inpoutx64 未签名直读） -->
+    <Compile Include="..\..\src\Island.App\Services\PawnIoDetector.cs" Link="Merged\App\PawnIoDetector.cs" />
     <!-- 动画数值安全（2026-11-23 首帧 Rect 宽高为 NaN 崩窗的回归）：弹簧 + 缓动 -->
     <Compile Include="..\..\src\Island.App\Animation\Spring.cs" Link="Merged\App\Spring.cs" />
     <!-- 渲染矩形夹紧 RenderKit.SafeRect（依赖 Spring + Theme，测试工程已启用 WPF） -->
     <Compile Include="..\..\src\Island.App\Controls\RenderKit.cs" Link="Merged\App\RenderKit.cs" />
-    <!-- 矢量图标（2026-11-24 视觉重做）：坏尺寸不抛异常的用例 -->
-    <Compile Include="..\..\src\Island.App\Controls\Glyphs.cs" Link="Merged\App\Glyphs.cs" />
-    <!-- 温度快照 + 它在监控页上"看得见的样子"（2026-11-24 展开态降耗：温度更新不再每次都让监控页整页重绘）；
-         两个文件都没有 WPF 依赖 -->
-    <Compile Include="..\..\src\Island.App\Services\ThermalSnapshot.cs" Link="Merged\App\ThermalSnapshot.cs" />
-    <Compile Include="..\..\src\Island.App\Controls\ThermalDisplay.cs" Link="Merged\App\ThermalDisplay.cs" />
-    <!-- 设备电量的纯规则（2026-11-25 设备电量增强）：DeviceInfo（档位语义）+ XInputService（档位→文字/环比例）。
-         DeviceService / BleBatteryService 本体带 System.Management / WinRT 依赖，不能链进零包测试工程 -->
-    <Compile Include="..\..\src\Island.App\Services\DeviceInfo.cs" Link="Merged\App\DeviceInfo.cs" />
-    <Compile Include="..\..\src\Island.App\Services\XInputService.cs" Link="Merged\App\XInputService.cs" />
-    <!-- 毛玻璃变化检测（2026-11-24：静止桌面上的重复截图不该触发重绘）；依赖 RenderKit.SafeRect -->
-    <Compile Include="..\..\src\Island.App\Services\GlassBackdrop.cs" Link="Merged\App\GlassBackdrop.cs" />
-    <!-- "用完即还"（2026-11-24：挂机几小时后工作集涨到 276 MB）：面板/设置窗口释放后的延迟压缩回收；
-         纯托管 + psapi/kernel32 的 P/Invoke，无 NuGet 依赖，可链进测试工程 -->
-    <Compile Include="..\..\src\Island.App\Services\MemoryReclaim.cs" Link="Merged\App\MemoryReclaim.cs" />
-    <!-- Intel GCL 初始化拦截策略（2026-11-24：只有核显的机器上这次初始化是纯开销，还会造成 GB 级的启动内存尖峰）；
-         对开源库只用反射按名字取类型，没有编译期依赖，可链进零包依赖的测试工程 -->
-    <Compile Include="..\..\src\Island.App\Services\IntelComputePolicy.cs" Link="Merged\App\IntelComputePolicy.cs" />
-    <!-- 温度驱动（PawnIO）自举（2026-11-24）：注册表只读 + SHA-256 + Process，全是 BCL，无 NuGet 依赖。
-         测试工程**不内嵌**安装器资源，用例也绝不运行它（见 PawnIoInstallerTests） -->
-    <Compile Include="..\..\src\Island.App\Services\PawnIoInstaller.cs" Link="Merged\App\PawnIoInstaller.cs" />
     <!-- 注意：Island.Native 依赖 System.Management / System.Diagnostics.PerformanceCounter 两个 NuGet 包，
          测试项目保持零包依赖，故不链接 Native 的源文件 -->
-    <!-- Windows 外设电量（2026-11-26）：纯逻辑层，无 Win32/WinRT 依赖，可链进零包测试工程 -->
-    <Compile Include="..\..\src\Island.App\Services\Peripheral\PeripheralReading.cs" Link="Merged\Peripheral\PeripheralReading.cs" />
-    <Compile Include="..\..\src\Island.App\Services\Peripheral\PeripheralProtocol.cs" Link="Merged\Peripheral\PeripheralProtocol.cs" />
-    <Compile Include="..\..\src\Island.App\Services\Peripheral\StandardHidBattery.cs" Link="Merged\Peripheral\StandardHidBattery.cs" />
-    <Compile Include="..\..\src\Island.App\Services\Peripheral\PeripheralClassifier.cs" Link="Merged\Peripheral\PeripheralClassifier.cs" />
-    <Compile Include="..\..\src\Island.App\Services\Peripheral\HidModels.cs" Link="Merged\Peripheral\HidModels.cs" />
-    <!-- HID 报告描述符解析器（2026-11-26 macOS 端 L1 标准电量）：纯逻辑、无 Win32 依赖，
-         两端共用同一份规则（mac 工程同样链接它） -->
-    <Compile Include="..\..\src\Island.App\Services\Peripheral\HidReportDescriptor.cs" Link="Merged\Peripheral\HidReportDescriptor.cs" />
-    <!-- 外设协议表自检层（2026-11-26 task2）：表合法性校验 + 覆盖规则 + 与真机对账，
-         纯逻辑、无 Win32 依赖 ⇒ 可链进零包测试工程 -->
-    <Compile Include="..\..\src\Island.App\Services\Peripheral\PeripheralProtocolTable.cs" Link="Merged\Peripheral\PeripheralProtocolTable.cs" />
-    <!-- CPU 温度取值规则（2026-11-26）：纯函数，无硬件库依赖，可链进测试工程 -->
-    <Compile Include="..\..\src\Island.App\Services\CpuTemperatureRule.cs" Link="Merged\App\CpuTemperatureRule.cs" />
-    <!-- 硬件传感器取值规则（2026-11-26）：分层匹配 + 干扰项排除，纯逻辑，无硬件库依赖，可链进测试工程 -->
-    <Compile Include="..\..\src\Island.App\Services\HardwareSensorRules.cs" Link="Merged\App\HardwareSensorRules.cs" />
-    <!-- 新测试文件：默认 glob 已包含它，这里显式登记（先移除默认项，避免重复编译项报错） -->
-    <Compile Remove="HardwareSensorRulesTests.cs" />
-    <Compile Include="HardwareSensorRulesTests.cs" />
-    <!-- 硬件传感器列表的纯逻辑 + 只读面板的视图（2026-11-26 task4）：
-         显示层（单位 / 格式 / 告警级别 / 状态词）与视图都不依赖硬件库 / Win32 ⇒ 可链进零包测试工程。
-         数据契约（HardwareSensorEntry / IHardwareSensorSource）在上面链接的 HardwareSensorRules.cs 里。 -->
-    <Compile Include="..\..\src\Island.App\Controls\HardwareSensorList.cs" Link="Merged\App\HardwareSensorList.cs" />
-    <Compile Include="..\..\src\Island.App\Controls\HardwareSensorsWindow.cs" Link="Merged\App\HardwareSensorsWindow.cs" />
-    <Compile Remove="HardwareSensorListTests.cs" />
-    <Compile Include="HardwareSensorListTests.cs" />
-    <Compile Remove="HardwareSensorsViewTests.cs" />
-    <Compile Include="HardwareSensorsViewTests.cs" />
-    <!-- 协议表自检层的新测试文件：同样先移除默认项再显式登记 -->
-    <Compile Remove="PeripheralProtocolTableTests.cs" />
-    <Compile Include="PeripheralProtocolTableTests.cs" />
-    <!-- 底部状态行（2026-11-26 E2）：两端共享规格 + Windows 端渲染 + 「读不到⇒未知」格式化 -->
-    <Compile Remove="MonitorStatusLineTests.cs" />
-    <Compile Include="MonitorStatusLineTests.cs" />
-    <!-- 底部状态行（macOS 端）：字段位与顺序 + 格式化规则 -->
-    <Compile Remove="MonitorStatusLineMacTests.cs" />
-    <Compile Include="MonitorStatusLineMacTests.cs" />
-    <!-- GPU 显存读数口径（2026-11-26 task15）：厂商/专用/共享三种口径 + 显示形状（共享不显示总量） -->
-    <Compile Remove="GpuMemoryKindTests.cs" />
-    <Compile Include="GpuMemoryKindTests.cs" />
-    <!-- 监控页卡片分组（2026-11-26 task16）：两端共享规格 MonitorPageLayoutSpec 的漂移检查 -->
-    <Compile Remove="MonitorPageLayoutTests.cs" />
-    <Compile Include="MonitorPageLayoutTests.cs" />
-    <!-- 监控页卡片分组 · macOS 端（2026-11-26 task16） -->
-    <Compile Remove="MonitorPageLayoutMacTests.cs" />
-    <Compile Include="MonitorPageLayoutMacTests.cs" />
-    <!-- 能力清单漂移检查（2026-11-26 阶段 4/5）：清单改了、两端没跟着改 ⇒ 门禁红 -->
-    <Compile Remove="CapabilityManifestTests.cs" />
-    <Compile Include="CapabilityManifestTests.cs" />
-    <!-- 主题 token 语义清单漂移检查（2026-11-26 task9）：两端同名 token 必须指同一语义角色 -->
-    <Compile Remove="ThemeTokenTests.cs" />
-    <Compile Include="ThemeTokenTests.cs" />
-    <!-- 跨端语义 token 用法漂移检查（2026-11-26 task14）：同一个界面元素在两端必须用同一个语义 token -->
-    <Compile Remove="ThemeTokenUsageTests.cs" />
-    <Compile Include="ThemeTokenUsageTests.cs" />
-    <!-- 主题可读性门禁（2026-11-26）：静态解析两端主题源码 → 逐套主题逐 token 比对"按平台各设"的门槛。
-         门槛数据在 Island.Core/Capabilities/ThemeContrastGate.cs（唯一真相源），本文件只做解析与比对。 -->
-    <Compile Remove="ThemeContrastTests.cs" />
-    <Compile Include="ThemeContrastTests.cs" />
-    <!-- 时钟视图内容对齐（2026-11-26）：两端默认收起视图统一为 clock 后，
-         "秒 + 日期" 必须在两端都画，且格式取自同一份 ClockTextSpec。 -->
-    <Compile Remove="ClockViewTests.cs" />
-    <Compile Include="ClockViewTests.cs" />
-    <!-- 鼠标穿透门禁（2026-11-27）：穿透只对收起态生效（展开面板必须可交互）+
-         托盘必须留一键退出的逃生口。 -->
-    <Compile Remove="ClickThroughTests.cs" />
-    <Compile Include="ClickThroughTests.cs" />
-    <!-- 发布文档与版本号同步门禁（2026-11-27）：README 的下载链接与产物文件名必须跟着版本号走。 -->
-    <Compile Remove="ReleaseDocTests.cs" />
-    <Compile Include="ReleaseDocTests.cs" />
-    <!-- 「按资源配色」门禁（2026-11-27）：色值锁定在 ResourceColorSpec + 两端画布必须取同一份规格
-         + 旧色值不得复活 + 展开面板本轮不接规格。默认 glob 已包含它，这里显式登记（先移除默认项，避免重复编译项报错）。 -->
-    <Compile Remove="ResourceColorTests.cs" />
-    <Compile Include="ResourceColorTests.cs" />
-    <!-- 展开面板规格（2026-11-26 阶段 2：Windows 展开面板对齐 mac 版）：纯常量类，可链进测试工程 -->
-    <Compile Include="..\..\src\Island.App\Controls\ExpandedPanelSpec.cs" Link="Merged\ExpandedPanelSpec.cs" />
-    <!-- 离屏渲染视觉回归（2026-11-26）：监控页 / 设备页是纯自绘控件，
-         离屏渲染 + 像素不变量断言（"画面非全黑 + 2×2 栅格几何"）——
-         本机屏幕捕获在锁屏会话里只有全黑，肉眼确认不了的事交给机器判。
-         判定逻辑与 tools/visual-probe 共用同一份源码，免得两处标准漂移。 -->
-    <Compile Include="..\..\src\Island.App\Controls\MonitorPage.cs" Link="Merged\App\MonitorPage.cs" />
-    <Compile Include="..\..\src\Island.App\Controls\DevicesPage.cs" Link="Merged\App\DevicesPage.cs" />
-    <Compile Include="..\..\tools\visual-probe\VisualProbeCore.cs" Link="Merged\VisualProbeCore.cs" />
-    <!-- 设备页的数据源替身：生产的 DeviceService 带 System.Management / WinRT 依赖，进不了零包测试工程；
-         这里给的是合成设备列表，渲染结果确定、可当回归基线。 -->
-    <Compile Include="..\..\tools\visual-probe\DeviceServiceShim.cs" Link="Merged\App\DeviceServiceShim.cs" />
-    <!-- 新测试文件：默认 glob 已包含它，这里显式登记（先移除默认项，避免重复编译项报错） -->
-    <Compile Remove="VisualRenderTests.cs" />
-    <Compile Include="VisualRenderTests.cs" />
-    <!-- macOS 端离屏渲染视觉回归（2026-11-26 task-11）：判定核心 + 布局规格 + 测试用例。
-         判定核心（tools\avalonia-probe\AvaloniaVisualCore.cs）与探针共用同一份源码，
-         避免"工具里过了、门禁里是另一套标准"。
-         ⚠️ 这两个文件是**纯 .NET**（不引用 Avalonia）——所以零 NuGet 的测试工程能链进来；
-         Avalonia 的真渲染在 tools\avalonia-probe 里做（那边才允许有 Avalonia 依赖）。
-         布局规格 MonitorLayoutSpec.cs 同样纯 .NET，链接进来才能断言"两端几何一致"。 -->
-    <Compile Include="..\..\tools\avalonia-probe\AvaloniaVisualCore.cs" Link="Merged\AvaloniaProbeCore.cs" />
-    <Compile Include="..\..\src\Island.Avalonia\MonitorLayoutSpec.cs" Link="Merged\Avalonia\MonitorLayoutSpec.cs" />
-    <Compile Remove="AvaloniaVisualTests.cs" />
-    <Compile Include="AvaloniaVisualTests.cs" />
-    <!-- PDH 通配符读取器（GPU Engine 分组聚合）：纯 P/Invoke，无 NuGet 依赖，可链进测试工程 -->
+    <!-- PDH 通配符读取器与前台全屏分类（纯 P/Invoke，无 NuGet 依赖，可链进测试工程） -->
     <Compile Include="..\..\src\Island.Native\PdhWildcardQuery.cs" Link="Merged\PdhWildcardQuery.cs" />
+    <Compile Include="..\..\src\Island.Native\NativeMethods.cs" Link="Merged\NativeMethods.cs" />
+    <Compile Include="..\..\src\Island.Native\ScreenContext.cs" Link="Merged\ScreenContext.cs" />
   </ItemGroup>
 
 </Project>

@@ -67,8 +67,11 @@ DDCValue convertI2CtoDDC(char *i2cBytes) {
     DDCValue invalid = {-1, -1};
     uint8_t checksum = 0x50;
     for (int i = 0; i < 11; i++) checksum ^= bytes[i];
-    if (bytes[0] != 0x6e || bytes[1] != 0x88 || bytes[2] != 0x02 ||
-        bytes[3] != 0 || checksum != 0) return invalid;
+    if (bytes[0] != 0x6e || bytes[1] != 0x88 || bytes[2] != 0x02 || checksum != 0)
+        return invalid;
+    // Valid DDC/CI VCP Feature Reply where result code (bytes[3]) != 0 means Unsupported VCP Opcode.
+    if (bytes[3] != 0)
+        return (DDCValue){DDC_UNSUPPORTED_VALUE, DDC_UNSUPPORTED_VALUE};
     // Decode two-byte values directly; sizeof(2) would copy four bytes.
     DDCValue value = {(bytes[8] << 8) | bytes[9], (bytes[6] << 8) | bytes[7]};
     return value;

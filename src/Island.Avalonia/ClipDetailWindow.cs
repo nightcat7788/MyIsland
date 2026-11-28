@@ -76,7 +76,8 @@ public sealed class ClipDetailWindow : Window
             Margin = new Thickness(16, 10, 16, 16),
         };
 
-        var root = new Panel();
+        var root = new DockPanel();
+        DockPanel.SetDock(meta, Dock.Top);
         root.Children.Add(meta);
         var scroll = new ScrollViewer
         {
@@ -86,6 +87,14 @@ public sealed class ClipDetailWindow : Window
         };
         root.Children.Add(scroll);
         Content = root;
+        KeyDown += (_, e) =>
+        {
+            if (e.Key == global::Avalonia.Input.Key.Escape)
+            {
+                e.Handled = true;
+                Close();
+            }
+        };
     }
 
     private static string KindLabel(ClipKind k) => k switch
