@@ -6,6 +6,16 @@ MyIsland 是一款 Windows 与 macOS 双端轻量级灵动岛系统监控与效�
 
 Windows 与 macOS 各自一套原生自绘实现，共享 `src/Island.Core` 数据模型、读数三态语义、硬件传感器护栏（`ThermalSensorGuard`）、2.4G HID 无线外设协议引擎（`HidPeripheralProtocol`）与设置配置，两端功能与视觉高度对齐。开发与目录约定详见 [SOURCE-README.txt](SOURCE-README.txt) 与 [README-Mac.md](README-Mac.md)。
 
+## 下载
+
+**最新版本 Windows v1.1.9**：<https://github.com/nightcat7788/MyIsland/releases/tag/v1.1.9>
+
+| 产物 | 说明 |
+|---|---|
+| `MyIsland-Setup-1.1.9.exe` | Windows 免管理员安装包（Inno Setup） |
+| `MyIsland-1.1.9-portable.zip` | Windows 便携版，解压即用 |
+| `SHA256SUMS.txt` | 校验清单，下载后可核对 SHA256 |
+
 ## 核心特性（v1.1.9）
 
 - **双端统一悬浮胶囊**：
