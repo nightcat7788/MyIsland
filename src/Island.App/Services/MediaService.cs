@@ -82,18 +82,24 @@ public sealed class MediaService : IDisposable
         }
     }
 
+    private int _idleSkip;
+
     private async Task PollOnceAsync()
     {
         if (_disposed || Interlocked.Exchange(ref _polling, 1) != 0) return;
         try
         {
+            // 无播放会话或已暂停时降低 WinRT IPC 轮询频率（1.5s -> 4.5s），显著降低待机 CPU 唤醒
+            if (!_current.IsPlaying && Interlocked.Increment(ref _idleSkip) % 3 != 1)
+                return;
+
             _manager ??= await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
             if (_manager is null) return;
 
             var session = _manager.GetCurrentSession();
             if (session is null)
             {
-                Publish(new MediaSnapshot());
+                if (_current.HasMedia) Publish(new MediaSnapshot());
                 return;
             }
 

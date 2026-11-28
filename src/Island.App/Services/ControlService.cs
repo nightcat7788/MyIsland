@@ -1122,32 +1122,93 @@ public static class ControlService
         onDone?.Invoke(freed);
     }
 
-    /// <summary>真正的清理动作（跑在后台线程）：本进程 GC + 尽量清空各进程工作集。</summary>
-    private static long RunMemoryCleanup()
+    private static int _cleaning;
+
+    /// <summary>
+    /// 轻量自瘦身（不扫描其它进程）：修剪瞬态渲染缓存 + 压缩 LOH/Gen2 GC + 收缩本进程工作集。
+    /// 启动稳定后与长时收起待机时定期调用，可将常驻内存稳定控制在极低水位。
+    /// </summary>
+    public static void TrimSelfWorkingSet()
     {
-        long before = AvailableMB();
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
-        try { EmptyWorkingSet(System.Diagnostics.Process.GetCurrentProcess().Handle); } catch { }
-        foreach (var p in System.Diagnostics.Process.GetProcesses())
+        try
         {
-            try { EmptyWorkingSet(p.Handle); } catch { /* 系统进程无权限：跳过 */ }
-            finally { p.Dispose(); }
+            Island.App.Controls.RenderKit.TrimCaches();
+            System.Runtime.GCSettings.LargeObjectHeapCompactionMode =
+                System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+            GC.Collect(2, GCCollectionMode.Aggressive, true, true);
+            GC.WaitForPendingFinalizers();
+            GC.Collect(2, GCCollectionMode.Aggressive, true, true);
+            IntPtr self = System.Diagnostics.Process.GetCurrentProcess().Handle;
+            EmptyWorkingSet(self);
+            SetProcessWorkingSetSizeEx(self, new IntPtr(-1), new IntPtr(-1), 0);
         }
-        return Math.Max(0, AvailableMB() - before);
+        catch { }
     }
 
+    /// <summary>真正的清理动作（跑在后台线程）：并发防重入 + 自瘦身 + 尽量清空各用户进程工作集。</summary>
+    private static long RunMemoryCleanup()
+    {
+        if (System.Threading.Interlocked.CompareExchange(ref _cleaning, 1, 0) != 0)
+            return 0;
+        try
+        {
+            long before = AvailableMB();
+            TrimSelfWorkingSet();
+            int selfId = Environment.ProcessId;
+            foreach (var p in System.Diagnostics.Process.GetProcesses())
+            {
+                try
+                {
+                    // 跳过 System Idle(0) / System(4) 与已清理的本进程，避免无意义的权限异常开销
+                    if (p.Id <= 4 || p.Id == selfId) continue;
+                    EmptyWorkingSet(p.Handle);
+                }
+                catch { /* 系统/受保护进程无权限：跳过 */ }
+                finally { p.Dispose(); }
+            }
+            return Math.Max(0, AvailableMB() - before);
+        }
+        finally
+        {
+            System.Threading.Volatile.Write(ref _cleaning, 0);
+        }
+    }
+
+    /// <summary>零分配 Win32 GlobalMemoryStatusEx 读取当前可用物理内存（MB），替代高开销的 PerformanceCounter。</summary>
     private static long AvailableMB()
     {
         try
         {
-            using var c = new System.Diagnostics.PerformanceCounter("Memory", "Available MBytes", true);
-            return (long)c.NextValue();
+            var ms = new MEMORYSTATUSEX { dwLength = (uint)Marshal.SizeOf<MEMORYSTATUSEX>() };
+            if (GlobalMemoryStatusEx(ref ms))
+                return (long)(ms.ullAvailPhys / (1024UL * 1024UL));
         }
-        catch { return 0; }
+        catch { }
+        return 0;
     }
 
-    [System.Runtime.InteropServices.DllImport("psapi.dll")]
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MEMORYSTATUSEX
+    {
+        public uint dwLength;
+        public uint dwMemoryLoad;
+        public ulong ullTotalPhys;
+        public ulong ullAvailPhys;
+        public ulong ullTotalPageFile;
+        public ulong ullAvailPageFile;
+        public ulong ullTotalVirtual;
+        public ulong ullAvailVirtual;
+        public ulong ullAvailExtendedVirtual;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetProcessWorkingSetSizeEx(
+        IntPtr hProcess, IntPtr dwMinimumWorkingSetSize, IntPtr dwMaximumWorkingSetSize, uint flags);
+
+    [DllImport("psapi.dll")]
     private static extern bool EmptyWorkingSet(IntPtr hProcess);
 
     // ---------- 网卡枚举（设置中心手动选网卡用） ----------

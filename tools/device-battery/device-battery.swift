@@ -40,8 +40,8 @@ func cleanField(_ s: String) -> String {
 var devices: [Device] = []
 var seenKeys: [String: Int] = [:]
 
-// ---- 蓝牙 / USB HID 设备电量 ----
-for className in ["AppleDeviceManagementHIDEventService", "IOBluetoothHIDDevice"] {
+// ---- 蓝牙 / USB 2.4G HID 设备电量 ----
+for className in ["AppleDeviceManagementHIDEventService", "IOBluetoothHIDDevice", "IOHIDDevice"] {
     var it: io_iterator_t = 0
     guard let matching = IOServiceMatching(className),
           IOServiceGetMatchingServices(kIOMainPortDefault, matching, &it) == KERN_SUCCESS else { continue }

@@ -2,11 +2,11 @@
 
 MyIsland 是一款 Windows 与 macOS 双端轻量级灵动岛系统监控与效率工具，以悬浮圆角胶囊实时展示硬件指标、媒体播放与时间，并支持悬停展开面板、多主题切换与灵动小形象互动。
 
-**当前版本：1.1.8** · Windows WPF（.NET 8）· macOS Avalonia 11（Apple Silicon 原生）
+**当前版本：1.1.9** · Windows WPF（.NET 8）· macOS Avalonia 11（Apple Silicon 原生）
 
-Windows 与 macOS 各自一套原生自绘实现，共享 `src/Island.Core` 数据模型、读数三态语义、硬件传感器护栏（`ThermalSensorGuard`）与设置配置，两端功能与视觉高度对齐。开发与目录约定详见 [SOURCE-README.txt](SOURCE-README.txt) 与 [README-Mac.md](README-Mac.md)。
+Windows 与 macOS 各自一套原生自绘实现，共享 `src/Island.Core` 数据模型、读数三态语义、硬件传感器护栏（`ThermalSensorGuard`）、2.4G HID 无线外设协议引擎（`HidPeripheralProtocol`）与设置配置，两端功能与视觉高度对齐。开发与目录约定详见 [SOURCE-README.txt](SOURCE-README.txt) 与 [README-Mac.md](README-Mac.md)。
 
-## 核心特性（v1.1.8）
+## 核心特性（v1.1.9）
 
 - **双端统一悬浮胶囊**：
   - `combo` 复合胶囊与 Mac 视觉 1:1 对齐：`时间 | (C)CPU% (M)MEM% (G)GPU% (D)DISK% | (C)CPU° (G)GPU° (D)SSD° (B)BATT%⚡ | ↓ ↑`
@@ -21,7 +21,7 @@ Windows 与 macOS 各自一套原生自绘实现，共享 `src/Island.Core` 数�
   - **媒体控制**：系统媒体会话播放控制与专辑封面显示（Windows SMTC / macOS 原生媒体服务）
   - **剪贴板历史**：文本与图片记录、快速预览弹窗、一键粘回
   - **文件中转站**：拖放暂存、快捷打开与复制
-  - **设备与快捷控制**：外设电量监控、WLAN / 蓝牙 / 亮度与音量控制；macOS 集成 Lunar DDC 外接显示器亮度/对比度/音量控制与内建屏守护
+  - **设备与快捷控制**：内置电池 + Win10/11 原生蓝牙/BLE GATT + **2.4GHz USB HID 无线外设电量引擎**（参考 `Sapd/HeadsetControl`，支持 Logitech G / Lightspeed / Unifying / Bolt、Corsair Void/HS、SteelSeries Arctis/Nova、HyperX Cloud 等）+ XInput 手柄；内置零 PDH 开销内存清理与后台自动工作集瘦身；macOS 集成 Lunar DDC 外接显示器控制与内建屏守护
   - **个性化与热键**：多套暗色科技预设主题、小形象互动、全屏避让/鼠标穿透、全局快捷键速查与自定义设置窗口
 
 ## 目录结构
@@ -32,7 +32,7 @@ Windows 与 macOS 各自一套原生自绘实现，共享 `src/Island.Core` 数�
 │   ├── Island.Native/     Windows PDH / NVMe / powrprof / 全屏检测底层采样
 │   ├── Island.App/        Windows WPF 主应用（.NET 8）
 │   └── Island.Avalonia/   macOS Avalonia 11 主应用（含显示器控制与原生工具桥接）
-├── tests/Island.Tests/    零依赖单元测试套件（130 项断言全通过）
+├── tests/Island.Tests/    零依赖单元测试套件（153 项断言全通过）
 ├── packaging/             Windows 便携包 / 交叉构建脚本与 macOS .app 打包脚本
 ├── installer/             Windows Inno Setup 安装包脚本（MyIsland.iss）
 ├── tools/                 macOS 原生辅助工具源码（Swift / Objective-C）与图标生成工具

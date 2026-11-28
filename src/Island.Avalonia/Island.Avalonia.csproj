@@ -33,6 +33,7 @@
     <Compile Include="..\Island.Core\Monitoring\Reading.cs" Link="Merged\Reading.cs" />
     <Compile Include="..\Island.Core\Monitoring\SamplerDemand.cs" Link="Merged\SamplerDemand.cs" />
     <Compile Include="..\Island.Core\Monitoring\ThermalSensorGuard.cs" Link="Merged\ThermalSensorGuard.cs" />
+    <Compile Include="..\Island.Core\Monitoring\HidPeripheralProtocol.cs" Link="Merged\HidPeripheralProtocol.cs" />
     <Compile Include="..\Island.Native\SystemMonitor.cs" Link="Merged\SystemMonitor.cs" />
     <!-- 采样层通配符 PDH 查询器（SystemMonitor/GpuUsageReader 依赖它，必须一起链进来，
          否则跨平台工程编译不过：CS0246 找不到 PdhWildcardQuery） -->

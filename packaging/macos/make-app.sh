@@ -13,7 +13,7 @@ if [[ ! -f "$SRC/Island.Avalonia" ]]; then
 fi
 
 VERSION=$(grep -oE '<Version>[^<]+' "$ROOT/Directory.Build.props" | head -n1 | sed 's/<Version>//')
-[[ -n "$VERSION" ]] || VERSION="1.1.8"
+[[ -n "$VERSION" ]] || VERSION="1.1.9"
 
 # 构建号自动递增（确认主程序存在后再写，避免失败构建污染状态）
 BUILD_NUM_FILE="$ROOT/packaging/macos/.build-num"

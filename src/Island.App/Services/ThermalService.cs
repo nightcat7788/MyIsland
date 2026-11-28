@@ -29,6 +29,7 @@ public sealed record ThermalSnapshot
     /// <summary>探测到的硬件名称摘要（供设置中心诊断显示）。</summary>
     public string CpuHardwareName { get; init; } = "";
     public string GpuHardwareName { get; init; } = "";
+    public string MotherboardHardwareName { get; init; } = "";
     public string StorageHardwareName { get; init; } = "";
     public DateTime UpdatedAt { get; init; } = DateTime.Now;
 }
@@ -48,20 +49,38 @@ public sealed class ThermalService : IDisposable
     private ThermalSnapshot _last = new();
     private System.Threading.Timer? _timer;
     private bool _wanted;
+    private volatile bool _highFreq;
     private bool _disposed;
+    private double? _cachedMbTemp;
+    private double? _cachedCpuFan;
 
     public event Action<ThermalSnapshot>? Updated;
     public ThermalSnapshot Current => _last;
+
+    /// <summary>展开面板时启用全频采样；收起态时对变化极慢的主板 SuperIO（每 6s）与存储（每 10s）自动降频以降低 CPU 占用。</summary>
+    public void SetHighFrequency(bool highFreq) => _highFreq = highFreq;
 
     /// <summary>生成已识别硬件与实时温度诊断摘要（供设置中心实时核验）。</summary>
     public string GetHardwareSummary()
     {
         var s = _last;
-        var parts = new List<string>(3);
+        var parts = new List<string>(4);
         if (!string.IsNullOrWhiteSpace(s.CpuHardwareName))
-            parts.Add(s.CpuTemp is { } ct ? $"{s.CpuHardwareName} ({ct:F1}°C)" : s.CpuHardwareName);
+        {
+            string extra = s.CpuTemp is { } ct
+                ? (s.CpuClockGHz is { } ck ? $"{ct:F1}°C · {ck:F2}GHz" : $"{ct:F1}°C")
+                : (s.CpuClockGHz is { } ck2 ? $"{ck2:F2}GHz" : "");
+            parts.Add(extra.Length > 0 ? $"{s.CpuHardwareName} ({extra})" : s.CpuHardwareName);
+        }
         if (!string.IsNullOrWhiteSpace(s.GpuHardwareName))
-            parts.Add(s.GpuTemp is { } gt ? $"{s.GpuHardwareName} ({gt:F0}°C)" : s.GpuHardwareName);
+        {
+            string extra = s.GpuTemp is { } gt
+                ? (s.GpuMemoryTotalGB is { } vt && vt > 0.5 ? $"{gt:F0}°C · {vt:F0}GB" : $"{gt:F0}°C")
+                : "";
+            parts.Add(extra.Length > 0 ? $"{s.GpuHardwareName} ({extra})" : s.GpuHardwareName);
+        }
+        if (!string.IsNullOrWhiteSpace(s.MotherboardHardwareName))
+            parts.Add(s.MotherboardTemp is { } mt ? $"{s.MotherboardHardwareName} ({mt:F0}°C)" : s.MotherboardHardwareName);
         if (!string.IsNullOrWhiteSpace(s.StorageHardwareName))
             parts.Add(s.SsdTemp is { } st ? $"{s.StorageHardwareName} ({st:F0}°C)" : s.StorageHardwareName);
         else if (s.SsdTemp is { } stOnly)
@@ -183,7 +202,7 @@ public sealed class ThermalService : IDisposable
                     cpuClockMHz = null, cpuVoltage = null,
                     gpuFan = null, cpuFan = null, gpuPower = null, gpuLoad = null, ssdTemp = null,
                     gpuMemUsed = null, gpuMemTotal = null, gpuClock = null;
-            string cpuHwName = "", gpuHwName = "", storageHwName = "";
+            string cpuHwName = "", gpuHwName = "", mbHwName = "", storageHwName = "";
             int bestGpuScore = -1;
 
                 // 首次采样：把发现的硬件/传感器全写进诊断日志（定位"没有温度"）。
@@ -191,6 +210,8 @@ public sealed class ThermalService : IDisposable
                 bool dump = !_dumped;
                 // SSD 温度变化慢：首帧立采，之后每 5 轮（约 10s）更新一次，减少不必要的 SMART 轮询
                 bool sampleStorage = dump || (_sampleCount % 5 == 0);
+                // 主板 SuperIO 芯片 LPC 轮询开销高：展开面板全频，收起态每 3 轮（约 6s）更新一次
+                bool sampleMotherboard = dump || _highFreq || (_sampleCount % 3 == 0);
                 _sampleCount++;
                 System.Text.StringBuilder? diag = dump ? new System.Text.StringBuilder() : null;
                 foreach (IHardware hw in _computer!.Hardware)
@@ -199,6 +220,13 @@ public sealed class ThermalService : IDisposable
                     {
                         if (string.IsNullOrEmpty(storageHwName)) storageHwName = hw.Name;
                         ssdTemp ??= _cachedSsdTemp;
+                        continue;
+                    }
+                    if (hw.HardwareType == HardwareType.Motherboard && !sampleMotherboard)
+                    {
+                        if (string.IsNullOrEmpty(mbHwName)) mbHwName = hw.Name;
+                        mbTemp ??= _cachedMbTemp;
+                        cpuFan ??= _cachedCpuFan;
                         continue;
                     }
                     try
@@ -325,11 +353,14 @@ public sealed class ThermalService : IDisposable
                     }
                     else if (hw.HardwareType == HardwareType.Motherboard)
                     {
+                        if (string.IsNullOrEmpty(mbHwName)) mbHwName = hw.Name;
                         foreach (IHardware sub in hw.SubHardware)
                         {
                             mbTemp ??= FirstOf(sub, SensorType.Temperature);
                             cpuFan ??= Pick(sub, SensorType.Fan, "CPU", "CPU #1", "Fan #1");
                         }
+                        _cachedMbTemp = mbTemp;
+                        _cachedCpuFan = cpuFan;
                     }
                 }
                 if (dump)
@@ -384,6 +415,7 @@ public sealed class ThermalService : IDisposable
                 GpuCoreClockMHz = gpuClock,
                 CpuHardwareName = cpuHwName,
                 GpuHardwareName = gpuHwName,
+                MotherboardHardwareName = mbHwName,
                 StorageHardwareName = storageHwName,
             };
             Updated?.Invoke(_last);

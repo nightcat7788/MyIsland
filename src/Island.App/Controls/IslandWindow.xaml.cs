@@ -41,6 +41,7 @@ public partial class IslandWindow : Window
     private readonly DispatcherTimer _weatherTimer;
     private readonly DispatcherTimer _islandSwitchTimer;
     private readonly DispatcherTimer _displayFollowTimer;
+    private readonly DispatcherTimer _selfTrimTimer;
 
     // 弹簧：折叠宽度/高度、展开进度、液桥强度/拉伸、水滴、挤压
     private readonly Spring _bodyW = new(180, 260, 0.82);
@@ -154,6 +155,15 @@ public partial class IslandWindow : Window
                 Task.Run(() => Services.ControlService.SyncExternalFollowBrightness(prefs));
         };
         UpdateDisplayFollowTimer();
+
+        // 轻量自瘦身定时：启动 35s 后清理冷启动分配峰值，此后收起待机每 15 分钟温和修剪一次工作集
+        _selfTrimTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromSeconds(35) };
+        _selfTrimTimer.Tick += (_, _) =>
+        {
+            _selfTrimTimer.Interval = TimeSpan.FromMinutes(15);
+            if (!_expanded) Task.Run(Services.ControlService.TrimSelfWorkingSet);
+        };
+        _selfTrimTimer.Start();
 
         ApplyTheme();
     }
@@ -330,7 +340,7 @@ public partial class IslandWindow : Window
         }
         _frame.Stop(); _fullscreenCheck.Stop();
         _cycleTimer.Stop(); _weatherTimer.Stop();
-        _islandSwitchTimer.Stop(); _displayFollowTimer.Stop();
+        _islandSwitchTimer.Stop(); _displayFollowTimer.Stop(); _selfTrimTimer.Stop();
         expandedPanel.StopTimers();
         _pointerTrack.Stop(); _pointerTrack.Dispose();
         // 服务是长驻的：不解绑的话，它们会一直持有这个已关闭的窗口
@@ -478,12 +488,14 @@ public partial class IslandWindow : Window
         bool thermalWanted = (_open.Value > 0.3 && expandedPanel.CurrentPageIndex == ExpandedPanel.MonitorPageIndex)
             || (!_expanded && islandCanvas.CompactView is "dash" or "combo");
         _thermal.SetWanted(thermalWanted);
+        _thermal.SetHighFrequency(_expanded);
         if (thermalWanted)
             islandCanvas.Thermal = _thermal.Current;
 
         // 设备电量：展开监控页/设备页，或收起态 clock/combo/dash/devices 视图下保持 15s 轻量原生采样
         bool wantDevices = (_expanded && expandedPanel.CurrentPageIndex is ExpandedPanel.DevicesPageIndex or ExpandedPanel.MonitorPageIndex)
             || (!_expanded && islandCanvas.CompactView is "clock" or "combo" or "dash" or "devices");
+        Services.DeviceService.SetHighFrequency(_expanded && expandedPanel.CurrentPageIndex == ExpandedPanel.DevicesPageIndex);
         Services.DeviceService.SetWanted(wantDevices);
     }
 

@@ -1,7 +1,7 @@
 MyIsland 源码包说明
 ====================
 
-【版本】1.1.8 · 版本号集中定义在 Directory.Build.props。
+【版本】1.1.9 · 版本号集中定义在 Directory.Build.props。
         改版本号需同步四处：Directory.Build.props / packaging/macos/Info.plist / packaging/macos/make-app.sh / installer/MyIsland.iss
         第三方开源许可声明集中维护于 THIRD-PARTY-NOTICES.txt。
 

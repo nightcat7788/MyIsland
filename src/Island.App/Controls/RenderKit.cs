@@ -97,7 +97,7 @@ internal static class RenderKit
         double safePpd = double.IsFinite(ppd) && ppd > 0 ? ppd : 1;
         var k = (s, safeSize, strong, Key(color), safePpd);
         if (_texts.TryGetValue(k, out var t)) return t;
-        if (_texts.Count > 512) _texts.Clear();
+        if (_texts.Count > 320) _texts.Clear();
         t = new FormattedText(s,
             System.Globalization.CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
             strong ? StrongTypeface : NormalTypeface,
@@ -398,8 +398,16 @@ internal static class RenderKit
     public static ImageSource? AppIcon(string? path)
     {
         if (string.IsNullOrEmpty(path)) return null;
-        if (_icons.Count > 256) _icons.Clear();
+        if (_icons.Count > 96) _icons.Clear();
         return _icons.GetOrAdd(path, LoadIcon);
+    }
+
+    /// <summary>修剪瞬态文本排版与进程图标缓存（保留体积极小的画刷/画笔热缓存），供内存清理与定期瘦身调用。</summary>
+    public static void TrimCaches()
+    {
+        _texts.Clear();
+        _icons.Clear();
+        if (_wallpaperAccents.Count > 8) _wallpaperAccents.Clear();
     }
 
     private static ImageSource? LoadIcon(string path)

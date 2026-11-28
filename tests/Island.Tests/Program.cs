@@ -45,6 +45,7 @@ RunSuite(nameof(SamplerGuardTests), () => SamplerGuardTests.Run(Check));
 RunSuite(nameof(AnimationGuardTests), () => AnimationGuardTests.Run(Check));
 RunSuite(nameof(PawnIoTests), () => PawnIoTests.Run(Check));
 RunSuite(nameof(ThermalSensorGuardTests), () => ThermalSensorGuardTests.Run(Check));
+RunSuite(nameof(HidPeripheralProtocolTests), () => HidPeripheralProtocolTests.Run(Check));
 RunSuite(nameof(ThemeTests), () => ThemeTests.Run(Check));
 RunSuite(nameof(DisplayPrefsTests), () => DisplayPrefsTests.Run(Check));
 RunSuite(nameof(MonitorModelTests), () => MonitorModelTests.Run(Check));

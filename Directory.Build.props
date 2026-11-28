@@ -15,11 +15,11 @@
     另外，产物文件名（MyIsland-Setup-x.y.z.exe 等）里也带版本号。
   -->
   <PropertyGroup>
-    <!-- 语义化版本：1.1.8 —— 对齐 LiteMonitor 硬件监控与唤醒自愈、免提权降级采样、双端监控页与交互增强 -->
-    <Version>1.1.8</Version>
+    <!-- 语义化版本：1.1.9 —— 2.4G HID 无线外设电量引擎（参考 HeadsetControl）+ 内存清理/硬件信息与低功耗 CPU/RAM 优化 -->
+    <Version>1.1.9</Version>
     <!-- 程序集版本：只取主次版本（1.1.0.0），补丁号变更时不破坏强命名/绑定引用 -->
     <AssemblyVersion>1.1.0.0</AssemblyVersion>
-    <FileVersion>1.1.8.0</FileVersion>
-    <InformationalVersion>1.1.8</InformationalVersion>
+    <FileVersion>1.1.9.0</FileVersion>
+    <InformationalVersion>1.1.9</InformationalVersion>
   </PropertyGroup>
 </Project>

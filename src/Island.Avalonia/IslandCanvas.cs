@@ -1409,8 +1409,13 @@ public sealed class IslandCanvas : Control
             const double ring = 60;
             double rx = cx + cardW / 2, ry = cy + 20 + ring / 2;
             RenderKit.Ring(dc, new Point(rx, ry), ring, 5, dev.Percent / 100.0, pal.Track, c);
-            // 图标按设备类型：内置电池 / 蓝牙设备
-            Glyph g = dev.Kind == "内置" ? Glyph.Battery : Glyph.Disk;
+            // 图标按设备类型：内置电池 / 无线耳机 / 外设
+            string lowName = dev.Name.ToLowerInvariant();
+            Glyph g = dev.Kind == "内置" ? Glyph.Battery
+                : (lowName.Contains("headset") || lowName.Contains("airpods") || lowName.Contains("buds")
+                    || lowName.Contains("arctis") || lowName.Contains("cloud") || lowName.Contains("void")
+                    || lowName.Contains("耳机")) ? Glyph.Speaker
+                : Glyph.Battery;
             DrawIcon(dc, g, rx - (12 * 1.1) / 2, ry, pal.Text, 1.1);
 
             // 大号百分比

@@ -16,15 +16,20 @@ public sealed record DeviceInfo(string Name, string Kind, int Percent, bool Char
 ///  ① Win32 GetSystemPowerStatus + WMI Win32_Battery（修正 DeviceID 字段）—— 笔记本内置电池百分比、充电/接电状态与剩余续航；
 ///  ② Win32 CfgMgr32 PnP 统一设备属性（DEVPKEY_Bluetooth_Battery {104EA319-6EE2-4701-BD47-8DDBF425BBE5},2）
 ///     —— Windows 10/11 原生蓝牙 HFP 耳机与 BLE GATT 0x180F 无线鼠标/键盘/耳塞/手柄真实电量（与系统设置同源）；
-///  ③ XInput1_4 XInputGetBatteryInformation —— Xbox / XInput 2.4GHz 无线手柄电量兜底。
+///  ③ 2.4GHz / USB HID 无线外设协议引擎（HidPeripheralBatteryService，参考 Sapd/HeadsetControl）
+///     —— Logitech G / Lightspeed / Unifying / Bolt、Corsair Void/HS、SteelSeries Arctis/Nova、HyperX Cloud 等；
+///  ④ XInput1_4 XInputGetBatteryInformation —— Xbox / XInput 2.4GHz 无线手柄电量兜底。
 /// </summary>
 public static class DeviceService
 {
     private static readonly object _gate = new();
     internal static readonly object DiagLogGate = new();
     private static List<DeviceInfo> _devices = new();
+    private static List<DeviceInfo> _cachedWireless = new();
     private static Timer? _timer;
     private static bool _wanted;
+    private static volatile bool _highFreq;
+    private static int _sampleCycle;
     private static int _sampling;
 
     /// <summary>每次后台采样刷新完成后触发（供 UI 立即重绘设备页、监控页与收起胶囊）。</summary>
@@ -54,6 +59,12 @@ public static class DeviceService
 
     /// <summary>启动时立即后台预采一次，确保首次打开面板即有电池与无线外设数据。</summary>
     public static void PrimeOnce() => Task.Run(Sample);
+
+    /// <summary>立即触发一次后台刷新（用于用户手动刷新或设备热插拔）。</summary>
+    public static void RefreshNow() => Task.Run(() => Sample(forceWirelessScan: true));
+
+    /// <summary>声明是否处于高频查看状态（展开设备页时每 15s 扫全量；收起态且无外设时自动降频至 45s 省电省 CPU）。</summary>
+    public static void SetHighFrequency(bool highFreq) => _highFreq = highFreq;
 
     private static void EnsureTimer()
     {
@@ -106,7 +117,9 @@ public static class DeviceService
         _ => "电",
     };
 
-    private static void Sample()
+    private static void Sample() => Sample(forceWirelessScan: false);
+
+    private static void Sample(bool forceWirelessScan)
     {
         if (Interlocked.CompareExchange(ref _sampling, 1, 0) != 0) return;
         bool changed = false;
@@ -120,16 +133,46 @@ public static class DeviceService
             }
             catch (Exception ex) { Log($"BuiltinBattery 异常：{ex.GetType().Name}: {ex.Message}"); }
 
-            try { list.AddRange(SamplePnpBluetoothBatteries()); }
-            catch (Exception ex) { Log($"PnP 蓝牙电量读取异常：{ex.GetType().Name}: {ex.Message}"); }
+            // 智能节流：若收起态且上轮未发现无线外设，每 3 轮（45s）才做一次全量 PnP+HID 扫描；
+            // 有无线外设或用户打开设备页时每轮（15s）实时刷新，兼顾灵敏度与极低待机 CPU 占用。
+            int cycle = Interlocked.Increment(ref _sampleCycle);
+            bool hasKnownWireless;
+            lock (_gate) hasKnownWireless = _cachedWireless.Count > 0;
+            bool scanWireless = forceWirelessScan || _highFreq || hasKnownWireless || (cycle % 3 == 1);
 
-            try
+            if (scanWireless)
             {
-                bool hasGamepad = list.Any(d => d.Kind == "gamepad");
-                if (!hasGamepad)
-                    list.AddRange(SampleXInputGamepads());
+                var wireless = new List<DeviceInfo>();
+                try { wireless.AddRange(SamplePnpBluetoothBatteries()); }
+                catch (Exception ex) { Log($"PnP 蓝牙电量读取异常：{ex.GetType().Name}: {ex.Message}"); }
+
+                try
+                {
+                    var hidDevs = HidPeripheralBatteryService.SampleAll(Log);
+                    foreach (var hd in hidDevs)
+                    {
+                        bool dup = wireless.Any(existing =>
+                            string.Equals(existing.Name.Trim(), hd.Name.Trim(), StringComparison.OrdinalIgnoreCase));
+                        if (!dup) wireless.Add(hd);
+                    }
+                }
+                catch (Exception ex) { Log($"HID 无线外设电量读取异常：{ex.GetType().Name}: {ex.Message}"); }
+
+                try
+                {
+                    bool hasGamepad = wireless.Any(d => d.Kind == "gamepad");
+                    if (!hasGamepad)
+                        wireless.AddRange(SampleXInputGamepads());
+                }
+                catch { }
+
+                lock (_gate) _cachedWireless = wireless;
+                list.AddRange(wireless);
             }
-            catch { }
+            else
+            {
+                lock (_gate) list.AddRange(_cachedWireless);
+            }
 
             lock (_gate)
             {

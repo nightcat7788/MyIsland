@@ -12,7 +12,7 @@
 ; ─────────────────────────────────────────────────────────────────
 
 #define MyAppName "MyIsland"
-#define MyAppVersion "1.1.8"
+#define MyAppVersion "1.1.9"
 #define MyAppPublisher "MyIsland"
 #define MyAppExeName "Island.App.exe"
 

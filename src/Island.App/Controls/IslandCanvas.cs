@@ -775,9 +775,13 @@ public sealed class IslandCanvas : FrameworkElement
         if (WantCombo("ssdtemp")) AddTempRing(Glyph.Ssd, Res.Disk, ssdT);
         if (WantCombo("battery"))
         {
-            var bat = DeviceService.Snapshot.FirstOrDefault(d => d.Kind == "battery");
+            var devs = DeviceService.Snapshot;
+            var bat = devs.FirstOrDefault(d => d.Kind == "battery");
             double? bp = bat?.Percent ?? snap?.BatteryPercent;
             bool charging = (bat?.Charging ?? false) || (bat?.PluggedIn ?? false) || (snap?.BatteryCharging ?? false);
+
+            // 台式机无内置电池时，自动展示首个无线外设（耳机/鼠标/键盘等）电量
+            var primaryWireless = bp is null ? devs.FirstOrDefault(d => d.Kind != "battery") : null;
             if (bp is { } bpVal)
             {
                 int pct = (int)Math.Round(Math.Clamp(bpVal, 0, 100));
@@ -791,6 +795,24 @@ public sealed class IslandCanvas : FrameworkElement
                     : pct <= 20 ? pal.Up
                     : (style.FigureResColor ? rc : pal.Text);
                 string label = charging ? $"{pct}%⚡" : $"{pct}%";
+                var fig = Text(label, style.FigureFont, figC, true, ppd);
+                l.MidRings.Add((Glyph.Battery, Res.Batt, Math.Clamp(pct / 100.0, 0.05, 1.0), rc, fig,
+                    Math.Max(fig.WidthIncludingTrailingWhitespace, minPctSlot)));
+            }
+            else if (primaryWireless is { } pw)
+            {
+                bool pwChg = pw.Charging || pw.PluggedIn;
+                int pct = pw.Percent >= 0 ? Math.Clamp(pw.Percent, 0, 100) : 100;
+                Color rc = pwChg
+                    ? ReadableCached(RenderKit.ThermalCoolColor, pal)
+                    : pct <= 20 ? pal.Up
+                    : pct <= 40 ? pal.Warning
+                    : ResColor(Res.Batt, pal);
+                Color figC = pwChg
+                    ? ReadableCached(RenderKit.ThermalCoolColor, pal)
+                    : pct <= 20 ? pal.Up
+                    : (style.FigureResColor ? rc : pal.Text);
+                string label = pw.Percent < 0 ? "⚡" : (pwChg ? $"{pct}%⚡" : $"{pct}%");
                 var fig = Text(label, style.FigureFont, figC, true, ppd);
                 l.MidRings.Add((Glyph.Battery, Res.Batt, Math.Clamp(pct / 100.0, 0.05, 1.0), rc, fig,
                     Math.Max(fig.WidthIncludingTrailingWhitespace, minPctSlot)));
@@ -1000,8 +1022,8 @@ public sealed class IslandCanvas : FrameworkElement
             }
             foreach (var dev in devs.Where(d => d.Kind != "battery").Take(4))
             {
-                Color dc2 = dev.Charging ? DownC : dev.Percent <= 20 ? pal.Up : dev.Percent <= 40 ? pal.Warning : ResColor(Res.Batt, pal);
-                l.WirelessShares.Add(dev.Percent / 100.0);
+                Color dc2 = dev.Charging ? DownC : dev.Percent is >= 0 and <= 20 ? pal.Up : dev.Percent is >= 0 and <= 40 ? pal.Warning : ResColor(Res.Batt, pal);
+                l.WirelessShares.Add(dev.Percent >= 0 ? dev.Percent / 100.0 : (dev.Charging ? 1.0 : 0.05));
                 l.WirelessRings.Add(dc2);
             }
         }
@@ -1272,11 +1294,12 @@ public sealed class IslandCanvas : FrameworkElement
 
         foreach (var d in devices.Take(5))
         {
-            var color = d.Charging ? DownC : d.Percent <= 20 ? pal.Up : d.Percent <= 40 ? pal.Warning : pal.Text;
+            var color = d.Charging ? DownC : d.Percent is >= 0 and <= 20 ? pal.Up : d.Percent is >= 0 and <= 40 ? pal.Warning : pal.Text;
             var glyph = Text(DeviceService.Glyph(d.Kind), 11, pal.TextDim, true, ppd);
             dc.DrawText(glyph, new Point(x, cy - glyph.Height / 2));
             x += glyph.Width + 5;
-            var pct = Text($"{d.Percent}%", 13, color, true, ppd);
+            string pctStr = d.Percent >= 0 ? $"{d.Percent}%" : (d.Charging ? "充电" : "--");
+            var pct = Text(pctStr, 13, color, true, ppd);
             dc.DrawText(pct, new Point(x, cy - pct.Height / 2));
             x += pct.Width;
             if (d.Charging)

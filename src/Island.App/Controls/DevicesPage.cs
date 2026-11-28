@@ -31,16 +31,16 @@ public sealed class DevicesPage : FrameworkElement
     private static Color LevelColor(DeviceInfo d, Palette pal)
     {
         if (d.Charging || d.PluggedIn) return Color.FromRgb(0x3F, 0xC1, 0x5E);
-        if (d.Percent <= 20) return pal.Up;
-        if (d.Percent <= 40) return pal.Warning;
+        if (d.Percent is >= 0 and <= 20) return pal.Up;
+        if (d.Percent is >= 0 and <= 40) return pal.Warning;
         return d.Kind == "battery" ? Color.FromRgb(0x3F, 0xB8, 0xFF) : pal.Text;
     }
 
     private static string StatusText(DeviceInfo d)
     {
-        if (d.Charging) return "充电中";
-        if (d.Percent <= 20) return "电量低";
-        if (d.Percent <= 40) return "电量偏低";
+        if (d.Charging) return !string.IsNullOrWhiteSpace(d.Subtitle) ? d.Subtitle! : "充电中";
+        if (d.Percent is >= 0 and <= 20) return "电量低";
+        if (d.Percent is >= 0 and <= 40) return "电量偏低";
         if (!string.IsNullOrWhiteSpace(d.Subtitle)) return d.Subtitle!;
         return KindLabel(d.Kind);
     }
@@ -66,13 +66,13 @@ public sealed class DevicesPage : FrameworkElement
         var devices = DeviceService.Snapshot;
         if (devices.Count == 0)
         {
-            var empty = RenderKit.Text("未检测到带电量汇报的无线设备或本机电池", 11.5, pal.TextDim, ppd: ppd);
+            var empty = RenderKit.Text("未检测到带电量汇报的无线外设（蓝牙 / 2.4G HID）或本机电池", 11.5, pal.TextDim, ppd: ppd);
             dc.DrawText(empty, new Point((W - empty.Width) / 2, H / 2 - empty.Height / 2));
             return;
         }
 
-        int n = Math.Min(devices.Count, 5);
-        double colW = Math.Clamp(W / n, 96, 130);
+        int n = Math.Min(devices.Count, 6);
+        double colW = Math.Clamp(W / n, 88, 130);
         double totalW = colW * n;
         double x0 = (W - totalW) / 2;
         double topY = Math.Max(10, (H - 180) / 2);
@@ -84,11 +84,12 @@ public sealed class DevicesPage : FrameworkElement
             double cx = x0 + colW * i + colW / 2;
             double y = topY;
 
-            // 1. 大电量环
+            // 1. 大电量环（充电中但固件未回报具体百分比时以完整绿环示意，不伪造 0%）
             const double ringR = 30, stroke = 5;
             double ringCy = y + ringR;
+            double share = d.Percent >= 0 ? d.Percent / 100.0 : (d.Charging ? 1.0 : 0.05);
             dc.DrawEllipse(null, RenderKit.PenOf(pal.Track, stroke, 0.85), new Point(cx, ringCy), ringR, ringR);
-            dc.DrawGeometry(null, RenderKit.PenOf(color, stroke), Arc(cx, ringCy, ringR, d.Percent / 100.0));
+            dc.DrawGeometry(null, RenderKit.PenOf(color, stroke), Arc(cx, ringCy, ringR, share));
 
             // 2. 环内纯白极简矢量设备剪影（与 devices.png 视觉对齐）
             DrawDeviceSilhouette(dc, d.Kind, d.Name, new Point(cx, ringCy), pal.Text, pal.Surface);
@@ -114,12 +115,20 @@ public sealed class DevicesPage : FrameworkElement
             }
             y += ringR * 2 + 14;
 
-            // 4. 大号百分比
-            var num = RenderKit.Text($"{d.Percent}", 20, color, true, ppd);
-            var pct = RenderKit.Text("%", 11, color, ppd: ppd);
-            double numW = num.WidthIncludingTrailingWhitespace + pct.WidthIncludingTrailingWhitespace;
-            RenderKit.Baseline(dc, num, cx - numW / 2, Math.Round(y + 20 * 0.8));
-            RenderKit.Baseline(dc, pct, cx - numW / 2 + num.WidthIncludingTrailingWhitespace + 1, Math.Round(y + 20 * 0.8));
+            // 4. 大号百分比（固件充电中未回报百分比时显示“充电”，绝不伪造数值）
+            if (d.Percent >= 0)
+            {
+                var num = RenderKit.Text($"{d.Percent}", 20, color, true, ppd);
+                var pct = RenderKit.Text("%", 11, color, ppd: ppd);
+                double numW = num.WidthIncludingTrailingWhitespace + pct.WidthIncludingTrailingWhitespace;
+                RenderKit.Baseline(dc, num, cx - numW / 2, Math.Round(y + 20 * 0.8));
+                RenderKit.Baseline(dc, pct, cx - numW / 2 + num.WidthIncludingTrailingWhitespace + 1, Math.Round(y + 20 * 0.8));
+            }
+            else
+            {
+                var chg = RenderKit.Text(d.Charging ? "充电" : "--", 16, color, true, ppd);
+                RenderKit.Baseline(dc, chg, cx - chg.Width / 2, Math.Round(y + 18 * 0.8));
+            }
             y += 30;
 
             // 5. 设备名与状态行
